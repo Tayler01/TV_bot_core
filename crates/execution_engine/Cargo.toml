@@ -1,0 +1,19 @@
+[package]
+name = "tv-bot-execution-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rust_decimal.workspace = true
+thiserror.workspace = true
+tv-bot-broker-tradovate = { path = "../broker_tradovate" }
+tv-bot-core-types = { path = "../core_types" }
+
+[dev-dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+secrecy.workspace = true
+tokio.workspace = true

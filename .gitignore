@@ -1,0 +1,15 @@
+/target
+/.idea
+/.vscode
+/.DS_Store
+Thumbs.db
+
+.env
+.env.*
+
+config/runtime.local.toml
+data/
+logs/
+*.db
+*.db-shm
+*.db-wal

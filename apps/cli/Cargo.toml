@@ -1,0 +1,11 @@
+[package]
+name = "tv-bot-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tv-bot-config = { path = "../../crates/config" }
+tv-bot-runtime-kernel = { path = "../../crates/runtime_kernel" }

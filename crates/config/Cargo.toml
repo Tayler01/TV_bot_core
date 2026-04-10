@@ -1,0 +1,15 @@
+[package]
+name = "tv-bot-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tv-bot-core-types = { path = "../core_types" }
+chrono.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true

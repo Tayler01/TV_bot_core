@@ -1,0 +1,12 @@
+[package]
+name = "tv-bot-instrument-resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tv-bot-core-types = { path = "../core_types" }
+chrono.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "apps/cli",
+    "apps/runtime",
+    "crates/broker_tradovate",
+    "crates/config",
+    "crates/control_api",
+    "crates/core_types",
+    "crates/execution_engine",
+    "crates/health",
+    "crates/indicators",
+    "crates/instrument_resolver",
+    "crates/journal",
+    "crates/market_data",
+    "crates/metrics",
+    "crates/persistence",
+    "crates/risk_engine",
+    "crates/rule_engine",
+    "crates/runtime_kernel",
+    "crates/state_store",
+    "crates/strategy_loader",
+    "crates/strategy_runtime",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Codex"]
+rust-version = "1.76"
+
+[workspace.dependencies]
+async-trait = "0.1.89"
+chrono = { version = "0.4.38", features = ["serde"] }
+databento = { version = "0.45.0", default-features = false, features = ["live", "chrono"] }
+futures-util = "0.3.31"
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1.36.0", features = ["serde"] }
+secrecy = { version = "0.10.3", features = ["serde"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+serde_yaml = "0.9.34"
+thiserror = "2.0.11"
+time = "0.3.44"
+tokio = { version = "1.48.0", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8.19"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }

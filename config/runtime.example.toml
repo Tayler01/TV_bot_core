@@ -1,0 +1,41 @@
+[runtime]
+startup_mode = "observation"
+allow_sqlite_fallback = false
+
+[market_data]
+dataset = "GLBX.MDP3"
+# Optional advanced override. Omit this to let the Databento client select the
+# default live gateway for the configured dataset.
+# gateway = "live.databento.com:13000"
+# Prefer supplying the API key through TV_BOT__MARKET_DATA__API_KEY.
+# api_key = "db-..."
+
+[broker]
+environment = "demo"
+http_base_url = "https://demo.tradovateapi.com/v1"
+websocket_url = "wss://demo.tradovateapi.com/v1/websocket"
+# Prefer supplying sensitive auth fields through environment variables:
+# TV_BOT__BROKER__USERNAME
+# TV_BOT__BROKER__PASSWORD
+# TV_BOT__BROKER__CID
+# TV_BOT__BROKER__SEC
+app_id = "tv-bot-core"
+app_version = "0.1.0"
+device_id = "local-dev"
+# paper_account_name = "SIM123456"
+# live_account_name = "LIVE123456"
+
+[persistence]
+primary_url = "postgres://postgres:postgres@localhost:5432/tv_bot_core"
+
+[persistence.sqlite_fallback]
+enabled = false
+path = "data/tv_bot_core.sqlite"
+
+[control_api]
+http_bind = "127.0.0.1:8080"
+websocket_bind = "127.0.0.1:8081"
+
+[logging]
+level = "info"
+json = false

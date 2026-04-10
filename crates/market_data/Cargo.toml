@@ -1,0 +1,24 @@
+[package]
+name = "tv-bot-market-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tv-bot-core-types = { path = "../core_types" }
+async-trait.workspace = true
+chrono.workspace = true
+databento.workspace = true
+rust_decimal.workspace = true
+secrecy.workspace = true
+time.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+tokio.workspace = true
