@@ -9,12 +9,15 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+serde.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tv-bot-broker-tradovate = { path = "../broker_tradovate" }
 tv-bot-core-types = { path = "../core_types" }
 tv-bot-journal = { path = "../journal" }
+tv-bot-market-data = { path = "../market_data" }
 tv-bot-runtime-kernel = { path = "../runtime_kernel" }
+tv-bot-state-store = { path = "../state_store" }
 
 [dev-dependencies]
 rust_decimal.workspace = true

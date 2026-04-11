@@ -33,6 +33,8 @@ pub enum RuntimeCommandError {
     Journal { source: JournalError },
     #[error("runtime execution failed: {source}")]
     Execution { source: RuntimeExecutionError },
+    #[error("runtime command is unavailable: {reason}")]
+    Unavailable { reason: String },
 }
 
 pub struct RuntimeControlLoop;

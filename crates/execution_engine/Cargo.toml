@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 rust_decimal.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tv-bot-broker-tradovate = { path = "../broker_tradovate" }
 tv-bot-core-types = { path = "../core_types" }

@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tv_bot_core_types::{
     CompiledStrategy, DatabentoInstrument, FeedType, InstrumentMapping, MarketEvent, Timeframe,
@@ -19,7 +20,7 @@ pub use databento_live::{
 };
 pub use service::{DatabentoWarmupMode, MarketDataService, MarketDataServiceSnapshot};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarketDataConnectionState {
     Disconnected,
     Connecting,
@@ -28,7 +29,7 @@ pub enum MarketDataConnectionState {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarketDataHealth {
     Healthy,
     Initializing,
@@ -37,7 +38,7 @@ pub enum MarketDataHealth {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedReadinessState {
     Pending,
     Ready,
@@ -80,7 +81,7 @@ impl SubscriptionRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedStatus {
     pub instrument_symbol: String,
     pub feed: FeedType,
@@ -89,7 +90,7 @@ pub struct FeedStatus {
     pub detail: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferStatus {
     pub symbol: String,
     pub timeframe: Timeframe,
@@ -99,7 +100,7 @@ pub struct BufferStatus {
     pub ready: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarmupProgress {
     pub status: WarmupStatus,
     pub ready_requires_all: bool,
@@ -109,9 +110,9 @@ pub struct WarmupProgress {
     pub failure_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarketDataStatusSnapshot {
-    pub provider: &'static str,
+    pub provider: String,
     pub dataset: String,
     pub connection_state: MarketDataConnectionState,
     pub health: MarketDataHealth,
@@ -123,7 +124,7 @@ pub struct MarketDataStatusSnapshot {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatabentoSessionStatus {
     pub market_data: MarketDataStatusSnapshot,
 }
@@ -734,7 +735,7 @@ impl DatabentoMarketDataCoordinator {
         );
 
         MarketDataStatusSnapshot {
-            provider: self.subscription.provider,
+            provider: self.subscription.provider.to_owned(),
             dataset: self.subscription.dataset.clone(),
             connection_state: self.connection_state,
             health,

@@ -7,7 +7,32 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axum.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["signal", "time"] }
+tv-bot-broker-tradovate = { path = "../../crates/broker_tradovate" }
 tv-bot-config = { path = "../../crates/config" }
+tv-bot-control-api = { path = "../../crates/control_api" }
+tv-bot-core-types = { path = "../../crates/core_types" }
+tv-bot-execution-engine = { path = "../../crates/execution_engine" }
+tv-bot-instrument-resolver = { path = "../../crates/instrument_resolver" }
+tv-bot-journal = { path = "../../crates/journal" }
+tv-bot-market-data = { path = "../../crates/market_data" }
+tv-bot-persistence = { path = "../../crates/persistence" }
+tv-bot-risk-engine = { path = "../../crates/risk_engine" }
 tv-bot-runtime-kernel = { path = "../../crates/runtime_kernel" }
+tv-bot-state-store = { path = "../../crates/state_store" }
+tv-bot-strategy-loader = { path = "../../crates/strategy_loader" }
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+reqwest.workspace = true
+tower = { version = "0.5.2", features = ["util"] }

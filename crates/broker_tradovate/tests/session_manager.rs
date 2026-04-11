@@ -369,6 +369,7 @@ fn snapshot_with_position(now: DateTime<Utc>) -> TradovateSyncSnapshot {
     TradovateSyncSnapshot {
         occurred_at: now,
         positions: vec![BrokerPositionSnapshot {
+            account_id: Some("101".to_owned()),
             symbol: "GCM6".to_owned(),
             quantity: 1,
             average_price: None,
@@ -379,7 +380,11 @@ fn snapshot_with_position(now: DateTime<Utc>) -> TradovateSyncSnapshot {
         }],
         working_orders: vec![BrokerOrderUpdate {
             broker_order_id: "order-1".to_owned(),
+            account_id: Some("101".to_owned()),
             symbol: "GCM6".to_owned(),
+            side: Some(TradeSide::Buy),
+            quantity: Some(1),
+            order_type: Some(tv_bot_core_types::EntryOrderType::Limit),
             status: BrokerOrderStatus::Working,
             filled_quantity: 0,
             average_fill_price: None,
@@ -388,6 +393,7 @@ fn snapshot_with_position(now: DateTime<Utc>) -> TradovateSyncSnapshot {
         fills: vec![BrokerFillUpdate {
             fill_id: "fill-1".to_owned(),
             broker_order_id: Some("order-1".to_owned()),
+            account_id: Some("101".to_owned()),
             symbol: "GCM6".to_owned(),
             side: TradeSide::Buy,
             quantity: 1,

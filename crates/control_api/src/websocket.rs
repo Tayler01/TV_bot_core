@@ -1,14 +1,17 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tv_bot_core_types::{
     ActionSource, ArmReadinessReport, BrokerStatusSnapshot, EventJournalRecord,
     SystemHealthSnapshot,
 };
+use tv_bot_state_store::ProjectedTradingHistoryState;
 
 use crate::ControlApiCommandResult;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlApiEvent {
     CommandResult {
         source: ActionSource,
@@ -25,6 +28,10 @@ pub enum ControlApiEvent {
     },
     SystemHealth {
         snapshot: SystemHealthSnapshot,
+        occurred_at: DateTime<Utc>,
+    },
+    HistorySnapshot {
+        projection: ProjectedTradingHistoryState,
         occurred_at: DateTime<Utc>,
     },
     JournalRecord {

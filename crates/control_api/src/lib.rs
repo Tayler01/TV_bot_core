@@ -3,18 +3,26 @@
 mod http;
 mod websocket;
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tv_bot_broker_tradovate::{
     Clock as TradovateClock, TradovateAccountApi, TradovateAuthApi, TradovateExecutionApi,
     TradovateSessionManager, TradovateSyncApi,
 };
-use tv_bot_core_types::{ActionSource, RiskDecisionStatus};
+use tv_bot_core_types::{
+    ActionSource, ArmReadinessReport, ArmState, BrokerStatusSnapshot, InstrumentMapping,
+    RiskDecisionStatus, RuntimeMode, WarmupStatus,
+};
 use tv_bot_journal::EventJournal;
+use tv_bot_market_data::MarketDataServiceSnapshot;
 use tv_bot_runtime_kernel::{
     RuntimeCommand, RuntimeCommandError, RuntimeCommandOutcome, RuntimeControlLoop,
     RuntimeExecutionRequest,
 };
+use tv_bot_state_store::ProjectedTradingHistoryState;
 
 pub use http::{
     HttpCommandHandler, HttpCommandRequest, HttpCommandResponse, HttpResponseBody, HttpStatusCode,
@@ -26,14 +34,15 @@ pub use websocket::{
 
 pub const MODULE_STATUS: &str = "implemented";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ManualCommandSource {
     Dashboard,
     Cli,
 }
 
 impl ManualCommandSource {
-    fn action_source(self) -> ActionSource {
+    pub fn action_source(self) -> ActionSource {
         match self {
             Self::Dashboard => ActionSource::Dashboard,
             Self::Cli => ActionSource::Cli,
@@ -41,7 +50,14 @@ impl ManualCommandSource {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl From<ManualCommandSource> for ActionSource {
+    fn from(value: ManualCommandSource) -> Self {
+        value.action_source()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlApiCommand {
     ManualIntent {
         source: ManualCommandSource,
@@ -52,20 +68,132 @@ pub enum ControlApiCommand {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ControlApiCommandStatus {
     Executed,
     Rejected,
     RequiresOverride,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControlApiCommandResult {
     pub status: ControlApiCommandStatus,
     pub risk_status: RiskDecisionStatus,
     pub dispatch_performed: bool,
     pub reason: String,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoadedStrategySummary {
+    pub path: PathBuf,
+    pub title: Option<String>,
+    pub strategy_id: String,
+    pub name: String,
+    pub version: String,
+    pub market_family: String,
+    pub warning_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStorageMode {
+    Unconfigured,
+    PrimaryConfigured,
+    SqliteFallbackOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStorageStatus {
+    pub mode: RuntimeStorageMode,
+    pub primary_configured: bool,
+    pub sqlite_fallback_enabled: bool,
+    pub sqlite_path: PathBuf,
+    pub allow_runtime_fallback: bool,
+    pub active_backend: String,
+    pub durable: bool,
+    pub fallback_activated: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeJournalStatus {
+    pub backend: String,
+    pub durable: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStatusSnapshot {
+    pub mode: RuntimeMode,
+    pub arm_state: ArmState,
+    pub warmup_status: WarmupStatus,
+    pub strategy_loaded: bool,
+    pub hard_override_active: bool,
+    pub current_strategy: Option<LoadedStrategySummary>,
+    pub broker_status: Option<BrokerStatusSnapshot>,
+    pub market_data_status: Option<MarketDataServiceSnapshot>,
+    pub market_data_detail: Option<String>,
+    pub storage_status: RuntimeStorageStatus,
+    pub journal_status: RuntimeJournalStatus,
+    pub current_account_name: Option<String>,
+    pub instrument_mapping: Option<InstrumentMapping>,
+    pub instrument_resolution_error: Option<String>,
+    pub http_bind: String,
+    pub websocket_bind: String,
+    pub command_dispatch_ready: bool,
+    pub command_dispatch_detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeReadinessSnapshot {
+    pub status: RuntimeStatusSnapshot,
+    pub report: ArmReadinessReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeHistorySnapshot {
+    pub projection: ProjectedTradingHistoryState,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeLifecycleCommand {
+    SetMode { mode: RuntimeMode },
+    LoadStrategy { path: PathBuf },
+    StartWarmup,
+    MarkWarmupReady,
+    MarkWarmupFailed { reason: Option<String> },
+    Arm { allow_override: bool },
+    Disarm,
+    Pause,
+    Resume,
+    Flatten { contract_id: i64, reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeLifecycleRequest {
+    pub source: ManualCommandSource,
+    pub command: RuntimeLifecycleCommand,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeLifecycleResponse {
+    pub status_code: HttpStatusCode,
+    pub message: String,
+    pub status: RuntimeStatusSnapshot,
+    pub readiness: RuntimeReadinessSnapshot,
+    pub command_result: Option<ControlApiCommandResult>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -89,6 +217,14 @@ pub struct LocalControlApi<D> {
 impl<D> LocalControlApi<D> {
     pub fn new(dispatcher: D) -> Self {
         Self { dispatcher }
+    }
+
+    pub fn dispatcher(&self) -> &D {
+        &self.dispatcher
+    }
+
+    pub fn dispatcher_mut(&mut self) -> &mut D {
+        &mut self.dispatcher
     }
 
     pub fn into_dispatcher(self) -> D {

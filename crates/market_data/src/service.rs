@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tv_bot_core_types::{CompiledStrategy, InstrumentMapping, MarketEvent, WarmupStatus};
 
 use crate::{
@@ -6,7 +7,7 @@ use crate::{
     MarketDataConnectionState, MarketDataError, MarketDataHealth,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatabentoWarmupMode {
     LiveOnly,
     ReplayFrom(DateTime<Utc>),
@@ -21,7 +22,7 @@ impl DatabentoWarmupMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarketDataServiceSnapshot {
     pub session: DatabentoSessionStatus,
     pub warmup_requested: bool,

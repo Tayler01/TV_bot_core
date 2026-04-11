@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 tv-bot-core-types = { path = "../core_types" }
+tv-bot-persistence = { path = "../persistence" }
+tv-bot-state-store = { path = "../state_store" }
 thiserror.workspace = true
 
 [dev-dependencies]

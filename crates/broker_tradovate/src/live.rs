@@ -11,7 +11,7 @@ use tokio::{net::TcpStream, sync::Mutex, time::timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tv_bot_core_types::{
     BrokerAccountSnapshot, BrokerFillUpdate, BrokerOrderStatus, BrokerOrderUpdate,
-    BrokerPositionSnapshot, TradeSide,
+    BrokerPositionSnapshot, EntryOrderType, TradeSide,
 };
 
 use crate::{
@@ -784,6 +784,10 @@ fn parse_position_snapshot(
     let symbol = entity_symbol(value)?;
 
     Some(BrokerPositionSnapshot {
+        account_id: value
+            .get("accountId")
+            .or_else(|| value.get("account_id"))
+            .and_then(value_to_string),
         symbol,
         quantity,
         average_price: value
@@ -814,7 +818,26 @@ fn parse_order_update(value: &Value, occurred_at: DateTime<Utc>) -> Option<Broke
 
     Some(BrokerOrderUpdate {
         broker_order_id,
+        account_id: value
+            .get("accountId")
+            .or_else(|| value.get("account_id"))
+            .and_then(value_to_string),
         symbol: entity_symbol(value).unwrap_or_else(|| "unknown".to_owned()),
+        side: value
+            .get("action")
+            .or_else(|| value.get("side"))
+            .or_else(|| value.get("buySell"))
+            .and_then(value_to_trade_side),
+        quantity: value
+            .get("orderQty")
+            .or_else(|| value.get("qty"))
+            .or_else(|| value.get("quantity"))
+            .and_then(value_to_u32),
+        order_type: value
+            .get("orderType")
+            .or_else(|| value.get("ordType"))
+            .or_else(|| value.get("order_type"))
+            .and_then(value_to_entry_order_type),
         status,
         filled_quantity: value
             .get("fillQty")
@@ -842,6 +865,10 @@ fn parse_fill_update(value: &Value, occurred_at: DateTime<Utc>) -> Option<Broker
             .get("orderId")
             .and_then(value_to_string)
             .or_else(|| value.get("ordId").and_then(value_to_string)),
+        account_id: value
+            .get("accountId")
+            .or_else(|| value.get("account_id"))
+            .and_then(value_to_string),
         symbol: entity_symbol(value)?,
         side: value
             .get("action")
@@ -1060,6 +1087,16 @@ fn value_to_trade_side(value: &Value) -> Option<TradeSide> {
     match value_to_string(value)?.to_ascii_lowercase().as_str() {
         "buy" => Some(TradeSide::Buy),
         "sell" => Some(TradeSide::Sell),
+        _ => None,
+    }
+}
+
+fn value_to_entry_order_type(value: &Value) -> Option<EntryOrderType> {
+    match value_to_string(value)?.to_ascii_lowercase().as_str() {
+        "market" => Some(EntryOrderType::Market),
+        "limit" => Some(EntryOrderType::Limit),
+        "stop" | "stopmarket" | "stop_market" => Some(EntryOrderType::Stop),
+        "stoplimit" | "stop_limit" => Some(EntryOrderType::StopLimit),
         _ => None,
     }
 }

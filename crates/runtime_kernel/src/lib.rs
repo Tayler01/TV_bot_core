@@ -3,6 +3,7 @@
 mod service_loop;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 use tv_bot_broker_tradovate::{
@@ -79,7 +80,8 @@ pub enum RuntimeKernelError {
     OverrideRequired,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeExecutionRequest {
     pub mode: RuntimeMode,
     pub action_source: ActionSource,
@@ -1213,7 +1215,7 @@ mod tests {
     #[test]
     fn market_data_snapshot_maps_to_readiness_dependency() {
         let snapshot = MarketDataStatusSnapshot {
-            provider: "databento",
+            provider: "databento".to_owned(),
             dataset: "GLBX.MDP3".to_owned(),
             connection_state: tv_bot_market_data::MarketDataConnectionState::Subscribed,
             health: MarketDataHealth::Degraded,

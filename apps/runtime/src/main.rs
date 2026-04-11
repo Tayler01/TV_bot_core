@@ -1,10 +1,15 @@
+mod history;
+mod host;
+mod operator;
+
 use std::{env, error::Error, path::PathBuf};
 
 use tracing_subscriber::EnvFilter;
 use tv_bot_config::{AppConfig, StdEnvironment};
 use tv_bot_runtime_kernel::RuntimeStateMachine;
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let environment = StdEnvironment;
     let config_path = env::args().nth(1).map(PathBuf::from);
     let config = AppConfig::load(config_path.as_deref(), &environment)?;
@@ -12,15 +17,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     configure_tracing(&config.logging.level, config.logging.json);
 
     let runtime = RuntimeStateMachine::new(config.runtime.startup_mode.clone());
-
-    tracing::info!(
-        mode = ?runtime.current_mode(),
-        http_bind = %config.control_api.http_bind,
-        websocket_bind = %config.control_api.websocket_bind,
-        "runtime scaffold initialized"
-    );
-
-    Ok(())
+    host::run_runtime_host(config, runtime)
+        .await
+        .map_err(|error| -> Box<dyn Error> { Box::new(error) })
 }
 
 fn configure_tracing(level: &str, json: bool) {

@@ -7,4 +7,14 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true
+rust_decimal.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tv-bot-core-types = { path = "../core_types" }
+tv-bot-indicators = { path = "../indicators" }
+tv-bot-rule-engine = { path = "../rule_engine" }
+
+[dev-dependencies]
+tv-bot-strategy-loader = { path = "../strategy_loader" }

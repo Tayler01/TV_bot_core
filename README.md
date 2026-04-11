@@ -5,8 +5,8 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is partially started: the runtime command path and control API foundations exist, but the actual local server, dashboard, and usable CLI flows are not finished yet.
-- Phase 6 and Phase 7 work are still open: persistence, metrics, reconnect recovery hardening, packaging, and operational docs are not complete.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness now project live broker and market-data state plus shared storage/journal policy status, and the CLI can drive load/warmup/mode/arm/flatten/status/readiness flows, but the dashboard and end-to-end manual operator flows are still incomplete.
+- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, and queryable history surfaces through the host and CLI, but health supervision, reconnect recovery hardening, packaging, and operational docs are not complete.
 
 The current implementation status review lives in `docs/architecture/current_status.md`.
 
@@ -22,9 +22,9 @@ The current implementation status review lives in `docs/architecture/current_sta
 
 ```text
 apps/
-  cli/         Local operator CLI scaffold
+  cli/         Local operator CLI
   dashboard/   Reserved for the React dashboard
-  runtime/     Runtime host scaffold
+  runtime/     Runtime host
 crates/
   broker_tradovate/
   config/
@@ -73,15 +73,18 @@ tests/
 - Strategy-agnostic execution planning and broker dispatch in `crates/execution_engine`
 - Local control API foundations in `crates/control_api`
 - In-memory journal abstraction in `crates/journal`
+- Postgres-first persistence planning plus durable event/health/latency/trading-history storage adapters in `crates/persistence`
+- Durable Postgres/SQLite journal + storage backend selection in `crates/persistence` and `crates/journal`
+- Event-sourced runtime state projection plus queryable trading-history state in `crates/state_store`
+- Trade-path latency calculation foundations in `crates/metrics`
+- Runtime host lifecycle/state handling in `apps/runtime`
+- Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
+- CLI launch, lifecycle, and history commands in `apps/cli`
 
 ## Still Required For V1
 
-- Strategy evaluation runtime plus built-in indicators and rule engine
-- Runtime host that actually serves local HTTP and WebSocket control endpoints
-- CLI command flows beyond startup scaffold
 - Dashboard implementation
 - Postgres-first persistence with safe SQLite fallback behavior
-- Queryable journal persistence, trade history, PnL, fees, commissions, slippage, and latency metrics
 - Health/state projection services
 - Open-position shutdown and reconnect recovery flows wired end to end
 - Paper-mode acceptance campaigns and remaining safety-critical integration coverage

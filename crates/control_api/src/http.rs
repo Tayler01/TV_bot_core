@@ -1,4 +1,5 @@
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tv_bot_core_types::ActionSource;
 
@@ -7,7 +8,8 @@ use crate::{
     ControlApiEventPublisher, LocalControlApi, RuntimeCommandDispatcher,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HttpStatusCode {
     Ok = 200,
     Conflict = 409,
@@ -15,18 +17,21 @@ pub enum HttpStatusCode {
     InternalServerError = 500,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpCommandRequest {
     pub command: ControlApiCommand,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HttpResponseBody {
     CommandResult(ControlApiCommandResult),
     Error { message: String },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpCommandResponse {
     pub status_code: HttpStatusCode,
     pub body: HttpResponseBody,
@@ -49,6 +54,14 @@ impl<D> HttpCommandHandler<D, crate::NoopEventPublisher> {
 impl<D, P> HttpCommandHandler<D, P> {
     pub fn with_publisher(api: LocalControlApi<D>, publisher: P) -> Self {
         Self { api, publisher }
+    }
+
+    pub fn dispatcher(&self) -> &D {
+        self.api.dispatcher()
+    }
+
+    pub fn dispatcher_mut(&mut self) -> &mut D {
+        self.api.dispatcher_mut()
     }
 
     pub fn into_inner(self) -> (LocalControlApi<D>, P) {

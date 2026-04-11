@@ -1,6 +1,7 @@
 //! Strategy-agnostic execution planning for broker-native order flows.
 
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tv_bot_broker_tradovate::{
     Clock as TradovateClock, TradovateAccountApi, TradovateAuthApi, TradovateBracketOrder,
@@ -14,7 +15,8 @@ use tv_bot_core_types::{
 
 pub const MODULE_STATUS: &str = "implemented";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionInstrumentContext {
     pub tradovate_symbol: String,
     pub tick_size: Decimal,
@@ -22,7 +24,8 @@ pub struct ExecutionInstrumentContext {
     pub active_contract_id: Option<i64>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionStateContext {
     pub runtime_can_submit_orders: bool,
     pub new_entries_allowed: bool,
@@ -30,7 +33,8 @@ pub struct ExecutionStateContext {
     pub working_orders: Vec<BrokerOrderUpdate>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionRequest {
     pub strategy: CompiledStrategy,
     pub instrument: ExecutionInstrumentContext,

@@ -649,7 +649,11 @@ pub enum BrokerOrderCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrokerOrderUpdate {
     pub broker_order_id: String,
+    pub account_id: Option<String>,
     pub symbol: String,
+    pub side: Option<TradeSide>,
+    pub quantity: Option<u32>,
+    pub order_type: Option<EntryOrderType>,
     pub status: BrokerOrderStatus,
     pub filled_quantity: u32,
     pub average_fill_price: Option<Decimal>,
@@ -658,6 +662,7 @@ pub struct BrokerOrderUpdate {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrokerPositionSnapshot {
+    pub account_id: Option<String>,
     pub symbol: String,
     pub quantity: i32,
     pub average_price: Option<Decimal>,
@@ -671,6 +676,7 @@ pub struct BrokerPositionSnapshot {
 pub struct BrokerFillUpdate {
     pub fill_id: String,
     pub broker_order_id: Option<String>,
+    pub account_id: Option<String>,
     pub symbol: String,
     pub side: TradeSide,
     pub quantity: u32,
@@ -693,6 +699,124 @@ pub struct BrokerAccountSnapshot {
     pub unrealized_pnl: Option<Decimal>,
     pub risk_state: Option<String>,
     pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategyRunStatus {
+    Starting,
+    Active,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TradeSummaryStatus {
+    Open,
+    Closed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrategyRunRecord {
+    pub run_id: String,
+    pub strategy_id: String,
+    pub mode: RuntimeMode,
+    pub status: StrategyRunStatus,
+    pub trigger_source: ActionSource,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OrderRecord {
+    pub broker_order_id: String,
+    pub strategy_id: Option<String>,
+    pub run_id: Option<String>,
+    pub account_id: Option<String>,
+    pub symbol: String,
+    pub side: TradeSide,
+    pub order_type: Option<EntryOrderType>,
+    pub quantity: u32,
+    pub filled_quantity: u32,
+    pub average_fill_price: Option<Decimal>,
+    pub status: BrokerOrderStatus,
+    pub provider: String,
+    pub submitted_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillRecord {
+    pub fill_id: String,
+    pub broker_order_id: Option<String>,
+    pub strategy_id: Option<String>,
+    pub run_id: Option<String>,
+    pub account_id: Option<String>,
+    pub symbol: String,
+    pub side: TradeSide,
+    pub quantity: u32,
+    pub price: Decimal,
+    pub fee: Decimal,
+    pub commission: Decimal,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PositionRecord {
+    pub record_id: String,
+    pub strategy_id: Option<String>,
+    pub run_id: Option<String>,
+    pub account_id: Option<String>,
+    pub symbol: String,
+    pub quantity: i32,
+    pub average_price: Option<Decimal>,
+    pub realized_pnl: Option<Decimal>,
+    pub unrealized_pnl: Option<Decimal>,
+    pub protective_orders_present: bool,
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PnlSnapshotRecord {
+    pub snapshot_id: String,
+    pub strategy_id: Option<String>,
+    pub run_id: Option<String>,
+    pub account_id: Option<String>,
+    pub symbol: Option<String>,
+    pub gross_pnl: Decimal,
+    pub net_pnl: Decimal,
+    pub fees: Decimal,
+    pub commissions: Decimal,
+    pub slippage: Decimal,
+    pub realized_pnl: Option<Decimal>,
+    pub unrealized_pnl: Option<Decimal>,
+    pub captured_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TradeSummaryRecord {
+    pub trade_id: String,
+    pub strategy_id: Option<String>,
+    pub run_id: Option<String>,
+    pub account_id: Option<String>,
+    pub symbol: String,
+    pub side: TradeSide,
+    pub status: TradeSummaryStatus,
+    pub quantity: u32,
+    pub average_entry_price: Decimal,
+    pub average_exit_price: Option<Decimal>,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub gross_pnl: Decimal,
+    pub net_pnl: Decimal,
+    pub fees: Decimal,
+    pub commissions: Decimal,
+    pub slippage: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -760,6 +884,38 @@ pub struct SystemHealthSnapshot {
     pub error_count: u64,
     pub feed_degraded: bool,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradePathTimestamps {
+    pub market_event_at: Option<DateTime<Utc>>,
+    pub signal_at: Option<DateTime<Utc>>,
+    pub decision_at: Option<DateTime<Utc>>,
+    pub order_sent_at: Option<DateTime<Utc>>,
+    pub broker_ack_at: Option<DateTime<Utc>>,
+    pub fill_at: Option<DateTime<Utc>>,
+    pub sync_update_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradePathLatencySnapshot {
+    pub signal_latency_ms: Option<u64>,
+    pub decision_latency_ms: Option<u64>,
+    pub order_send_latency_ms: Option<u64>,
+    pub broker_ack_latency_ms: Option<u64>,
+    pub fill_latency_ms: Option<u64>,
+    pub sync_update_latency_ms: Option<u64>,
+    pub end_to_end_fill_latency_ms: Option<u64>,
+    pub end_to_end_sync_latency_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TradePathLatencyRecord {
+    pub action_id: String,
+    pub strategy_id: Option<String>,
+    pub recorded_at: DateTime<Utc>,
+    pub timestamps: TradePathTimestamps,
+    pub latency: TradePathLatencySnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

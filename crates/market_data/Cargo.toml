@@ -13,6 +13,7 @@ chrono.workspace = true
 databento.workspace = true
 rust_decimal.workspace = true
 secrecy.workspace = true
+serde.workspace = true
 time.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

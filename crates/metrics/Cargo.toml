@@ -7,4 +7,6 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+chrono.workspace = true
+thiserror.workspace = true
 tv-bot-core-types = { path = "../core_types" }

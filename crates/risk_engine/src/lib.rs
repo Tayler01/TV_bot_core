@@ -1,6 +1,7 @@
 //! Strategy-agnostic risk evaluation for sizing and broker-protection gates.
 
 use rust_decimal::{prelude::ToPrimitive, Decimal};
+use serde::{Deserialize, Serialize};
 use tv_bot_core_types::{
     BrokerPositionSnapshot, BrokerPreference, CompiledStrategy, ExecutionIntent,
     PositionSizingMode, RiskDecision, RiskDecisionStatus,
@@ -8,7 +9,8 @@ use tv_bot_core_types::{
 
 pub const MODULE_STATUS: &str = "implemented";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrokerProtectionSupport {
     pub stop_loss: bool,
     pub take_profit: bool,
@@ -16,12 +18,14 @@ pub struct BrokerProtectionSupport {
     pub daily_loss_limit: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RiskInstrumentContext {
     pub tick_value_usd: Option<Decimal>,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RiskStateContext {
     pub trades_today: u32,
     pub consecutive_losses: u32,

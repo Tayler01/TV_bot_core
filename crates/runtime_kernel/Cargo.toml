@@ -7,6 +7,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde.workspace = true
 serde_json.workspace = true
 tv-bot-broker-tradovate = { path = "../broker_tradovate" }
 tv-bot-core-types = { path = "../core_types" }
