@@ -483,7 +483,9 @@ fn print_status(status: &RuntimeStatusSnapshot) {
     );
     if let Some(system_health) = &status.system_health {
         println!(
-            "System Health: reconnects={} errors={} db_write_latency_ms={:?} queue_lag_ms={:?} feed_degraded={}",
+            "System Health: process_cpu={} process_memory={} reconnects={} errors={} db_write_latency_ms={:?} queue_lag_ms={:?} feed_degraded={}",
+            format_optional_percent(system_health.cpu_percent),
+            format_optional_bytes(system_health.memory_bytes),
             system_health.reconnect_count,
             system_health.error_count,
             system_health.db_write_latency_ms,
@@ -741,6 +743,33 @@ fn readiness_check_label(status: tv_bot_core_types::ReadinessCheckStatus) -> &'s
     }
 }
 
+fn format_optional_percent(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{value:.1}%"))
+        .unwrap_or_else(|| "n/a".to_owned())
+}
+
+fn format_optional_bytes(value: Option<u64>) -> String {
+    let Some(bytes) = value else {
+        return "n/a".to_owned();
+    };
+
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+    if bytes_f64 >= GIB {
+        format!("{:.2} GiB", bytes_f64 / GIB)
+    } else if bytes_f64 >= MIB {
+        format!("{:.2} MiB", bytes_f64 / MIB)
+    } else if bytes_f64 >= KIB {
+        format!("{:.2} KiB", bytes_f64 / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 fn reconnect_review_prompt(decision: CliReconnectDecision) -> &'static str {
     match decision {
         CliReconnectDecision::ClosePosition => {
@@ -814,6 +843,8 @@ mod tests {
             warmup_status_label(&tv_bot_core_types::WarmupStatus::NotLoaded),
             "not_loaded"
         );
+        assert_eq!(format_optional_percent(Some(12.5)), "12.5%");
+        assert_eq!(format_optional_bytes(Some(2_048)), "2.00 KiB");
     }
 
     #[test]

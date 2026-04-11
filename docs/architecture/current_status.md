@@ -10,10 +10,10 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 3 foundations are substantially in place.
 - Phase 4 foundations are substantially in place.
 - Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented, while the dashboard remains incomplete.
-- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision, and safety-critical shutdown/reconnect review control flows.
+- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows.
 - Phase 7 is mostly open.
 
-V1 is not release-ready yet because the dashboard, richer runtime-resource observability, and several paper-mode acceptance flows are still unfinished.
+V1 is not release-ready yet because the dashboard and several paper-mode acceptance flows are still unfinished.
 
 ## Implemented Through The Current Pass
 
@@ -36,15 +36,16 @@ V1 is not release-ready yet because the dashboard, richer runtime-resource obser
 - Phase 6 runtime-collected trade-path latency persistence with deterministic ordering/error checks in `crates/metrics`
 - Phase 6 health supervision in `crates/health`, including durable health snapshots, runtime error counting, DB-write latency tracking, and WebSocket health publication through the runtime host
 - Runtime-host `/health` and `/status` projection of latest system-health and trade-latency snapshots, with server-side degraded-entry blocking now enforced before command dispatch
+- Cross-platform sampled CPU and memory telemetry now flows through the persisted health pipeline, `/health`, `/status`, and the CLI operator view
 - Safety-critical HTTP mapping for execution-planning failures so blocked/manual entry paths return operator-facing conflicts or precondition responses instead of internal-server-error responses
 - Shutdown-with-open-position safety flow through the runtime host, including signal-time blocking, explicit flatten-first or leave-broker-protected decisions, and status projection of pending shutdown review state
 - Reconnect/open-position recovery review flow through the runtime host and CLI, including explicit leave-broker-protected or reattach acknowledgement and close-position dispatch through the existing audited flatten path
 
 ## Must Finish Before Advancing Deeper Into Phase 5 And Phase 6
 
-1. Add CPU/memory/runtime-resource sampling and richer operator-facing health/metrics views on top of the new persisted observability foundations.
-2. Finish the remaining paper-mode and restart/reconnect acceptance campaigns from `V1_ACCEPTANCE_CRITERIA.md`.
-3. Build the dashboard against the now-real host surfaces for status, readiness, commands, events, history, and health.
+1. Finish the remaining paper-mode and restart/reconnect acceptance campaigns from `V1_ACCEPTANCE_CRITERIA.md`.
+2. Build the dashboard against the now-real host surfaces for status, readiness, commands, events, history, and health.
+3. Expand dashboard-facing operational views on top of the now-sampled health and metrics pipeline.
 
 ## Remaining Work By Phase
 
@@ -57,7 +58,6 @@ V1 is not release-ready yet because the dashboard, richer runtime-resource obser
 ### Phase 6
 
 - Dashboard-facing history and journal views on top of the durable Postgres/SQLite backends
-- CPU/memory/runtime-resource metrics on top of the persisted health pipeline
 
 ### Phase 7
 
@@ -74,6 +74,6 @@ V1 is not release-ready yet because the dashboard, richer runtime-resource obser
 - Dashboard acceptance is not met yet.
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.
-- Metrics acceptance is partially met: runtime-collected trade-path latency and health snapshots are now persisted and surfaced, but fuller runtime-resource metrics and dashboard/operator views are still incomplete.
+- Metrics acceptance is substantially met for V1 host and CLI surfaces: runtime-collected trade-path latency, persisted health snapshots, and sampled CPU/memory runtime-resource telemetry are now persisted and surfaced, while the richer dashboard-facing operator views are still incomplete.
 - Full paper-trading acceptance is not met yet.
-- Final release gate items for richer runtime-resource observability, the dashboard, and full paper-mode acceptance are not met yet.
+- Final release gate items for the dashboard and full paper-mode acceptance are not met yet.

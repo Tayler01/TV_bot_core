@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use thiserror::Error;
 use tv_bot_core_types::SystemHealthSnapshot;
 use tv_bot_persistence::{PersistenceError, RuntimePersistence, SystemHealthStore};
@@ -15,6 +16,67 @@ pub struct RuntimeHealthInputs {
     pub memory_bytes: Option<u64>,
     pub reconnect_count: u64,
     pub feed_degraded: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuntimeResourceSample {
+    pub cpu_percent: Option<f64>,
+    pub memory_bytes: Option<u64>,
+}
+
+pub trait RuntimeResourceSampler: Send {
+    fn sample(&mut self) -> RuntimeResourceSample;
+}
+
+#[derive(Debug)]
+pub struct SysinfoRuntimeResourceSampler {
+    system: System,
+    pid: Option<sysinfo::Pid>,
+}
+
+impl SysinfoRuntimeResourceSampler {
+    pub fn new_current_process() -> Self {
+        let mut system = System::new();
+        let pid = sysinfo::get_current_pid().ok();
+
+        if let Some(pid) = pid {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_cpu().with_memory(),
+            );
+        }
+
+        Self { system, pid }
+    }
+}
+
+impl Default for SysinfoRuntimeResourceSampler {
+    fn default() -> Self {
+        Self::new_current_process()
+    }
+}
+
+impl RuntimeResourceSampler for SysinfoRuntimeResourceSampler {
+    fn sample(&mut self) -> RuntimeResourceSample {
+        let Some(pid) = self.pid else {
+            return RuntimeResourceSample::default();
+        };
+
+        self.system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cpu().with_memory(),
+        );
+
+        self.system
+            .process(pid)
+            .map(|process| RuntimeResourceSample {
+                cpu_percent: Some(process.cpu_usage() as f64),
+                memory_bytes: Some(process.memory()),
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Error)]

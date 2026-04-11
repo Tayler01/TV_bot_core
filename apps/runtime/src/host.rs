@@ -41,7 +41,10 @@ use tv_bot_core_types::{
     ActionSource, BrokerStatusSnapshot, EventJournalRecord, EventSeverity, RuntimeMode,
     SystemHealthSnapshot, TradePathLatencyRecord, TradePathTimestamps,
 };
-use tv_bot_health::{RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor};
+use tv_bot_health::{
+    RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor, RuntimeResourceSample,
+    RuntimeResourceSampler, SysinfoRuntimeResourceSampler,
+};
 use tv_bot_journal::{EventJournal, JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
     DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoWarmupMode,
@@ -462,6 +465,7 @@ pub struct RuntimeHostState {
     history: RuntimeHistoryRecorder,
     latency_collector: Arc<RuntimeLatencyCollector>,
     health_supervisor: Arc<RuntimeHealthSupervisor>,
+    resource_sampler: Arc<Mutex<Box<dyn RuntimeResourceSampler + Send>>>,
     market_data: Arc<Mutex<RuntimeMarketDataManager>>,
     event_hub: WebSocketEventHub,
     operator_state: Arc<Mutex<RuntimeOperatorState>>,
@@ -821,6 +825,9 @@ pub fn build_runtime_host_state(
         history,
         latency_collector,
         health_supervisor,
+        resource_sampler: Arc::new(Mutex::new(Box::new(
+            SysinfoRuntimeResourceSampler::new_current_process(),
+        ))),
         market_data: Arc::new(Mutex::new(RuntimeMarketDataManager::from_app_config(
             config,
         ))),
@@ -1773,7 +1780,11 @@ async fn history_refresh_loop(state: RuntimeHostState) {
 async fn health_refresh_loop(state: RuntimeHostState) {
     let mut interval = tokio::time::interval(HEALTH_REFRESH_INTERVAL);
     loop {
-        interval.tick().await;
+        let scheduled_at = interval.tick().await;
+        let lag_ms = tokio::time::Instant::now()
+            .saturating_duration_since(scheduled_at)
+            .as_millis() as u64;
+        let _ = state.health_supervisor.record_queue_lag(lag_ms);
         let dispatch_snapshot = current_dispatch_snapshot(&state).await;
         let market_data_view = refresh_market_data_view(&state, false).await;
         sync_system_health(&state, &dispatch_snapshot, &market_data_view).await;
@@ -1984,11 +1995,15 @@ async fn sync_system_health(
             ) || !snapshot.trade_ready
         })
         .unwrap_or(false);
+    let resource_sample = {
+        let mut sampler = state.resource_sampler.lock().await;
+        sampler.sample()
+    };
 
     match state.health_supervisor.capture(
         RuntimeHealthInputs {
-            cpu_percent: None,
-            memory_bytes: None,
+            cpu_percent: resource_sample.cpu_percent,
+            memory_bytes: resource_sample.memory_bytes,
             reconnect_count,
             feed_degraded,
         },
@@ -2349,6 +2364,17 @@ mod tests {
         snapshot: RuntimeBrokerSnapshot,
     }
 
+    #[derive(Default)]
+    struct FixedResourceSampler {
+        sample: RuntimeResourceSample,
+    }
+
+    impl RuntimeResourceSampler for FixedResourceSampler {
+        fn sample(&mut self) -> RuntimeResourceSample {
+            self.sample.clone()
+        }
+    }
+
     #[async_trait]
     impl RuntimeCommandDispatcher for FakeDispatcher {
         async fn dispatch(
@@ -2468,6 +2494,12 @@ mod tests {
             history,
             latency_collector,
             health_supervisor,
+            resource_sampler: Arc::new(Mutex::new(Box::new(FixedResourceSampler {
+                sample: RuntimeResourceSample {
+                    cpu_percent: Some(18.5),
+                    memory_bytes: Some(12_582_912),
+                },
+            }))),
             market_data: Arc::new(Mutex::new(RuntimeMarketDataManager {
                 config: None,
                 state: RuntimeMarketDataState::PendingStrategy {
@@ -2902,7 +2934,20 @@ mod tests {
             Some("paper-primary")
         );
         assert!(status.broker_status.is_some());
-        assert!(status.system_health.is_some());
+        assert_eq!(
+            status
+                .system_health
+                .as_ref()
+                .and_then(|snapshot| snapshot.cpu_percent),
+            Some(18.5)
+        );
+        assert_eq!(
+            status
+                .system_health
+                .as_ref()
+                .and_then(|snapshot| snapshot.memory_bytes),
+            Some(12_582_912)
+        );
     }
 
     #[tokio::test]
@@ -3130,7 +3175,20 @@ mod tests {
             serde_json::from_slice(&body).expect("health json should parse");
 
         assert_eq!(health.status, "ok");
-        assert!(health.system_health.is_some());
+        assert_eq!(
+            health
+                .system_health
+                .as_ref()
+                .and_then(|snapshot| snapshot.cpu_percent),
+            Some(18.5)
+        );
+        assert_eq!(
+            health
+                .system_health
+                .as_ref()
+                .and_then(|snapshot| snapshot.memory_bytes),
+            Some(12_582_912)
+        );
         assert!(health.latest_trade_latency.is_some());
 
         let _ = fs::remove_file(strategy_path);
