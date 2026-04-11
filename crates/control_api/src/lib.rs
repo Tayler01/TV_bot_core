@@ -14,13 +14,14 @@ use tv_bot_broker_tradovate::{
 };
 use tv_bot_core_types::{
     ActionSource, ArmReadinessReport, ArmState, BrokerStatusSnapshot, InstrumentMapping,
-    RiskDecisionStatus, RuntimeMode, WarmupStatus,
+    RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord, WarmupStatus,
 };
+use tv_bot_execution_engine::{ExecutionDispatchError, ExecutionEngineError};
 use tv_bot_journal::EventJournal;
 use tv_bot_market_data::MarketDataServiceSnapshot;
 use tv_bot_runtime_kernel::{
     RuntimeCommand, RuntimeCommandError, RuntimeCommandOutcome, RuntimeControlLoop,
-    RuntimeExecutionRequest,
+    RuntimeExecutionError, RuntimeExecutionRequest,
 };
 use tv_bot_state_store::ProjectedTradingHistoryState;
 
@@ -142,6 +143,9 @@ pub struct RuntimeStatusSnapshot {
     pub market_data_detail: Option<String>,
     pub storage_status: RuntimeStorageStatus,
     pub journal_status: RuntimeJournalStatus,
+    pub system_health: Option<SystemHealthSnapshot>,
+    pub latest_trade_latency: Option<TradePathLatencyRecord>,
+    pub recorded_trade_latency_count: usize,
     pub current_account_name: Option<String>,
     pub instrument_mapping: Option<InstrumentMapping>,
     pub instrument_resolution_error: Option<String>,
@@ -200,6 +204,14 @@ pub struct RuntimeLifecycleResponse {
 pub enum ControlApiError {
     #[error("runtime command failed: {source}")]
     Runtime { source: RuntimeCommandError },
+}
+
+impl ControlApiError {
+    pub fn status_code(&self) -> HttpStatusCode {
+        match self {
+            Self::Runtime { source } => status_code_for_runtime_error(source),
+        }
+    }
 }
 
 #[async_trait]
@@ -351,6 +363,42 @@ fn normalize_command(command: ControlApiCommand) -> RuntimeCommand {
     }
 }
 
+fn status_code_for_runtime_error(error: &RuntimeCommandError) -> HttpStatusCode {
+    match error {
+        RuntimeCommandError::Unavailable { .. } => HttpStatusCode::Conflict,
+        RuntimeCommandError::Journal { .. } => HttpStatusCode::InternalServerError,
+        RuntimeCommandError::Execution { source } => match source {
+            RuntimeExecutionError::Journal { .. } => HttpStatusCode::InternalServerError,
+            RuntimeExecutionError::Dispatch { source } => match source {
+                ExecutionDispatchError::Planning { source } => {
+                    status_code_for_execution_planning_error(source)
+                }
+                ExecutionDispatchError::Broker { .. } => HttpStatusCode::InternalServerError,
+            },
+        },
+    }
+}
+
+fn status_code_for_execution_planning_error(error: &ExecutionEngineError) -> HttpStatusCode {
+    match error {
+        ExecutionEngineError::OrderPlacementBlocked => HttpStatusCode::PreconditionRequired,
+        ExecutionEngineError::NewEntriesBlocked
+        | ExecutionEngineError::InvalidTickSize
+        | ExecutionEngineError::InvalidEntryQuantity
+        | ExecutionEngineError::InvalidReductionQuantity
+        | ExecutionEngineError::MissingEntryReferencePrice
+        | ExecutionEngineError::MissingProtectiveReferencePrice
+        | ExecutionEngineError::MissingOpenPosition { .. }
+        | ExecutionEngineError::MissingContractId { .. }
+        | ExecutionEngineError::UnsupportedEntryOrderType { .. }
+        | ExecutionEngineError::ScaleInDisabled
+        | ExecutionEngineError::ScaleInMaxLegsReached
+        | ExecutionEngineError::UnsupportedIntent { .. }
+        | ExecutionEngineError::UnsupportedBrokerRequiredFeature { .. }
+        | ExecutionEngineError::MissingRequiredProtectiveBracket => HttpStatusCode::Conflict,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -367,8 +415,8 @@ mod tests {
         Timeframe, TradeManagement, TrailingRule,
     };
     use tv_bot_execution_engine::{
-        ExecutionDispatchReport, ExecutionDispatchResult, ExecutionInstrumentContext,
-        ExecutionRequest, ExecutionStateContext,
+        ExecutionDispatchError, ExecutionDispatchReport, ExecutionDispatchResult,
+        ExecutionEngineError, ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,
     };
     use tv_bot_risk_engine::{RiskEvaluationOutcome, RiskInstrumentContext, RiskStateContext};
     use tv_bot_runtime_kernel::{RuntimeExecutionOutcome, RuntimeExecutionRequest};
@@ -807,6 +855,73 @@ mod tests {
             .expect("http handler should convert runtime errors into responses");
 
         assert_eq!(response.status_code, HttpStatusCode::InternalServerError);
+        match response.body {
+            HttpResponseBody::Error { message } => {
+                assert!(message.contains("runtime command failed"));
+            }
+            other => panic!("unexpected http response body: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_handler_maps_execution_planning_conflicts_to_conflict() {
+        let dispatcher = FakeDispatcher {
+            commands: Vec::new(),
+            next_result: Some(Err(RuntimeCommandError::Execution {
+                source: RuntimeExecutionError::Dispatch {
+                    source: ExecutionDispatchError::Planning {
+                        source: ExecutionEngineError::NewEntriesBlocked,
+                    },
+                },
+            })),
+        };
+        let api = LocalControlApi::new(dispatcher);
+        let mut handler = HttpCommandHandler::new(api);
+
+        let response = handler
+            .handle_command(HttpCommandRequest {
+                command: ControlApiCommand::StrategyIntent {
+                    request: sample_request(),
+                },
+            })
+            .await
+            .expect("http handler should convert planning conflicts into responses");
+
+        assert_eq!(response.status_code, HttpStatusCode::Conflict);
+        match response.body {
+            HttpResponseBody::Error { message } => {
+                assert!(message.contains("new entries are blocked"));
+            }
+            other => panic!("unexpected http response body: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_handler_maps_order_arming_preconditions_to_precondition_required() {
+        let dispatcher = FakeDispatcher {
+            commands: Vec::new(),
+            next_result: Some(Err(RuntimeCommandError::Execution {
+                source: RuntimeExecutionError::Dispatch {
+                    source: ExecutionDispatchError::Planning {
+                        source: ExecutionEngineError::OrderPlacementBlocked,
+                    },
+                },
+            })),
+        };
+        let api = LocalControlApi::new(dispatcher);
+        let mut handler = HttpCommandHandler::new(api);
+
+        let response = handler
+            .handle_command(HttpCommandRequest {
+                command: ControlApiCommand::ManualIntent {
+                    source: ManualCommandSource::Cli,
+                    request: sample_request(),
+                },
+            })
+            .await
+            .expect("http handler should convert planning preconditions into responses");
+
+        assert_eq!(response.status_code, HttpStatusCode::PreconditionRequired);
         match response.body {
             HttpResponseBody::Error { message } => {
                 assert!(message.contains("runtime command failed"));

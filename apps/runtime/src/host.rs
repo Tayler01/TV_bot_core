@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use axum::{
@@ -34,12 +34,17 @@ use tv_bot_control_api::{
     RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeStatusSnapshot, RuntimeStorageMode,
     RuntimeStorageStatus, WebSocketEventHub, WebSocketEventHubError, WebSocketEventStreamError,
 };
-use tv_bot_core_types::{BrokerStatusSnapshot, RuntimeMode};
+use tv_bot_core_types::{
+    BrokerStatusSnapshot, RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord,
+    TradePathTimestamps,
+};
+use tv_bot_health::{RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor};
 use tv_bot_journal::{JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
     DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoWarmupMode,
     MarketDataConnectionState, MarketDataService, MarketDataServiceSnapshot,
 };
+use tv_bot_metrics::{RuntimeLatencyCollector, RuntimeLatencyError};
 use tv_bot_persistence::{
     PersistenceBackendKind, PersistenceRuntimeSelection, PersistenceStorageMode, RuntimePersistence,
 };
@@ -58,6 +63,7 @@ const MARKET_DATA_POLL_BUDGET: usize = 16;
 const MARKET_DATA_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const MARKET_DATA_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const HISTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -107,14 +113,26 @@ trait RuntimeDispatcherHandle: RuntimeCommandDispatcher {
 struct BoxedDispatcher {
     inner: Box<dyn RuntimeDispatcherHandle + Send>,
     history: RuntimeHistoryRecorder,
+    latency_collector: Arc<RuntimeLatencyCollector>,
+    health_supervisor: Arc<RuntimeHealthSupervisor>,
+    event_hub: WebSocketEventHub,
 }
 
 impl BoxedDispatcher {
     fn new(
         inner: Box<dyn RuntimeDispatcherHandle + Send>,
         history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
+        event_hub: WebSocketEventHub,
     ) -> Self {
-        Self { inner, history }
+        Self {
+            inner,
+            history,
+            latency_collector,
+            health_supervisor,
+            event_hub,
+        }
     }
 
     fn snapshot(&self) -> RuntimeBrokerSnapshot {
@@ -128,17 +146,90 @@ impl RuntimeCommandDispatcher for BoxedDispatcher {
         &mut self,
         command: RuntimeCommand,
     ) -> Result<RuntimeCommandOutcome, RuntimeCommandError> {
+        let dispatch_started_at = Utc::now();
         let result = self.inner.dispatch(command.clone()).await;
         if let Ok(outcome) = &result {
             let snapshot = self.inner.dispatch_snapshot();
+            let dispatch_finished_at = Utc::now();
+            if let Some(record) = self.record_latency(
+                &command,
+                outcome,
+                &snapshot,
+                dispatch_started_at,
+                dispatch_finished_at,
+            ) {
+                publish_trade_latency(&self.event_hub, &record);
+            }
+
+            let history_started_at = Instant::now();
             if let Err(error) =
                 self.history
                     .record_execution_outcome(&command, outcome, &snapshot, Utc::now())
             {
+                let _ = self.health_supervisor.note_error();
                 warn!(?error, "failed to persist runtime execution history");
+            } else {
+                let _ = self
+                    .health_supervisor
+                    .record_db_write_latency(history_started_at.elapsed().as_millis() as u64);
             }
+        } else {
+            let _ = self.health_supervisor.note_error();
         }
         result
+    }
+}
+
+impl BoxedDispatcher {
+    fn record_latency(
+        &self,
+        command: &RuntimeCommand,
+        outcome: &RuntimeCommandOutcome,
+        snapshot: &RuntimeBrokerSnapshot,
+        dispatch_started_at: chrono::DateTime<Utc>,
+        dispatch_finished_at: chrono::DateTime<Utc>,
+    ) -> Option<TradePathLatencyRecord> {
+        let RuntimeCommandOutcome::Execution(outcome) = outcome;
+        if outcome.dispatch.is_none() {
+            return None;
+        }
+
+        let request = request_for_command(command);
+        let latest_fill_at = snapshot.fills.iter().map(|fill| fill.occurred_at).max();
+        let sync_update_at = snapshot
+            .broker_status
+            .as_ref()
+            .and_then(|status| status.last_sync_at)
+            .or_else(|| {
+                snapshot
+                    .account_snapshot
+                    .as_ref()
+                    .map(|account| account.captured_at)
+            });
+
+        let record = match self.latency_collector.record_trade_path(
+            runtime_latency_action_id(request, dispatch_finished_at),
+            Some(request.execution.strategy.metadata.strategy_id.clone()),
+            TradePathTimestamps {
+                market_event_at: None,
+                signal_at: None,
+                decision_at: Some(dispatch_started_at),
+                order_sent_at: Some(dispatch_started_at),
+                broker_ack_at: Some(dispatch_finished_at),
+                fill_at: latest_fill_at.filter(|value| *value >= dispatch_started_at),
+                sync_update_at: sync_update_at.filter(|value| *value >= dispatch_started_at),
+            },
+            dispatch_finished_at,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                let _ = self.health_supervisor.note_error();
+                warn!(?error, "failed to persist runtime latency metrics");
+                return None;
+            }
+        };
+
+        Some(record)
     }
 }
 
@@ -323,6 +414,8 @@ impl RuntimeMarketDataManager {
 pub struct RuntimeHostState {
     http_handler: Arc<Mutex<HttpCommandHandler<BoxedDispatcher, BestEffortEventPublisher>>>,
     history: RuntimeHistoryRecorder,
+    latency_collector: Arc<RuntimeLatencyCollector>,
+    health_supervisor: Arc<RuntimeHealthSupervisor>,
     market_data: Arc<Mutex<RuntimeMarketDataManager>>,
     event_hub: WebSocketEventHub,
     operator_state: Arc<Mutex<RuntimeOperatorState>>,
@@ -373,9 +466,11 @@ impl RuntimeDispatcherHandle for UnavailableRuntimeCommandDispatcher {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeHostHealthResponse {
-    pub status: &'static str,
+    pub status: String,
+    pub system_health: Option<SystemHealthSnapshot>,
+    pub latest_trade_latency: Option<TradePathLatencyRecord>,
 }
 
 #[derive(Debug, Error)]
@@ -391,6 +486,16 @@ pub enum RuntimeHostError {
     HistorySetup {
         #[source]
         source: RuntimeHistoryError,
+    },
+    #[error("latency runtime setup failed: {source}")]
+    LatencySetup {
+        #[source]
+        source: RuntimeLatencyError,
+    },
+    #[error("health runtime setup failed: {source}")]
+    HealthSetup {
+        #[source]
+        source: RuntimeHealthError,
     },
     #[error("failed to create websocket event hub: {source}")]
     EventHub { source: WebSocketEventHubError },
@@ -447,6 +552,7 @@ pub async fn run_runtime_host(
     let ws_bind = config.control_api.websocket_bind.clone();
     let market_data_state = state.clone();
     let history_state = state.clone();
+    let health_state = state.clone();
 
     let http_task = tokio::spawn(async move {
         axum::serve(http_listener, http_router)
@@ -474,6 +580,10 @@ pub async fn run_runtime_host(
         history_refresh_loop(history_state).await;
         Ok::<(), RuntimeHostError>(())
     });
+    let health_task = tokio::spawn(async move {
+        health_refresh_loop(health_state).await;
+        Ok::<(), RuntimeHostError>(())
+    });
 
     tokio::signal::ctrl_c()
         .await
@@ -484,6 +594,7 @@ pub async fn run_runtime_host(
     ws_task.abort();
     market_data_task.abort();
     history_task.abort();
+    health_task.abort();
 
     match http_task.await {
         Ok(Err(source)) => return Err(source),
@@ -507,6 +618,13 @@ pub async fn run_runtime_host(
         _ => {}
     }
     match history_task.await {
+        Ok(Err(source)) => return Err(source),
+        Err(error) if !error.is_cancelled() => {
+            return Err(RuntimeHostError::Join(error.to_string()))
+        }
+        _ => {}
+    }
+    match health_task.await {
         Ok(Err(source)) => return Err(source),
         Err(error) if !error.is_cancelled() => {
             return Err(RuntimeHostError::Join(error.to_string()))
@@ -543,6 +661,14 @@ pub fn build_runtime_host_state(
     let persistence_selection = persistence.selection().clone();
     let history = RuntimeHistoryRecorder::from_persistence(&persistence)
         .map_err(|source| RuntimeHostError::HistorySetup { source })?;
+    let latency_collector = Arc::new(
+        RuntimeLatencyCollector::from_persistence(&persistence)
+            .map_err(|source| RuntimeHostError::LatencySetup { source })?,
+    );
+    let health_supervisor = Arc::new(
+        RuntimeHealthSupervisor::from_persistence(&persistence)
+            .map_err(|source| RuntimeHostError::HealthSetup { source })?,
+    );
     let journal = ProjectingJournal::with_hydrated_projection(
         PersistentJournal::new(persistence.event_store()),
         InMemoryStateStore::new(),
@@ -552,8 +678,14 @@ pub fn build_runtime_host_state(
     let storage_status = build_storage_status(&persistence_selection);
     let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY)
         .map_err(|source| RuntimeHostError::EventHub { source })?;
-    let (dispatcher, command_dispatch_ready, command_dispatch_detail) =
-        build_dispatcher(config, journal, history.clone())?;
+    let (dispatcher, command_dispatch_ready, command_dispatch_detail) = build_dispatcher(
+        config,
+        journal,
+        history.clone(),
+        latency_collector.clone(),
+        health_supervisor.clone(),
+        event_hub.clone(),
+    )?;
 
     if persistence_selection.durable {
         info!(
@@ -588,6 +720,8 @@ pub fn build_runtime_host_state(
     Ok(RuntimeHostState {
         http_handler: Arc::new(Mutex::new(handler)),
         history,
+        latency_collector,
+        health_supervisor,
         market_data: Arc::new(Mutex::new(RuntimeMarketDataManager::from_app_config(
             config,
         ))),
@@ -612,8 +746,19 @@ async fn bind_listener(kind: &'static str, bind: &str) -> Result<TcpListener, Ru
         })
 }
 
-async fn health_handler() -> Json<RuntimeHostHealthResponse> {
-    Json(RuntimeHostHealthResponse { status: "ok" })
+async fn health_handler(State(state): State<RuntimeHostState>) -> Json<RuntimeHostHealthResponse> {
+    let system_health = state.health_supervisor.snapshot().unwrap_or(None);
+    let latest_trade_latency = state
+        .latency_collector
+        .snapshot()
+        .ok()
+        .and_then(|snapshot| snapshot.latest_record);
+
+    Json(RuntimeHostHealthResponse {
+        status: host_health_status(&state, system_health.as_ref()),
+        system_health,
+        latest_trade_latency,
+    })
 }
 
 async fn status_handler(State(state): State<RuntimeHostState>) -> Json<RuntimeStatusSnapshot> {
@@ -638,6 +783,7 @@ async fn history_handler(State(state): State<RuntimeHostState>) -> Response {
     match state.history.snapshot() {
         Ok(snapshot) => Json(snapshot).into_response(),
         Err(error) => {
+            let _ = state.health_supervisor.note_error();
             error!(?error, "runtime host history handler failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -690,6 +836,7 @@ async fn lifecycle_state_command_handler(
     };
 
     if let Err(error) = sync_history_for_lifecycle_command(&state, &history_command, source).await {
+        let _ = state.health_supervisor.note_error();
         warn!(?error, "failed to persist lifecycle history");
     }
 
@@ -729,7 +876,10 @@ async fn load_strategy_runtime_command_handler(
         ) {
             Ok(Some(snapshot)) => publish_history_snapshot(&state, &snapshot).await,
             Ok(None) => {}
-            Err(error) => warn!(?error, "failed to persist strategy load history"),
+            Err(error) => {
+                let _ = state.health_supervisor.note_error();
+                warn!(?error, "failed to persist strategy load history");
+            }
         }
     }
 
@@ -763,6 +913,7 @@ async fn start_warmup_runtime_command_handler(
         sync_history_for_lifecycle_command(&state, &RuntimeLifecycleCommand::StartWarmup, source)
             .await
     {
+        let _ = state.health_supervisor.note_error();
         warn!(?error, "failed to persist warmup history");
     }
 
@@ -812,6 +963,7 @@ async fn flatten_runtime_command_handler(
             .await
         }
         Err(error) => {
+            let _ = state.health_supervisor.note_error();
             error!(?error, "runtime host flatten command failed");
             runtime_lifecycle_success_response(
                 &state,
@@ -846,6 +998,7 @@ async fn command_handler(
             (status_code(response.status_code), Json(response)).into_response()
         }
         Err(error) => {
+            let _ = state.health_supervisor.note_error();
             error!(?error, "runtime host command handler failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -900,6 +1053,9 @@ fn build_dispatcher(
     config: &AppConfig,
     journal: ProjectingJournal<PersistentJournal, InMemoryStateStore>,
     history: RuntimeHistoryRecorder,
+    latency_collector: Arc<RuntimeLatencyCollector>,
+    health_supervisor: Arc<RuntimeHealthSupervisor>,
+    event_hub: WebSocketEventHub,
 ) -> Result<(BoxedDispatcher, bool, String), RuntimeHostError> {
     let missing_fields = missing_broker_fields(config);
     if !missing_fields.is_empty() {
@@ -913,6 +1069,9 @@ fn build_dispatcher(
                     reason: reason.clone(),
                 }),
                 history,
+                latency_collector,
+                health_supervisor,
+                event_hub,
             ),
             false,
             reason,
@@ -989,7 +1148,13 @@ fn build_dispatcher(
     let dispatcher = RuntimeKernelCommandDispatcher::new(session, execution_api, journal);
 
     Ok((
-        BoxedDispatcher::new(Box::new(dispatcher), history),
+        BoxedDispatcher::new(
+            Box::new(dispatcher),
+            history,
+            latency_collector,
+            health_supervisor,
+            event_hub,
+        ),
         true,
         "tradovate runtime command dispatch configured".to_owned(),
     ))
@@ -1088,6 +1253,8 @@ async fn status_context(
 ) -> RuntimeStatusContext {
     let dispatch_snapshot = current_dispatch_snapshot(state).await;
     let market_data_view = refresh_market_data_view(state, sync_market_data_warmup).await;
+    sync_system_health(state, &dispatch_snapshot, &market_data_view).await;
+    let latency_snapshot = state.latency_collector.snapshot().unwrap_or_default();
 
     RuntimeStatusContext {
         http_bind: state.http_bind.clone(),
@@ -1099,6 +1266,9 @@ async fn status_context(
         market_data_detail: market_data_view.detail,
         storage_status: state.storage_status.clone(),
         journal_status: state.journal_status.clone(),
+        system_health: state.health_supervisor.snapshot().unwrap_or(None),
+        latest_trade_latency: latency_snapshot.latest_record,
+        recorded_trade_latency_count: latency_snapshot.total_records,
         open_positions: dispatch_snapshot.open_positions,
         working_orders: dispatch_snapshot.working_orders,
     }
@@ -1139,6 +1309,16 @@ async fn history_refresh_loop(state: RuntimeHostState) {
     }
 }
 
+async fn health_refresh_loop(state: RuntimeHostState) {
+    let mut interval = tokio::time::interval(HEALTH_REFRESH_INTERVAL);
+    loop {
+        interval.tick().await;
+        let dispatch_snapshot = current_dispatch_snapshot(&state).await;
+        let market_data_view = refresh_market_data_view(&state, false).await;
+        sync_system_health(&state, &dispatch_snapshot, &market_data_view).await;
+    }
+}
+
 async fn current_dispatch_snapshot(state: &RuntimeHostState) -> RuntimeBrokerSnapshot {
     let handler = state.http_handler.lock().await;
     handler.dispatcher().snapshot()
@@ -1150,10 +1330,69 @@ async fn sync_history_state(state: &RuntimeHostState) {
 }
 
 async fn sync_history_snapshot(state: &RuntimeHostState, snapshot: &RuntimeBrokerSnapshot) {
+    let history_started_at = Instant::now();
     match state.history.sync_broker_snapshot(snapshot, Utc::now()) {
-        Ok(Some(history_snapshot)) => publish_history_snapshot(state, &history_snapshot).await,
+        Ok(Some(history_snapshot)) => {
+            let _ = state
+                .health_supervisor
+                .record_db_write_latency(history_started_at.elapsed().as_millis() as u64);
+            publish_history_snapshot(state, &history_snapshot).await
+        }
+        Ok(None) => {
+            let _ = state
+                .health_supervisor
+                .record_db_write_latency(history_started_at.elapsed().as_millis() as u64);
+        }
+        Err(error) => {
+            let _ = state.health_supervisor.note_error();
+            warn!(?error, "failed to sync runtime history snapshot");
+        }
+    }
+}
+
+async fn sync_system_health(
+    state: &RuntimeHostState,
+    dispatch_snapshot: &RuntimeBrokerSnapshot,
+    market_data_view: &RuntimeMarketDataView,
+) {
+    let reconnect_count = dispatch_snapshot
+        .broker_status
+        .as_ref()
+        .map(|snapshot| snapshot.reconnect_count)
+        .unwrap_or(0)
+        .saturating_add(
+            market_data_view
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.reconnect_count)
+                .unwrap_or(0),
+        );
+    let feed_degraded = market_data_view
+        .snapshot
+        .as_ref()
+        .map(|snapshot| {
+            !matches!(
+                snapshot.session.market_data.health,
+                tv_bot_market_data::MarketDataHealth::Healthy
+            ) || !snapshot.trade_ready
+        })
+        .unwrap_or(false);
+
+    match state.health_supervisor.capture(
+        RuntimeHealthInputs {
+            cpu_percent: None,
+            memory_bytes: None,
+            reconnect_count,
+            feed_degraded,
+        },
+        Utc::now(),
+    ) {
+        Ok(Some(snapshot)) => publish_system_health(state, &snapshot).await,
         Ok(None) => {}
-        Err(error) => warn!(?error, "failed to sync runtime history snapshot"),
+        Err(error) => {
+            let _ = state.health_supervisor.note_error();
+            warn!(?error, "failed to capture runtime system health");
+        }
     }
 }
 
@@ -1204,6 +1443,31 @@ async fn publish_readiness_report(state: &RuntimeHostState, readiness: &RuntimeR
     }
 }
 
+fn publish_trade_latency(hub: &WebSocketEventHub, record: &TradePathLatencyRecord) {
+    if let Err(error) = hub.publish(tv_bot_control_api::ControlApiEvent::TradeLatency {
+        record: record.clone(),
+        occurred_at: Utc::now(),
+    }) {
+        if error != WebSocketEventHubError::NoSubscribers {
+            warn!(?error, "failed to publish trade latency event");
+        }
+    }
+}
+
+async fn publish_system_health(state: &RuntimeHostState, snapshot: &SystemHealthSnapshot) {
+    if let Err(error) = state
+        .event_hub
+        .publish(tv_bot_control_api::ControlApiEvent::SystemHealth {
+            snapshot: snapshot.clone(),
+            occurred_at: Utc::now(),
+        })
+    {
+        if error != WebSocketEventHubError::NoSubscribers {
+            warn!(?error, "failed to publish system health event");
+        }
+    }
+}
+
 async fn publish_history_snapshot(state: &RuntimeHostState, snapshot: &RuntimeHistorySnapshot) {
     if let Err(error) =
         state
@@ -1217,6 +1481,26 @@ async fn publish_history_snapshot(state: &RuntimeHostState, snapshot: &RuntimeHi
             warn!(?error, "failed to publish history snapshot event");
         }
     }
+}
+
+fn request_for_command(
+    command: &RuntimeCommand,
+) -> &tv_bot_runtime_kernel::RuntimeExecutionRequest {
+    match command {
+        RuntimeCommand::ManualIntent(request) | RuntimeCommand::StrategyIntent(request) => request,
+    }
+}
+
+fn runtime_latency_action_id(
+    request: &tv_bot_runtime_kernel::RuntimeExecutionRequest,
+    occurred_at: chrono::DateTime<Utc>,
+) -> String {
+    format!(
+        "latency-{}-{}-{}",
+        request.execution.strategy.metadata.strategy_id,
+        action_source_label(request.action_source),
+        occurred_at.timestamp_nanos_opt().unwrap_or_default()
+    )
 }
 
 async fn sync_history_for_lifecycle_command(
@@ -1264,6 +1548,35 @@ fn parse_fallback_addr(bind: &str) -> SocketAddr {
         .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 0)))
 }
 
+fn host_health_status(
+    state: &RuntimeHostState,
+    system_health: Option<&SystemHealthSnapshot>,
+) -> String {
+    if !state.command_dispatch_ready {
+        return "degraded".to_owned();
+    }
+
+    if !state.storage_status.durable || !state.journal_status.durable {
+        return "degraded".to_owned();
+    }
+
+    match system_health {
+        Some(snapshot) if snapshot.feed_degraded || snapshot.error_count > 0 => {
+            "degraded".to_owned()
+        }
+        Some(_) => "ok".to_owned(),
+        None => "initializing".to_owned(),
+    }
+}
+
+fn action_source_label(source: tv_bot_core_types::ActionSource) -> &'static str {
+    match source {
+        tv_bot_core_types::ActionSource::Dashboard => "dashboard",
+        tv_bot_core_types::ActionSource::Cli => "cli",
+        tv_bot_core_types::ActionSource::System => "system",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1291,7 +1604,8 @@ mod tests {
         TradeManagement, TrailingRule, WarmupStatus,
     };
     use tv_bot_execution_engine::{
-        ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,
+        ExecutionDispatchReport, ExecutionDispatchResult, ExecutionInstrumentContext,
+        ExecutionRequest, ExecutionStateContext,
     };
     use tv_bot_persistence::RuntimePersistence;
     use tv_bot_risk_engine::{BrokerProtectionSupport, RiskInstrumentContext, RiskStateContext};
@@ -1342,9 +1656,55 @@ mod tests {
             .expect("history recorder should initialize")
     }
 
+    fn test_latency_collector() -> Arc<RuntimeLatencyCollector> {
+        let config = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+
+                [control_api]
+                http_bind = "127.0.0.1:8080"
+                websocket_bind = "127.0.0.1:8081"
+            "#,
+            &MapEnvironment::default(),
+        )
+        .expect("test config should load");
+        let persistence = RuntimePersistence::open(&config);
+
+        Arc::new(
+            RuntimeLatencyCollector::from_persistence(&persistence)
+                .expect("latency collector should initialize"),
+        )
+    }
+
+    fn test_health_supervisor() -> Arc<RuntimeHealthSupervisor> {
+        let config = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+
+                [control_api]
+                http_bind = "127.0.0.1:8080"
+                websocket_bind = "127.0.0.1:8081"
+            "#,
+            &MapEnvironment::default(),
+        )
+        .expect("test config should load");
+        let persistence = RuntimePersistence::open(&config);
+
+        Arc::new(
+            RuntimeHealthSupervisor::from_persistence(&persistence)
+                .expect("health supervisor should initialize"),
+        )
+    }
+
     fn test_state(
         dispatcher: BoxedDispatcher,
         history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
     ) -> RuntimeHostState {
         let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build");
         let handler = HttpCommandHandler::with_publisher(
@@ -1359,6 +1719,8 @@ mod tests {
         RuntimeHostState {
             http_handler: Arc::new(Mutex::new(handler)),
             history,
+            latency_collector,
+            health_supervisor,
             market_data: Arc::new(Mutex::new(RuntimeMarketDataManager {
                 config: None,
                 state: RuntimeMarketDataState::PendingStrategy {
@@ -1606,6 +1968,35 @@ mod tests {
         })
     }
 
+    fn sample_dispatched_outcome() -> RuntimeCommandOutcome {
+        RuntimeCommandOutcome::Execution(RuntimeExecutionOutcome {
+            risk: tv_bot_risk_engine::RiskEvaluationOutcome {
+                decision: RiskDecision {
+                    status: RiskDecisionStatus::Accepted,
+                    reason: "risk checks passed".to_owned(),
+                    warnings: vec!["warning-1".to_owned()],
+                },
+                adjusted_intent: ExecutionIntent::Enter {
+                    side: tv_bot_core_types::TradeSide::Buy,
+                    order_type: EntryOrderType::Market,
+                    quantity: 1,
+                    protective_brackets_expected: false,
+                    reason: "dispatch".to_owned(),
+                },
+                approved_quantity: Some(1),
+                hard_override_reasons: Vec::new(),
+            },
+            dispatch: Some(ExecutionDispatchReport {
+                results: vec![ExecutionDispatchResult::OrderSubmitted {
+                    order_id: 42,
+                    symbol: "GCM2026".to_owned(),
+                    used_brackets: false,
+                }],
+                warnings: Vec::new(),
+            }),
+        })
+    }
+
     fn sample_dispatch_snapshot() -> RuntimeBrokerSnapshot {
         RuntimeBrokerSnapshot {
             broker_status: Some(BrokerStatusSnapshot {
@@ -1707,15 +2098,29 @@ mod tests {
     #[tokio::test]
     async fn status_route_reports_runtime_state() {
         let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
         let app = build_http_router(test_state(
             BoxedDispatcher::new(
                 Box::new(FakeDispatcher {
-                    result: Some(Ok(sample_outcome())),
+                    result: Some(Err(RuntimeCommandError::Execution {
+                        source: tv_bot_runtime_kernel::RuntimeExecutionError::Dispatch {
+                            source: tv_bot_execution_engine::ExecutionDispatchError::Planning {
+                                source:
+                                    tv_bot_execution_engine::ExecutionEngineError::NewEntriesBlocked,
+                            },
+                        },
+                    })),
                     snapshot: sample_dispatch_snapshot(),
                 }),
                 history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
             ),
             history,
+            latency_collector,
+            health_supervisor,
         ));
 
         let response = app
@@ -1747,11 +2152,14 @@ mod tests {
             Some("paper-primary")
         );
         assert!(status.broker_status.is_some());
+        assert!(status.system_health.is_some());
     }
 
     #[tokio::test]
     async fn commands_route_succeeds_without_websocket_subscribers() {
         let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
         let app = build_http_router(test_state(
             BoxedDispatcher::new(
                 Box::new(FakeDispatcher {
@@ -1759,8 +2167,13 @@ mod tests {
                     snapshot: sample_dispatch_snapshot(),
                 }),
                 history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
             ),
             history,
+            latency_collector,
+            health_supervisor,
         ));
         let strategy_path = temp_strategy_path();
         write_strategy_file(&strategy_path);
@@ -1835,6 +2248,8 @@ mod tests {
     #[tokio::test]
     async fn history_route_projects_broker_snapshot_state() {
         let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
         let app = build_http_router(test_state(
             BoxedDispatcher::new(
                 Box::new(FakeDispatcher {
@@ -1842,8 +2257,13 @@ mod tests {
                     snapshot: sample_dispatch_snapshot(),
                 }),
                 history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
             ),
             history,
+            latency_collector,
+            health_supervisor,
         ));
 
         let response = app
@@ -1878,6 +2298,179 @@ mod tests {
                 .map(|record| record.symbol.as_str()),
             Some("GCM2026")
         );
+    }
+
+    #[tokio::test]
+    async fn health_route_reports_system_health_and_latest_trade_latency() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_dispatched_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::LoadStrategy {
+                                path: strategy_path.clone(),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&sample_request()).expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let health: RuntimeHostHealthResponse =
+            serde_json::from_slice(&body).expect("health json should parse");
+
+        assert_eq!(health.status, "ok");
+        assert!(health.system_health.is_some());
+        assert!(health.latest_trade_latency.is_some());
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn commands_route_returns_conflict_when_new_entries_are_blocked_server_side() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Err(RuntimeCommandError::Execution {
+                        source: tv_bot_runtime_kernel::RuntimeExecutionError::Dispatch {
+                            source: tv_bot_execution_engine::ExecutionDispatchError::Planning {
+                                source:
+                                    tv_bot_execution_engine::ExecutionEngineError::NewEntriesBlocked,
+                            },
+                        },
+                    })),
+                    snapshot: sample_dispatch_snapshot(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::LoadStrategy {
+                                path: strategy_path.clone(),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&sample_request()).expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let command_response: HttpCommandResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(command_response.status_code, HttpStatusCode::Conflict);
+        match command_response.body {
+            HttpResponseBody::Error { message } => {
+                assert!(message.contains("new entries are blocked"));
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
     }
 
     #[test]

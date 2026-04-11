@@ -6,7 +6,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
 - Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness now project live broker and market-data state plus shared storage/journal policy status, and the CLI can drive load/warmup/mode/arm/flatten/status/readiness flows, but the dashboard and end-to-end manual operator flows are still incomplete.
-- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, and queryable history surfaces through the host and CLI, but health supervision, reconnect recovery hardening, packaging, and operational docs are not complete.
+- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, and queryable history surfaces through the host and CLI, but reconnect recovery hardening, dashboard-facing operational views, packaging, and runbooks are not complete.
 
 The current implementation status review lives in `docs/architecture/current_status.md`.
 
@@ -76,16 +76,18 @@ tests/
 - Postgres-first persistence planning plus durable event/health/latency/trading-history storage adapters in `crates/persistence`
 - Durable Postgres/SQLite journal + storage backend selection in `crates/persistence` and `crates/journal`
 - Event-sourced runtime state projection plus queryable trading-history state in `crates/state_store`
-- Trade-path latency calculation foundations in `crates/metrics`
+- Runtime-collected trade-path latency persistence and snapshots in `crates/metrics`
+- Runtime health supervision, durable health snapshots, and health-event publication in `crates/health`
 - Runtime host lifecycle/state handling in `apps/runtime`
 - Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
+- Runtime-host system-health and latency projection through `/health`, `/status`, and WebSocket events in `apps/runtime`
 - CLI launch, lifecycle, and history commands in `apps/cli`
 
 ## Still Required For V1
 
 - Dashboard implementation
 - Postgres-first persistence with safe SQLite fallback behavior
-- Health/state projection services
+- CPU/memory runtime sampling and richer operational views on top of the health/metrics foundations
 - Open-position shutdown and reconnect recovery flows wired end to end
 - Paper-mode acceptance campaigns and remaining safety-critical integration coverage
 

@@ -20,9 +20,11 @@ tv-bot-config = { path = "../../crates/config" }
 tv-bot-control-api = { path = "../../crates/control_api" }
 tv-bot-core-types = { path = "../../crates/core_types" }
 tv-bot-execution-engine = { path = "../../crates/execution_engine" }
+tv-bot-health = { path = "../../crates/health" }
 tv-bot-instrument-resolver = { path = "../../crates/instrument_resolver" }
 tv-bot-journal = { path = "../../crates/journal" }
 tv-bot-market-data = { path = "../../crates/market_data" }
+tv-bot-metrics = { path = "../../crates/metrics" }
 tv-bot-persistence = { path = "../../crates/persistence" }
 tv-bot-risk-engine = { path = "../../crates/risk_engine" }
 tv-bot-runtime-kernel = { path = "../../crates/runtime_kernel" }

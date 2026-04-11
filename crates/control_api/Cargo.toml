@@ -14,6 +14,7 @@ tokio.workspace = true
 thiserror.workspace = true
 tv-bot-broker-tradovate = { path = "../broker_tradovate" }
 tv-bot-core-types = { path = "../core_types" }
+tv-bot-execution-engine = { path = "../execution_engine" }
 tv-bot-journal = { path = "../journal" }
 tv-bot-market-data = { path = "../market_data" }
 tv-bot-runtime-kernel = { path = "../runtime_kernel" }
@@ -22,5 +23,4 @@ tv-bot-state-store = { path = "../state_store" }
 [dev-dependencies]
 rust_decimal.workspace = true
 serde_json.workspace = true
-tv-bot-execution-engine = { path = "../execution_engine" }
 tv-bot-risk-engine = { path = "../risk_engine" }

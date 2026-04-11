@@ -12,7 +12,8 @@ use tv_bot_control_api::{
 };
 use tv_bot_core_types::{
     BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerStatusSnapshot,
-    ExecutionIntent, InstrumentMapping, ReadinessCheckStatus, RuntimeMode, WarmupStatus,
+    ExecutionIntent, InstrumentMapping, ReadinessCheckStatus, RuntimeMode, SystemHealthSnapshot,
+    TradePathLatencyRecord, WarmupStatus,
 };
 use tv_bot_execution_engine::{
     ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,
@@ -63,6 +64,9 @@ pub struct RuntimeStatusContext {
     pub market_data_detail: Option<String>,
     pub storage_status: RuntimeStorageStatus,
     pub journal_status: RuntimeJournalStatus,
+    pub system_health: Option<SystemHealthSnapshot>,
+    pub latest_trade_latency: Option<TradePathLatencyRecord>,
+    pub recorded_trade_latency_count: usize,
     pub open_positions: Vec<BrokerPositionSnapshot>,
     pub working_orders: Vec<BrokerOrderUpdate>,
 }
@@ -137,6 +141,9 @@ impl RuntimeOperatorState {
             market_data_detail: context.market_data_detail.clone(),
             storage_status: context.storage_status.clone(),
             journal_status: context.journal_status.clone(),
+            system_health: context.system_health.clone(),
+            latest_trade_latency: context.latest_trade_latency.clone(),
+            recorded_trade_latency_count: context.recorded_trade_latency_count,
             current_account_name: context
                 .broker_status
                 .as_ref()
@@ -367,6 +374,7 @@ impl RuntimeOperatorState {
         let runtime_mode = self.runtime.current_mode();
         let runtime_can_submit_orders = self.runtime.can_submit_orders();
         let hard_override_active = self.runtime.hard_override_active();
+        let runtime_allows_new_entries = self.new_entries_allowed(context);
         let mapped_symbol = strategy
             .instrument_mapping
             .as_ref()
@@ -378,6 +386,8 @@ impl RuntimeOperatorState {
                 request.mode = runtime_mode;
                 request.execution.strategy = strategy.compiled.clone();
                 request.execution.state.runtime_can_submit_orders = runtime_can_submit_orders;
+                request.execution.state.new_entries_allowed =
+                    request.execution.state.new_entries_allowed && runtime_allows_new_entries;
                 request.risk_state.hard_override_active = hard_override_active;
 
                 if let Some(symbol) = mapped_symbol {
@@ -642,6 +652,16 @@ impl RuntimeOperatorState {
             .cloned()
             .collect()
     }
+
+    fn new_entries_allowed(&self, context: &RuntimeStatusContext) -> bool {
+        !matches!(
+            self.market_data_health(context),
+            DependencyHealth::Blocking(_)
+        ) && !matches!(
+            self.broker_sync_health(context),
+            DependencyHealth::Blocking(_)
+        )
+    }
 }
 
 fn compile_loaded_strategy(path: PathBuf, compilation: StrategyCompilation) -> LoadedStrategyState {
@@ -702,6 +722,9 @@ mod tests {
             market_data_detail: None,
             storage_status: sample_storage_status(),
             journal_status: sample_journal_status(),
+            system_health: Some(sample_system_health()),
+            latest_trade_latency: Some(sample_trade_latency()),
+            recorded_trade_latency_count: 1,
             open_positions: Vec::new(),
             working_orders: Vec::new(),
         }
@@ -832,6 +855,47 @@ mod tests {
             backend: "in_memory".to_owned(),
             durable: false,
             detail: "event journal records are retained in memory only".to_owned(),
+        }
+    }
+
+    fn sample_system_health() -> SystemHealthSnapshot {
+        SystemHealthSnapshot {
+            cpu_percent: Some(8.0),
+            memory_bytes: Some(2_048),
+            reconnect_count: 0,
+            db_write_latency_ms: Some(2),
+            queue_lag_ms: Some(0),
+            error_count: 0,
+            feed_degraded: false,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn sample_trade_latency() -> TradePathLatencyRecord {
+        let now = chrono::Utc::now();
+        TradePathLatencyRecord {
+            action_id: "latency-1".to_owned(),
+            strategy_id: Some("gc_momentum_fade_v1".to_owned()),
+            recorded_at: now,
+            timestamps: tv_bot_core_types::TradePathTimestamps {
+                market_event_at: None,
+                signal_at: None,
+                decision_at: Some(now),
+                order_sent_at: Some(now),
+                broker_ack_at: Some(now),
+                fill_at: None,
+                sync_update_at: None,
+            },
+            latency: tv_bot_core_types::TradePathLatencySnapshot {
+                signal_latency_ms: None,
+                decision_latency_ms: None,
+                order_send_latency_ms: Some(0),
+                broker_ack_latency_ms: Some(0),
+                fill_latency_ms: None,
+                sync_update_latency_ms: None,
+                end_to_end_fill_latency_ms: None,
+                end_to_end_sync_latency_ms: None,
+            },
         }
     }
 
@@ -1024,5 +1088,127 @@ mod tests {
         }
 
         let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
+    fn sanitize_command_request_blocks_new_entries_when_market_data_is_degraded() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+
+        let mut context = sample_context();
+        if let Some(snapshot) = context.market_data_status.as_mut() {
+            snapshot.session.market_data.health = tv_bot_market_data::MarketDataHealth::Degraded;
+            snapshot.trade_ready = false;
+        }
+
+        let request = operator
+            .sanitize_command_request(&context, sample_entry_request())
+            .expect("request should sanitize");
+
+        match request.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert!(!request.execution.state.new_entries_allowed);
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
+    fn readiness_requires_override_when_primary_storage_falls_back_to_sqlite() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+        operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::StartWarmup, &sample_context())
+            .expect("warmup should start");
+        operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::MarkWarmupReady, &sample_context())
+            .expect("warmup should complete");
+
+        let mut context = sample_context();
+        context.storage_status.fallback_activated = true;
+        context.storage_status.allow_runtime_fallback = true;
+        context.storage_status.detail =
+            "primary Postgres persistence is unavailable; SQLite fallback is active".to_owned();
+
+        let readiness = operator.readiness_snapshot(&context);
+        assert!(readiness.report.hard_override_required);
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "storage" && check.status == ReadinessCheckStatus::Warning
+        }));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    fn sample_entry_request() -> HttpCommandRequest {
+        HttpCommandRequest {
+            command: ControlApiCommand::ManualIntent {
+                source: ManualCommandSource::Cli,
+                request: RuntimeExecutionRequest {
+                    mode: RuntimeMode::Paper,
+                    action_source: ManualCommandSource::Cli.into(),
+                    execution: ExecutionRequest {
+                        strategy: compile_loaded_strategy(
+                            PathBuf::from("strategy.md"),
+                            StrictStrategyCompiler
+                                .compile_markdown(include_str!(
+                                    "../../../strategies/examples/gc_momentum_fade_v1.md"
+                                ))
+                                .expect("strategy should compile"),
+                        )
+                        .compiled,
+                        instrument: ExecutionInstrumentContext {
+                            tradovate_symbol: "GCM2026".to_owned(),
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Some(Decimal::new(238_510, 2)),
+                            active_contract_id: Some(4444),
+                        },
+                        state: ExecutionStateContext {
+                            runtime_can_submit_orders: true,
+                            new_entries_allowed: true,
+                            current_position: None,
+                            working_orders: Vec::new(),
+                        },
+                        intent: ExecutionIntent::Enter {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            order_type: EntryOrderType::Market,
+                            quantity: 1,
+                            protective_brackets_expected: false,
+                            reason: "operator-test".to_owned(),
+                        },
+                    },
+                    risk_instrument: RiskInstrumentContext::default(),
+                    risk_state: RiskStateContext {
+                        trades_today: 0,
+                        consecutive_losses: 0,
+                        current_position: None,
+                        unrealized_pnl: None,
+                        broker_support: BrokerProtectionSupport::default(),
+                        hard_override_active: false,
+                    },
+                },
+            },
+        }
     }
 }

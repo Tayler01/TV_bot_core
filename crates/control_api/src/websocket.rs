@@ -4,7 +4,7 @@ use thiserror::Error;
 use tokio::sync::broadcast;
 use tv_bot_core_types::{
     ActionSource, ArmReadinessReport, BrokerStatusSnapshot, EventJournalRecord,
-    SystemHealthSnapshot,
+    SystemHealthSnapshot, TradePathLatencyRecord,
 };
 use tv_bot_state_store::ProjectedTradingHistoryState;
 
@@ -28,6 +28,10 @@ pub enum ControlApiEvent {
     },
     SystemHealth {
         snapshot: SystemHealthSnapshot,
+        occurred_at: DateTime<Utc>,
+    },
+    TradeLatency {
+        record: TradePathLatencyRecord,
         occurred_at: DateTime<Utc>,
     },
     HistorySnapshot {

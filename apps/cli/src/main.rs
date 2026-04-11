@@ -382,6 +382,26 @@ fn print_status(status: &RuntimeStatusSnapshot) {
         "Journal: {} ({})",
         status.journal_status.backend, status.journal_status.detail
     );
+    if let Some(system_health) = &status.system_health {
+        println!(
+            "System Health: reconnects={} errors={} db_write_latency_ms={:?} queue_lag_ms={:?} feed_degraded={}",
+            system_health.reconnect_count,
+            system_health.error_count,
+            system_health.db_write_latency_ms,
+            system_health.queue_lag_ms,
+            system_health.feed_degraded
+        );
+    }
+    if let Some(latency) = &status.latest_trade_latency {
+        println!(
+            "Latest Trade Latency: action={} ack_ms={:?} fill_ms={:?} sync_ms={:?} records={}",
+            latency.action_id,
+            latency.latency.broker_ack_latency_ms,
+            latency.latency.end_to_end_fill_latency_ms,
+            latency.latency.end_to_end_sync_latency_ms,
+            status.recorded_trade_latency_count
+        );
+    }
     println!(
         "Dispatch: {} ({})",
         if status.command_dispatch_ready {

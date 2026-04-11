@@ -96,7 +96,7 @@ where
                 })
             }
             Err(source) => Ok(HttpCommandResponse {
-                status_code: HttpStatusCode::InternalServerError,
+                status_code: source.status_code(),
                 body: HttpResponseBody::Error {
                     message: source.to_string(),
                 },

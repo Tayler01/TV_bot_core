@@ -2757,7 +2757,11 @@ dependencies = [
 name = "tv-bot-health"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "thiserror",
+ "tv-bot-config",
  "tv-bot-core-types",
+ "tv-bot-persistence",
 ]
 
 [[package]]
@@ -2814,7 +2818,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "thiserror",
+ "tv-bot-config",
  "tv-bot-core-types",
+ "tv-bot-persistence",
 ]
 
 [[package]]
@@ -2876,9 +2882,11 @@ dependencies = [
  "tv-bot-control-api",
  "tv-bot-core-types",
  "tv-bot-execution-engine",
+ "tv-bot-health",
  "tv-bot-instrument-resolver",
  "tv-bot-journal",
  "tv-bot-market-data",
+ "tv-bot-metrics",
  "tv-bot-persistence",
  "tv-bot-risk-engine",
  "tv-bot-runtime-kernel",

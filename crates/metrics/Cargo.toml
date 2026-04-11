@@ -10,3 +10,7 @@ rust-version.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 tv-bot-core-types = { path = "../core_types" }
+tv-bot-persistence = { path = "../persistence" }
+
+[dev-dependencies]
+tv-bot-config = { path = "../config" }

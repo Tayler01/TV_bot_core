@@ -1074,6 +1074,7 @@ mod tests {
 
     fn sample_position(quantity: i32) -> BrokerPositionSnapshot {
         BrokerPositionSnapshot {
+            account_id: Some("acct-paper".to_owned()),
             symbol: "GCM2026".to_owned(),
             quantity,
             average_price: Some(Decimal::new(238_500, 2)),
@@ -1382,6 +1383,42 @@ mod tests {
         .expect_err("same-side scale-in should be blocked");
 
         assert_eq!(error, ExecutionEngineError::ScaleInDisabled);
+    }
+
+    #[test]
+    fn same_side_scale_in_is_planned_when_strategy_enables_it() {
+        let mut state = state_context();
+        state.current_position = Some(sample_position(1));
+
+        let plan = ExecutionPlanner::plan_tradovate(&ExecutionRequest {
+            strategy: sample_strategy(
+                ReversalMode::FlattenFirst,
+                true,
+                3,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BotAllowed,
+            ),
+            instrument: instrument_context(),
+            state,
+            intent: ExecutionIntent::Enter {
+                side: TradeSide::Buy,
+                order_type: EntryOrderType::Market,
+                quantity: 2,
+                protective_brackets_expected: false,
+                reason: "scale in".to_owned(),
+            },
+        })
+        .expect("same-side scale-in should plan");
+
+        assert_eq!(plan.actions.len(), 1);
+        match &plan.actions[0] {
+            ExecutionAction::SubmitOrder(order) => {
+                assert_eq!(order.side, TradeSide::Buy);
+                assert_eq!(order.quantity, 2);
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 
     #[test]
