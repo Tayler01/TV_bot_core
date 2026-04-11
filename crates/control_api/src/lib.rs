@@ -149,6 +149,8 @@ pub struct RuntimeStatusSnapshot {
     pub current_account_name: Option<String>,
     pub instrument_mapping: Option<InstrumentMapping>,
     pub instrument_resolution_error: Option<String>,
+    pub reconnect_review: RuntimeReconnectReviewStatus,
+    pub shutdown_review: RuntimeShutdownReviewStatus,
     pub http_bind: String,
     pub websocket_bind: String,
     pub command_dispatch_ready: bool,
@@ -168,19 +170,77 @@ pub struct RuntimeHistorySnapshot {
     pub projection: ProjectedTradingHistoryState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeReconnectDecision {
+    ClosePosition,
+    LeaveBrokerProtected,
+    ReattachBotManagement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeReconnectReviewStatus {
+    pub required: bool,
+    pub reason: Option<String>,
+    pub last_decision: Option<RuntimeReconnectDecision>,
+    pub open_position_count: usize,
+    pub working_order_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeShutdownDecision {
+    FlattenFirst,
+    LeaveBrokerProtected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeShutdownReviewStatus {
+    pub pending_signal: bool,
+    pub blocked: bool,
+    pub awaiting_flatten: bool,
+    pub decision: Option<RuntimeShutdownDecision>,
+    pub reason: Option<String>,
+    pub open_position_count: usize,
+    pub all_positions_broker_protected: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeLifecycleCommand {
-    SetMode { mode: RuntimeMode },
-    LoadStrategy { path: PathBuf },
+    SetMode {
+        mode: RuntimeMode,
+    },
+    LoadStrategy {
+        path: PathBuf,
+    },
     StartWarmup,
     MarkWarmupReady,
-    MarkWarmupFailed { reason: Option<String> },
-    Arm { allow_override: bool },
+    MarkWarmupFailed {
+        reason: Option<String>,
+    },
+    Arm {
+        allow_override: bool,
+    },
     Disarm,
     Pause,
     Resume,
-    Flatten { contract_id: i64, reason: String },
+    ResolveReconnectReview {
+        decision: RuntimeReconnectDecision,
+        contract_id: Option<i64>,
+        reason: Option<String>,
+    },
+    Shutdown {
+        decision: RuntimeShutdownDecision,
+        contract_id: Option<i64>,
+        reason: Option<String>,
+    },
+    Flatten {
+        contract_id: i64,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

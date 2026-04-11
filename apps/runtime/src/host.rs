@@ -11,13 +11,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
-    sync::Mutex,
+    sync::{watch, Mutex},
     time::{timeout, Duration},
 };
 use tracing::{error, info, warn};
@@ -31,15 +32,17 @@ use tv_bot_control_api::{
     HttpCommandResponse, HttpResponseBody, HttpStatusCode, LocalControlApi,
     RuntimeCommandDispatcher, RuntimeHistorySnapshot, RuntimeJournalStatus,
     RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
-    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeStatusSnapshot, RuntimeStorageMode,
-    RuntimeStorageStatus, WebSocketEventHub, WebSocketEventHubError, WebSocketEventStreamError,
+    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
+    RuntimeReconnectReviewStatus, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
+    RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, WebSocketEventHub,
+    WebSocketEventHubError, WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
-    BrokerStatusSnapshot, RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord,
-    TradePathTimestamps,
+    ActionSource, BrokerStatusSnapshot, EventJournalRecord, EventSeverity, RuntimeMode,
+    SystemHealthSnapshot, TradePathLatencyRecord, TradePathTimestamps,
 };
 use tv_bot_health::{RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor};
-use tv_bot_journal::{JournalError, PersistentJournal, ProjectingJournal};
+use tv_bot_journal::{EventJournal, JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
     DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoWarmupMode,
     MarketDataConnectionState, MarketDataService, MarketDataServiceSnapshot,
@@ -64,6 +67,7 @@ const MARKET_DATA_POLL_TIMEOUT: Duration = Duration::from_millis(1);
 const MARKET_DATA_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const HISTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const SHUTDOWN_REVIEW_POLL_INTERVAL: Duration = Duration::from_millis(250);
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -106,8 +110,23 @@ struct RuntimeMarketDataManager {
     state: RuntimeMarketDataState,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ShutdownReviewState {
+    pending_signal: bool,
+    blocked: bool,
+    awaiting_flatten: bool,
+    decision: Option<RuntimeShutdownDecision>,
+    reason: Option<String>,
+    requested_at: Option<DateTime<Utc>>,
+}
+
 trait RuntimeDispatcherHandle: RuntimeCommandDispatcher {
     fn dispatch_snapshot(&self) -> RuntimeBrokerSnapshot;
+    fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError>;
+    fn acknowledge_reconnect_review(
+        &mut self,
+        decision: RuntimeReconnectDecision,
+    ) -> Result<(), String>;
 }
 
 struct BoxedDispatcher {
@@ -137,6 +156,17 @@ impl BoxedDispatcher {
 
     fn snapshot(&self) -> RuntimeBrokerSnapshot {
         self.inner.dispatch_snapshot()
+    }
+
+    fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError> {
+        self.inner.append_journal_record(record)
+    }
+
+    fn acknowledge_reconnect_review(
+        &mut self,
+        decision: RuntimeReconnectDecision,
+    ) -> Result<(), String> {
+        self.inner.acknowledge_reconnect_review(decision)
     }
 }
 
@@ -239,11 +269,27 @@ impl RuntimeDispatcherHandle for LiveRuntimeDispatcher {
 
         RuntimeBrokerSnapshot {
             broker_status: Some(session.broker),
+            last_reconnect_review_decision: session
+                .last_review_decision
+                .map(runtime_reconnect_decision_from_tradovate),
             account_snapshot: session.account_snapshot,
             open_positions: session.open_positions,
             working_orders: session.working_orders,
             fills: session.fills,
         }
+    }
+
+    fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError> {
+        self.journal().append(record)
+    }
+
+    fn acknowledge_reconnect_review(
+        &mut self,
+        decision: RuntimeReconnectDecision,
+    ) -> Result<(), String> {
+        self.session_mut()
+            .acknowledge_reconnect_review(tradovate_reconnect_decision(decision));
+        Ok(())
     }
 }
 
@@ -425,6 +471,8 @@ pub struct RuntimeHostState {
     command_dispatch_detail: String,
     storage_status: RuntimeStorageStatus,
     journal_status: RuntimeJournalStatus,
+    shutdown_signal: watch::Sender<bool>,
+    shutdown_review: Arc<Mutex<ShutdownReviewState>>,
 }
 
 #[derive(Clone)]
@@ -463,6 +511,17 @@ impl RuntimeCommandDispatcher for UnavailableRuntimeCommandDispatcher {
 impl RuntimeDispatcherHandle for UnavailableRuntimeCommandDispatcher {
     fn dispatch_snapshot(&self) -> RuntimeBrokerSnapshot {
         RuntimeBrokerSnapshot::default()
+    }
+
+    fn append_journal_record(&self, _record: EventJournalRecord) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn acknowledge_reconnect_review(
+        &mut self,
+        _decision: RuntimeReconnectDecision,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
     }
 }
 
@@ -527,6 +586,7 @@ pub async fn run_runtime_host(
     runtime: RuntimeStateMachine,
 ) -> Result<(), RuntimeHostError> {
     let state = build_runtime_host_state(&config, runtime)?;
+    let mut shutdown_receiver = state.shutdown_signal.subscribe();
     let http_router = build_http_router(state.clone());
     let websocket_router = build_websocket_router(state.clone());
 
@@ -585,10 +645,48 @@ pub async fn run_runtime_host(
         Ok::<(), RuntimeHostError>(())
     });
 
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|source| RuntimeHostError::ShutdownSignal { source })?;
-    info!("shutdown signal received");
+    loop {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.map_err(|source| RuntimeHostError::ShutdownSignal { source })?;
+                info!("shutdown signal received");
+
+                if handle_runtime_shutdown_signal(&state).await {
+                    break;
+                }
+            }
+            changed = shutdown_receiver.changed() => {
+                if changed.is_ok() && *shutdown_receiver.borrow() {
+                    break;
+                }
+            }
+            _ = tokio::time::sleep(SHUTDOWN_REVIEW_POLL_INTERVAL) => {
+                if finalize_pending_flatten_shutdown(&state).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    journal_host_event(
+        &state,
+        "runtime",
+        "shutdown_completed",
+        ActionSource::System,
+        EventSeverity::Info,
+        json!({
+            "reason": "runtime host shutdown approved",
+        }),
+    )
+    .await;
+
+    if let Err(error) = state
+        .history
+        .record_run_status(tv_bot_core_types::StrategyRunStatus::Cancelled, Utc::now())
+    {
+        let _ = state.health_supervisor.note_error();
+        warn!(?error, "failed to persist shutdown run status");
+    }
 
     http_task.abort();
     ws_task.abort();
@@ -678,6 +776,7 @@ pub fn build_runtime_host_state(
     let storage_status = build_storage_status(&persistence_selection);
     let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY)
         .map_err(|source| RuntimeHostError::EventHub { source })?;
+    let (shutdown_signal, _) = watch::channel(false);
     let (dispatcher, command_dispatch_ready, command_dispatch_detail) = build_dispatcher(
         config,
         journal,
@@ -733,6 +832,8 @@ pub fn build_runtime_host_state(
         command_dispatch_detail,
         storage_status,
         journal_status,
+        shutdown_signal,
+        shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
     })
 }
 
@@ -809,6 +910,28 @@ async fn runtime_command_handler(
         }
         RuntimeLifecycleCommand::StartWarmup => {
             start_warmup_runtime_command_handler(state, request.source).await
+        }
+        RuntimeLifecycleCommand::ResolveReconnectReview {
+            decision,
+            contract_id,
+            reason,
+        } => {
+            reconnect_review_runtime_command_handler(
+                state,
+                request.source,
+                decision,
+                contract_id,
+                reason,
+            )
+            .await
+        }
+        RuntimeLifecycleCommand::Shutdown {
+            decision,
+            contract_id,
+            reason,
+        } => {
+            shutdown_runtime_command_handler(state, request.source, decision, contract_id, reason)
+                .await
         }
         RuntimeLifecycleCommand::Flatten {
             contract_id,
@@ -931,47 +1054,336 @@ async fn flatten_runtime_command_handler(
         let operator = state.operator_state.lock().await;
         operator.build_flatten_request(&context, source, contract_id, reason)
     };
-    let sanitized_request = match request_result {
+    let request = match request_result {
         Ok(request) => request,
         Err(error) => return runtime_lifecycle_error_response(&state, error).await,
     };
 
-    let mut handler = state.http_handler.lock().await;
-    match handler.handle_command(sanitized_request).await {
-        Ok(response) => {
-            drop(handler);
-            sync_history_state(&state).await;
-            let command_result = match response.body {
-                HttpResponseBody::CommandResult(result) => Some(result),
-                HttpResponseBody::Error { message } => {
-                    return runtime_lifecycle_success_response(
-                        &state,
-                        response.status_code,
-                        message,
-                        None,
-                    )
-                    .await;
+    dispatch_lifecycle_execution_request(&state, request, "flatten command dispatched".to_owned())
+        .await
+}
+
+async fn reconnect_review_runtime_command_handler(
+    state: RuntimeHostState,
+    source: tv_bot_control_api::ManualCommandSource,
+    decision: RuntimeReconnectDecision,
+    contract_id: Option<i64>,
+    reason: Option<String>,
+) -> Response {
+    let context = status_context(&state, true).await;
+    if !context.reconnect_review.required {
+        return runtime_lifecycle_success_response(
+            &state,
+            HttpStatusCode::Conflict,
+            "broker reconnect review is not currently required".to_owned(),
+            None,
+        )
+        .await;
+    }
+
+    match decision {
+        RuntimeReconnectDecision::ClosePosition => {
+            let contract_id = {
+                let operator = state.operator_state.lock().await;
+                match operator.resolve_active_contract_id(&context, contract_id) {
+                    Ok(contract_id) => contract_id,
+                    Err(error) => return runtime_lifecycle_error_response(&state, error).await,
                 }
             };
+            let reason = reason.unwrap_or_else(|| {
+                "reconnect review requested closing the broker position".to_owned()
+            });
 
-            runtime_lifecycle_success_response(
+            journal_host_event(
                 &state,
-                response.status_code,
-                "flatten command dispatched".to_owned(),
-                command_result,
+                "broker",
+                "reconnect_review_close_requested",
+                source.into(),
+                EventSeverity::Warning,
+                json!({
+                    "decision": decision,
+                    "contract_id": contract_id,
+                    "reason": reason,
+                }),
+            )
+            .await;
+
+            let request_result = {
+                let operator = state.operator_state.lock().await;
+                operator.build_flatten_request(&context, source, contract_id, reason)
+            };
+            let request = match request_result {
+                Ok(request) => request,
+                Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+            };
+
+            dispatch_lifecycle_execution_request(
+                &state,
+                request,
+                "reconnect close command dispatched".to_owned(),
             )
             .await
         }
-        Err(error) => {
-            let _ = state.health_supervisor.note_error();
-            error!(?error, "runtime host flatten command failed");
+        RuntimeReconnectDecision::LeaveBrokerProtected
+        | RuntimeReconnectDecision::ReattachBotManagement => {
+            let acknowledgement = {
+                let mut handler = state.http_handler.lock().await;
+                handler
+                    .dispatcher_mut()
+                    .acknowledge_reconnect_review(decision)
+            };
+            if let Err(message) = acknowledgement {
+                return runtime_lifecycle_success_response(
+                    &state,
+                    HttpStatusCode::Conflict,
+                    message,
+                    None,
+                )
+                .await;
+            }
+
+            journal_host_event(
+                &state,
+                "broker",
+                "reconnect_review_resolved",
+                source.into(),
+                EventSeverity::Warning,
+                json!({
+                    "decision": decision,
+                    "reason": reason,
+                    "open_position_count": context.reconnect_review.open_position_count,
+                    "working_order_count": context.reconnect_review.working_order_count,
+                }),
+            )
+            .await;
+
+            sync_history_state(&state).await;
+
             runtime_lifecycle_success_response(
                 &state,
-                HttpStatusCode::InternalServerError,
-                error.to_string(),
+                HttpStatusCode::Ok,
+                format!(
+                    "reconnect review resolved with {}",
+                    reconnect_decision_label(decision)
+                ),
                 None,
             )
             .await
+        }
+    }
+}
+
+async fn shutdown_runtime_command_handler(
+    state: RuntimeHostState,
+    source: tv_bot_control_api::ManualCommandSource,
+    decision: RuntimeShutdownDecision,
+    contract_id: Option<i64>,
+    reason: Option<String>,
+) -> Response {
+    let context = status_context(&state, true).await;
+    let open_position_count = active_open_position_count(&context.open_positions);
+
+    if open_position_count == 0 {
+        let message = "shutdown approved; no open broker position is active".to_owned();
+        approve_runtime_shutdown(
+            &state,
+            decision,
+            message.clone(),
+            source.into(),
+            json!({
+                "decision": decision,
+                "open_position_count": 0,
+            }),
+        )
+        .await;
+
+        return runtime_lifecycle_success_response(&state, HttpStatusCode::Ok, message, None).await;
+    }
+
+    match decision {
+        RuntimeShutdownDecision::LeaveBrokerProtected => {
+            let all_broker_protected = {
+                let operator = state.operator_state.lock().await;
+                operator.all_open_positions_broker_protected(&context)
+            };
+
+            if !all_broker_protected {
+                let message = "shutdown cannot leave positions in place because not all open positions report broker-side protection".to_owned();
+                block_runtime_shutdown(&state, message.clone(), true).await;
+                journal_host_event(
+                    &state,
+                    "runtime",
+                    "shutdown_blocked",
+                    source.into(),
+                    EventSeverity::Warning,
+                    json!({
+                        "decision": decision,
+                        "reason": message,
+                        "open_position_count": open_position_count,
+                        "all_positions_broker_protected": false,
+                    }),
+                )
+                .await;
+
+                return runtime_lifecycle_success_response(
+                    &state,
+                    HttpStatusCode::Conflict,
+                    message,
+                    None,
+                )
+                .await;
+            }
+
+            let message = format!(
+                "shutdown approved; leaving {open_position_count} broker-protected open position(s) in place"
+            );
+            approve_runtime_shutdown(
+                &state,
+                decision,
+                message.clone(),
+                source.into(),
+                json!({
+                    "decision": decision,
+                    "open_position_count": open_position_count,
+                    "all_positions_broker_protected": true,
+                }),
+            )
+            .await;
+
+            runtime_lifecycle_success_response(&state, HttpStatusCode::Ok, message, None).await
+        }
+        RuntimeShutdownDecision::FlattenFirst => {
+            let contract_id = {
+                let operator = state.operator_state.lock().await;
+                match operator.resolve_active_contract_id(&context, contract_id) {
+                    Ok(contract_id) => contract_id,
+                    Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+                }
+            };
+            let reason =
+                reason.unwrap_or_else(|| "shutdown requested flatten before exit".to_owned());
+
+            journal_host_event(
+                &state,
+                "runtime",
+                "shutdown_flatten_requested",
+                source.into(),
+                EventSeverity::Warning,
+                json!({
+                    "decision": decision,
+                    "contract_id": contract_id,
+                    "reason": reason,
+                    "open_position_count": open_position_count,
+                }),
+            )
+            .await;
+
+            let request_result = {
+                let operator = state.operator_state.lock().await;
+                operator.build_flatten_request(&context, source, contract_id, reason)
+            };
+            let request = match request_result {
+                Ok(request) => request,
+                Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+            };
+
+            let (status_code, command_result, error_message) =
+                match execute_lifecycle_execution_request(&state, request).await {
+                    Ok(result) => result,
+                    Err(message) => {
+                        return runtime_lifecycle_success_response(
+                            &state,
+                            HttpStatusCode::InternalServerError,
+                            message,
+                            None,
+                        )
+                        .await;
+                    }
+                };
+
+            if let Some(command_result) = command_result {
+                mark_shutdown_waiting_for_flatten(
+                    &state,
+                    format!(
+                        "shutdown is waiting for flatten confirmation on {open_position_count} open position(s)"
+                    ),
+                )
+                .await;
+
+                return runtime_lifecycle_success_response(
+                    &state,
+                    status_code,
+                    "shutdown will continue after the broker position is flat".to_owned(),
+                    Some(command_result),
+                )
+                .await;
+            }
+
+            runtime_lifecycle_success_response(&state, status_code, error_message, None).await
+        }
+    }
+}
+
+async fn dispatch_lifecycle_execution_request(
+    state: &RuntimeHostState,
+    request: HttpCommandRequest,
+    success_message: String,
+) -> Response {
+    let (status_code, command_result, error_message) =
+        match execute_lifecycle_execution_request(state, request).await {
+            Ok(result) => result,
+            Err(message) => {
+                return runtime_lifecycle_success_response(
+                    state,
+                    HttpStatusCode::InternalServerError,
+                    message,
+                    None,
+                )
+                .await;
+            }
+        };
+
+    if let Some(command_result) = command_result {
+        return runtime_lifecycle_success_response(
+            state,
+            status_code,
+            success_message,
+            Some(command_result),
+        )
+        .await;
+    }
+
+    runtime_lifecycle_success_response(state, status_code, error_message, None).await
+}
+
+async fn execute_lifecycle_execution_request(
+    state: &RuntimeHostState,
+    request: HttpCommandRequest,
+) -> Result<
+    (
+        HttpStatusCode,
+        Option<tv_bot_control_api::ControlApiCommandResult>,
+        String,
+    ),
+    String,
+> {
+    let mut handler = state.http_handler.lock().await;
+    match handler.handle_command(request).await {
+        Ok(response) => {
+            drop(handler);
+            sync_history_state(state).await;
+            let result = match response.body {
+                HttpResponseBody::CommandResult(result) => {
+                    (response.status_code, Some(result), String::new())
+                }
+                HttpResponseBody::Error { message } => (response.status_code, None, message),
+            };
+            Ok(result)
+        }
+        Err(error) => {
+            let _ = state.health_supervisor.note_error();
+            error!(?error, "runtime host lifecycle execution command failed");
+            Err(error.to_string())
         }
     }
 }
@@ -1255,6 +1667,8 @@ async fn status_context(
     let market_data_view = refresh_market_data_view(state, sync_market_data_warmup).await;
     sync_system_health(state, &dispatch_snapshot, &market_data_view).await;
     let latency_snapshot = state.latency_collector.snapshot().unwrap_or_default();
+    let reconnect_review = reconnect_review_status(&dispatch_snapshot);
+    let shutdown_review = shutdown_review_status(state, &dispatch_snapshot).await;
 
     RuntimeStatusContext {
         http_bind: state.http_bind.clone(),
@@ -1271,6 +1685,53 @@ async fn status_context(
         recorded_trade_latency_count: latency_snapshot.total_records,
         open_positions: dispatch_snapshot.open_positions,
         working_orders: dispatch_snapshot.working_orders,
+        reconnect_review,
+        shutdown_review,
+    }
+}
+
+fn reconnect_review_status(
+    dispatch_snapshot: &RuntimeBrokerSnapshot,
+) -> RuntimeReconnectReviewStatus {
+    let required = dispatch_snapshot
+        .broker_status
+        .as_ref()
+        .map(|snapshot| {
+            matches!(
+                snapshot.sync_state,
+                tv_bot_core_types::BrokerSyncState::ReviewRequired
+            ) || snapshot.review_required_reason.is_some()
+        })
+        .unwrap_or(false);
+
+    RuntimeReconnectReviewStatus {
+        required,
+        reason: dispatch_snapshot
+            .broker_status
+            .as_ref()
+            .and_then(|snapshot| snapshot.review_required_reason.clone()),
+        last_decision: dispatch_snapshot.last_reconnect_review_decision,
+        open_position_count: active_open_position_count(&dispatch_snapshot.open_positions),
+        working_order_count: dispatch_snapshot.working_orders.len(),
+    }
+}
+
+async fn shutdown_review_status(
+    state: &RuntimeHostState,
+    dispatch_snapshot: &RuntimeBrokerSnapshot,
+) -> RuntimeShutdownReviewStatus {
+    let review = state.shutdown_review.lock().await.clone();
+
+    RuntimeShutdownReviewStatus {
+        pending_signal: review.pending_signal,
+        blocked: review.blocked,
+        awaiting_flatten: review.awaiting_flatten,
+        decision: review.decision,
+        reason: review.reason,
+        open_position_count: active_open_position_count(&dispatch_snapshot.open_positions),
+        all_positions_broker_protected: all_open_positions_broker_protected(
+            &dispatch_snapshot.open_positions,
+        ),
     }
 }
 
@@ -1327,6 +1788,152 @@ async fn current_dispatch_snapshot(state: &RuntimeHostState) -> RuntimeBrokerSna
 async fn sync_history_state(state: &RuntimeHostState) {
     let snapshot = current_dispatch_snapshot(state).await;
     sync_history_snapshot(state, &snapshot).await;
+}
+
+async fn handle_runtime_shutdown_signal(state: &RuntimeHostState) -> bool {
+    let snapshot = current_dispatch_snapshot(state).await;
+    let open_position_count = active_open_position_count(&snapshot.open_positions);
+
+    if open_position_count == 0 {
+        approve_runtime_shutdown(
+            state,
+            RuntimeShutdownDecision::LeaveBrokerProtected,
+            "shutdown approved after signal; no open broker position is active".to_owned(),
+            ActionSource::System,
+            json!({
+                "decision": RuntimeShutdownDecision::LeaveBrokerProtected,
+                "open_position_count": 0,
+                "trigger": "signal",
+            }),
+        )
+        .await;
+        return false;
+    }
+
+    let message = if all_open_positions_broker_protected(&snapshot.open_positions) {
+        format!(
+            "shutdown blocked with {open_position_count} open broker-protected position(s); choose flatten first or explicitly leave broker-side protection in place"
+        )
+    } else {
+        format!(
+            "shutdown blocked with {open_position_count} open position(s); choose flatten first or explicitly accept leaving broker-side exposure in place"
+        )
+    };
+
+    block_runtime_shutdown(state, message.clone(), true).await;
+    journal_host_event(
+        state,
+        "runtime",
+        "shutdown_blocked",
+        ActionSource::System,
+        EventSeverity::Warning,
+        json!({
+            "decision": RuntimeShutdownDecision::LeaveBrokerProtected,
+            "open_position_count": open_position_count,
+            "trigger": "signal",
+            "reason": message,
+            "all_positions_broker_protected": all_open_positions_broker_protected(
+                &snapshot.open_positions
+            ),
+        }),
+    )
+    .await;
+    warn!(
+        open_position_count,
+        "runtime shutdown blocked pending explicit review"
+    );
+    false
+}
+
+async fn finalize_pending_flatten_shutdown(state: &RuntimeHostState) -> bool {
+    let pending = {
+        let review = state.shutdown_review.lock().await;
+        review.awaiting_flatten
+    };
+    if !pending {
+        return false;
+    }
+
+    let snapshot = current_dispatch_snapshot(state).await;
+    if active_open_position_count(&snapshot.open_positions) != 0 {
+        return false;
+    }
+
+    {
+        let mut review = state.shutdown_review.lock().await;
+        review.pending_signal = false;
+        review.blocked = false;
+        review.awaiting_flatten = false;
+        review.decision = Some(RuntimeShutdownDecision::FlattenFirst);
+        review.reason =
+            Some("shutdown approved after flatten confirmed no open positions".to_owned());
+        review.requested_at = Some(Utc::now());
+    }
+
+    journal_host_event(
+        state,
+        "runtime",
+        "shutdown_flatten_confirmed",
+        ActionSource::System,
+        EventSeverity::Info,
+        json!({
+            "decision": RuntimeShutdownDecision::FlattenFirst,
+            "open_position_count": 0,
+        }),
+    )
+    .await;
+
+    true
+}
+
+async fn block_runtime_shutdown(state: &RuntimeHostState, reason: String, pending_signal: bool) {
+    let mut review = state.shutdown_review.lock().await;
+    review.pending_signal = pending_signal;
+    review.blocked = true;
+    review.awaiting_flatten = false;
+    review.decision = None;
+    review.reason = Some(reason);
+    review.requested_at = Some(Utc::now());
+}
+
+async fn mark_shutdown_waiting_for_flatten(state: &RuntimeHostState, reason: String) {
+    let mut review = state.shutdown_review.lock().await;
+    review.pending_signal = false;
+    review.blocked = true;
+    review.awaiting_flatten = true;
+    review.decision = Some(RuntimeShutdownDecision::FlattenFirst);
+    review.reason = Some(reason);
+    review.requested_at = Some(Utc::now());
+}
+
+async fn approve_runtime_shutdown(
+    state: &RuntimeHostState,
+    decision: RuntimeShutdownDecision,
+    reason: String,
+    source: ActionSource,
+    payload: serde_json::Value,
+) {
+    {
+        let mut review = state.shutdown_review.lock().await;
+        review.pending_signal = false;
+        review.blocked = false;
+        review.awaiting_flatten = false;
+        review.decision = Some(decision);
+        review.reason = Some(reason.clone());
+        review.requested_at = Some(Utc::now());
+    }
+
+    journal_host_event(
+        state,
+        "runtime",
+        "shutdown_approved",
+        source,
+        EventSeverity::Warning,
+        payload,
+    )
+    .await;
+
+    let _ = state.shutdown_signal.send(true);
 }
 
 async fn sync_history_snapshot(state: &RuntimeHostState, snapshot: &RuntimeBrokerSnapshot) {
@@ -1483,6 +2090,62 @@ async fn publish_history_snapshot(state: &RuntimeHostState, snapshot: &RuntimeHi
     }
 }
 
+async fn publish_journal_record(state: &RuntimeHostState, record: &EventJournalRecord) {
+    if let Err(error) =
+        state
+            .event_hub
+            .publish(tv_bot_control_api::ControlApiEvent::JournalRecord {
+                record: record.clone(),
+            })
+    {
+        if error != WebSocketEventHubError::NoSubscribers {
+            warn!(?error, "failed to publish journal record event");
+        }
+    }
+}
+
+async fn journal_host_event(
+    state: &RuntimeHostState,
+    category: &str,
+    action: &str,
+    source: ActionSource,
+    severity: EventSeverity,
+    payload: serde_json::Value,
+) {
+    let occurred_at = Utc::now();
+    let record = EventJournalRecord {
+        event_id: host_event_id(category, action, occurred_at),
+        category: category.to_owned(),
+        action: action.to_owned(),
+        source,
+        severity,
+        occurred_at,
+        payload,
+    };
+
+    let started_at = Instant::now();
+    let append_result = {
+        let handler = state.http_handler.lock().await;
+        handler.dispatcher().append_journal_record(record.clone())
+    };
+
+    match append_result {
+        Ok(()) => {
+            let _ = state
+                .health_supervisor
+                .record_db_write_latency(started_at.elapsed().as_millis() as u64);
+            publish_journal_record(state, &record).await;
+        }
+        Err(error) => {
+            let _ = state.health_supervisor.note_error();
+            warn!(
+                ?error,
+                category, action, "failed to persist runtime host journal event"
+            );
+        }
+    }
+}
+
 fn request_for_command(
     command: &RuntimeCommand,
 ) -> &tv_bot_runtime_kernel::RuntimeExecutionRequest {
@@ -1531,6 +2194,8 @@ async fn sync_history_for_lifecycle_command(
         RuntimeLifecycleCommand::LoadStrategy { .. }
         | RuntimeLifecycleCommand::StartWarmup
         | RuntimeLifecycleCommand::MarkWarmupReady
+        | RuntimeLifecycleCommand::ResolveReconnectReview { .. }
+        | RuntimeLifecycleCommand::Shutdown { .. }
         | RuntimeLifecycleCommand::Flatten { .. } => None,
     };
 
@@ -1574,6 +2239,72 @@ fn action_source_label(source: tv_bot_core_types::ActionSource) -> &'static str 
         tv_bot_core_types::ActionSource::Dashboard => "dashboard",
         tv_bot_core_types::ActionSource::Cli => "cli",
         tv_bot_core_types::ActionSource::System => "system",
+    }
+}
+
+fn host_event_id(category: &str, action: &str, occurred_at: DateTime<Utc>) -> String {
+    let timestamp = occurred_at.timestamp_nanos_opt().unwrap_or_default();
+    format!("{category}-{action}-{timestamp}")
+}
+
+fn active_open_position_count(positions: &[tv_bot_core_types::BrokerPositionSnapshot]) -> usize {
+    positions
+        .iter()
+        .filter(|position| position.quantity != 0)
+        .count()
+}
+
+fn all_open_positions_broker_protected(
+    positions: &[tv_bot_core_types::BrokerPositionSnapshot],
+) -> bool {
+    let open_positions = positions
+        .iter()
+        .filter(|position| position.quantity != 0)
+        .collect::<Vec<_>>();
+
+    !open_positions.is_empty()
+        && open_positions
+            .iter()
+            .all(|position| position.protective_orders_present)
+}
+
+fn reconnect_decision_label(decision: RuntimeReconnectDecision) -> &'static str {
+    match decision {
+        RuntimeReconnectDecision::ClosePosition => "close_position",
+        RuntimeReconnectDecision::LeaveBrokerProtected => "leave_broker_protected",
+        RuntimeReconnectDecision::ReattachBotManagement => "reattach_bot_management",
+    }
+}
+
+fn runtime_reconnect_decision_from_tradovate(
+    decision: tv_bot_broker_tradovate::TradovateReconnectDecision,
+) -> RuntimeReconnectDecision {
+    match decision {
+        tv_bot_broker_tradovate::TradovateReconnectDecision::ClosePosition => {
+            RuntimeReconnectDecision::ClosePosition
+        }
+        tv_bot_broker_tradovate::TradovateReconnectDecision::LeaveBrokerProtected => {
+            RuntimeReconnectDecision::LeaveBrokerProtected
+        }
+        tv_bot_broker_tradovate::TradovateReconnectDecision::ReattachBotManagement => {
+            RuntimeReconnectDecision::ReattachBotManagement
+        }
+    }
+}
+
+fn tradovate_reconnect_decision(
+    decision: RuntimeReconnectDecision,
+) -> tv_bot_broker_tradovate::TradovateReconnectDecision {
+    match decision {
+        RuntimeReconnectDecision::ClosePosition => {
+            tv_bot_broker_tradovate::TradovateReconnectDecision::ClosePosition
+        }
+        RuntimeReconnectDecision::LeaveBrokerProtected => {
+            tv_bot_broker_tradovate::TradovateReconnectDecision::LeaveBrokerProtected
+        }
+        RuntimeReconnectDecision::ReattachBotManagement => {
+            tv_bot_broker_tradovate::TradovateReconnectDecision::ReattachBotManagement
+        }
     }
 }
 
@@ -1633,6 +2364,22 @@ mod tests {
     impl RuntimeDispatcherHandle for FakeDispatcher {
         fn dispatch_snapshot(&self) -> RuntimeBrokerSnapshot {
             self.snapshot.clone()
+        }
+
+        fn append_journal_record(&self, _record: EventJournalRecord) -> Result<(), JournalError> {
+            Ok(())
+        }
+
+        fn acknowledge_reconnect_review(
+            &mut self,
+            decision: RuntimeReconnectDecision,
+        ) -> Result<(), String> {
+            self.snapshot.last_reconnect_review_decision = Some(decision);
+            if let Some(status) = self.snapshot.broker_status.as_mut() {
+                status.sync_state = tv_bot_core_types::BrokerSyncState::Synchronized;
+                status.review_required_reason = None;
+            }
+            Ok(())
         }
     }
 
@@ -1750,6 +2497,8 @@ mod tests {
                 durable: true,
                 detail: "event journal records are durably persisted to Postgres".to_owned(),
             },
+            shutdown_signal: watch::channel(false).0,
+            shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
         }
     }
 
@@ -2068,6 +2817,7 @@ mod tests {
                 commission: Some(Decimal::new(75, 2)),
                 occurred_at: chrono::Utc::now(),
             }],
+            last_reconnect_review_decision: None,
         }
     }
 
@@ -2469,6 +3219,222 @@ mod tests {
             }
             other => panic!("unexpected body: {other:?}"),
         }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn reconnect_review_command_resolves_required_review() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let mut snapshot = sample_dispatch_snapshot();
+        if let Some(status) = snapshot.broker_status.as_mut() {
+            status.sync_state = tv_bot_core_types::BrokerSyncState::ReviewRequired;
+            status.review_required_reason =
+                Some("active broker position detected after reconnect".to_owned());
+        }
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot,
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                                decision: RuntimeReconnectDecision::LeaveBrokerProtected,
+                                contract_id: None,
+                                reason: Some("keeping broker protections live".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert!(!lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            Some(RuntimeReconnectDecision::LeaveBrokerProtected)
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_command_blocks_when_open_position_lacks_broker_protection() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let mut snapshot = sample_dispatch_snapshot();
+        snapshot.open_positions[0].protective_orders_present = false;
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot,
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::Shutdown {
+                                decision: RuntimeShutdownDecision::LeaveBrokerProtected,
+                                contract_id: None,
+                                reason: Some("testing shutdown safety".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Conflict);
+        assert!(lifecycle_response.status.shutdown_review.blocked);
+        assert!(
+            !lifecycle_response
+                .status
+                .shutdown_review
+                .all_positions_broker_protected
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_flatten_first_marks_shutdown_waiting_for_flatten_confirmation() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::LoadStrategy {
+                                path: strategy_path.clone(),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::Shutdown {
+                                decision: RuntimeShutdownDecision::FlattenFirst,
+                                contract_id: Some(4444),
+                                reason: Some("shutdown after flatten".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert!(lifecycle_response.status.shutdown_review.blocked);
+        assert!(lifecycle_response.status.shutdown_review.awaiting_flatten);
 
         let _ = fs::remove_file(strategy_path);
     }

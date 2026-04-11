@@ -81,14 +81,13 @@ tests/
 - Runtime host lifecycle/state handling in `apps/runtime`
 - Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
 - Runtime-host system-health and latency projection through `/health`, `/status`, and WebSocket events in `apps/runtime`
-- CLI launch, lifecycle, and history commands in `apps/cli`
+- CLI launch, lifecycle, reconnect-review, shutdown-review, and history commands in `apps/cli`
 
 ## Still Required For V1
 
 - Dashboard implementation
 - Postgres-first persistence with safe SQLite fallback behavior
 - CPU/memory runtime sampling and richer operational views on top of the health/metrics foundations
-- Open-position shutdown and reconnect recovery flows wired end to end
 - Paper-mode acceptance campaigns and remaining safety-critical integration coverage
 
 ## Local Development

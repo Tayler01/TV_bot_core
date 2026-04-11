@@ -272,8 +272,6 @@ impl ExecutionPlanner {
         reason: &str,
         intent_label: &'static str,
     ) -> Result<ExecutionPlan, ExecutionEngineError> {
-        ensure_order_placement_allowed(request)?;
-
         if active_position(request.state.current_position.as_ref()).is_none() {
             return Ok(ExecutionPlan {
                 actions: Vec::new(),
@@ -1475,6 +1473,38 @@ mod tests {
 
         assert!(plan.is_noop());
         assert_eq!(plan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn flatten_remains_available_when_runtime_order_placement_is_otherwise_blocked() {
+        let mut state = state_context();
+        state.runtime_can_submit_orders = false;
+        state.current_position = Some(sample_position(1));
+
+        let plan = ExecutionPlanner::plan_tradovate(&ExecutionRequest {
+            strategy: sample_strategy(
+                ReversalMode::FlattenFirst,
+                false,
+                1,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BotAllowed,
+            ),
+            instrument: instrument_context(),
+            state,
+            intent: ExecutionIntent::Flatten {
+                reason: "safety flatten".to_owned(),
+            },
+        })
+        .expect("flatten should stay available for safety exits");
+
+        assert!(matches!(
+            &plan.actions[0],
+            ExecutionAction::LiquidatePosition {
+                contract_id: 4444,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

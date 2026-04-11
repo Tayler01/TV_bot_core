@@ -6,7 +6,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use thiserror::Error;
-use tv_bot_control_api::RuntimeHistorySnapshot;
+use tv_bot_control_api::{RuntimeHistorySnapshot, RuntimeReconnectDecision};
 use tv_bot_core_types::{
     ActionSource, BrokerAccountSnapshot, BrokerOrderStatus, BrokerOrderUpdate,
     BrokerPositionSnapshot, ExecutionIntent, FillRecord, OrderRecord, PnlSnapshotRecord,
@@ -27,6 +27,7 @@ use tv_bot_state_store::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeBrokerSnapshot {
     pub broker_status: Option<tv_bot_core_types::BrokerStatusSnapshot>,
+    pub last_reconnect_review_decision: Option<RuntimeReconnectDecision>,
     pub account_snapshot: Option<BrokerAccountSnapshot>,
     pub open_positions: Vec<BrokerPositionSnapshot>,
     pub working_orders: Vec<BrokerOrderUpdate>,
@@ -1001,6 +1002,7 @@ mod tests {
                 review_required_reason: None,
                 updated_at: Utc::now(),
             }),
+            last_reconnect_review_decision: None,
             account_snapshot: Some(BrokerAccountSnapshot {
                 account_id: "acct-1".to_owned(),
                 account_name: Some("paper-primary".to_owned()),

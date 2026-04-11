@@ -13,7 +13,8 @@ use tokio::{process::Command, time::sleep};
 use tv_bot_config::{AppConfig, StdEnvironment};
 use tv_bot_control_api::{
     ManualCommandSource, RuntimeHistorySnapshot, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
-    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeStatusSnapshot,
+    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
+    RuntimeShutdownDecision, RuntimeStatusSnapshot,
 };
 
 #[derive(Parser, Debug)]
@@ -60,6 +61,24 @@ enum CliCommand {
         yes: bool,
     },
     Disarm,
+    ReconnectReview {
+        decision: CliReconnectDecision,
+        #[arg(long)]
+        contract_id: Option<i64>,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    Shutdown {
+        decision: CliShutdownDecision,
+        #[arg(long)]
+        contract_id: Option<i64>,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     Flatten {
         contract_id: i64,
         #[arg(long, default_value = "manual flatten")]
@@ -86,12 +105,44 @@ enum CliRuntimeMode {
     Observation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliReconnectDecision {
+    ClosePosition,
+    LeaveBrokerProtected,
+    ReattachBotManagement,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum CliShutdownDecision {
+    FlattenFirst,
+    LeaveBrokerProtected,
+}
+
 impl From<CliRuntimeMode> for tv_bot_core_types::RuntimeMode {
     fn from(value: CliRuntimeMode) -> Self {
         match value {
             CliRuntimeMode::Paper => Self::Paper,
             CliRuntimeMode::Live => Self::Live,
             CliRuntimeMode::Observation => Self::Observation,
+        }
+    }
+}
+
+impl From<CliReconnectDecision> for RuntimeReconnectDecision {
+    fn from(value: CliReconnectDecision) -> Self {
+        match value {
+            CliReconnectDecision::ClosePosition => Self::ClosePosition,
+            CliReconnectDecision::LeaveBrokerProtected => Self::LeaveBrokerProtected,
+            CliReconnectDecision::ReattachBotManagement => Self::ReattachBotManagement,
+        }
+    }
+}
+
+impl From<CliShutdownDecision> for RuntimeShutdownDecision {
+    fn from(value: CliShutdownDecision) -> Self {
+        match value {
+            CliShutdownDecision::FlattenFirst => Self::FlattenFirst,
+            CliShutdownDecision::LeaveBrokerProtected => Self::LeaveBrokerProtected,
         }
     }
 }
@@ -204,6 +255,44 @@ async fn main() -> Result<(), Box<dyn Error>> {
         CliCommand::Disarm => {
             let response =
                 send_runtime_command(&client, &base_url, RuntimeLifecycleCommand::Disarm).await?;
+            print_lifecycle_response(&response);
+        }
+        CliCommand::ReconnectReview {
+            decision,
+            contract_id,
+            reason,
+            yes,
+        } => {
+            confirm(yes, reconnect_review_prompt(decision))?;
+            let response = send_runtime_command(
+                &client,
+                &base_url,
+                RuntimeLifecycleCommand::ResolveReconnectReview {
+                    decision: decision.into(),
+                    contract_id,
+                    reason,
+                },
+            )
+            .await?;
+            print_lifecycle_response(&response);
+        }
+        CliCommand::Shutdown {
+            decision,
+            contract_id,
+            reason,
+            yes,
+        } => {
+            confirm(yes, shutdown_prompt(decision))?;
+            let response = send_runtime_command(
+                &client,
+                &base_url,
+                RuntimeLifecycleCommand::Shutdown {
+                    decision: decision.into(),
+                    contract_id,
+                    reason,
+                },
+            )
+            .await?;
             print_lifecycle_response(&response);
         }
         CliCommand::Flatten {
@@ -359,6 +448,16 @@ fn print_status(status: &RuntimeStatusSnapshot) {
             broker_status.connection_state, broker_status.sync_state, broker_status.health
         );
     }
+    println!(
+        "Reconnect Review: required={} open_positions={} working_orders={} last_decision={:?}",
+        status.reconnect_review.required,
+        status.reconnect_review.open_position_count,
+        status.reconnect_review.working_order_count,
+        status.reconnect_review.last_decision
+    );
+    if let Some(reason) = &status.reconnect_review.reason {
+        println!("Reconnect Review Reason: {reason}");
+    }
     if let Some(market_data_status) = &status.market_data_status {
         println!(
             "Market Data: {:?} / {:?} (warmup: {:?}, trade_ready: {})",
@@ -401,6 +500,18 @@ fn print_status(status: &RuntimeStatusSnapshot) {
             latency.latency.end_to_end_sync_latency_ms,
             status.recorded_trade_latency_count
         );
+    }
+    println!(
+        "Shutdown Review: pending_signal={} blocked={} awaiting_flatten={} open_positions={} broker_protected={} decision={:?}",
+        status.shutdown_review.pending_signal,
+        status.shutdown_review.blocked,
+        status.shutdown_review.awaiting_flatten,
+        status.shutdown_review.open_position_count,
+        status.shutdown_review.all_positions_broker_protected,
+        status.shutdown_review.decision
+    );
+    if let Some(reason) = &status.shutdown_review.reason {
+        println!("Shutdown Review Reason: {reason}");
     }
     println!(
         "Dispatch: {} ({})",
@@ -630,6 +741,31 @@ fn readiness_check_label(status: tv_bot_core_types::ReadinessCheckStatus) -> &'s
     }
 }
 
+fn reconnect_review_prompt(decision: CliReconnectDecision) -> &'static str {
+    match decision {
+        CliReconnectDecision::ClosePosition => {
+            "Resolve reconnect review by closing the active broker position?"
+        }
+        CliReconnectDecision::LeaveBrokerProtected => {
+            "Resolve reconnect review by leaving the broker-protected position in place?"
+        }
+        CliReconnectDecision::ReattachBotManagement => {
+            "Resolve reconnect review by reattaching bot management to the active position?"
+        }
+    }
+}
+
+fn shutdown_prompt(decision: CliShutdownDecision) -> &'static str {
+    match decision {
+        CliShutdownDecision::FlattenFirst => {
+            "Approve shutdown after flattening the active broker position?"
+        }
+        CliShutdownDecision::LeaveBrokerProtected => {
+            "Approve shutdown and leave the broker-protected position in place?"
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,5 +814,54 @@ mod tests {
             warmup_status_label(&tv_bot_core_types::WarmupStatus::NotLoaded),
             "not_loaded"
         );
+    }
+
+    #[test]
+    fn parses_reconnect_review_command() {
+        let cli = Cli::try_parse_from([
+            "tv-bot-cli",
+            "reconnect-review",
+            "leave-broker-protected",
+            "--reason",
+            "keep brackets live",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            CliCommand::ReconnectReview {
+                decision, reason, ..
+            } => {
+                assert_eq!(decision, CliReconnectDecision::LeaveBrokerProtected);
+                assert_eq!(reason.as_deref(), Some("keep brackets live"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_shutdown_command() {
+        let cli = Cli::try_parse_from([
+            "tv-bot-cli",
+            "shutdown",
+            "flatten-first",
+            "--contract-id",
+            "4444",
+            "--yes",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            CliCommand::Shutdown {
+                decision,
+                contract_id,
+                yes,
+                ..
+            } => {
+                assert_eq!(decision, CliShutdownDecision::FlattenFirst);
+                assert_eq!(contract_id, Some(4444));
+                assert!(yes);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

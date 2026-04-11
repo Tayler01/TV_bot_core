@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -8,7 +9,8 @@ use thiserror::Error;
 use tv_bot_control_api::{
     ControlApiCommand, HttpCommandRequest, HttpStatusCode, LoadedStrategySummary,
     ManualCommandSource, RuntimeJournalStatus, RuntimeLifecycleCommand, RuntimeReadinessSnapshot,
-    RuntimeStatusSnapshot, RuntimeStorageStatus,
+    RuntimeReconnectReviewStatus, RuntimeShutdownReviewStatus, RuntimeStatusSnapshot,
+    RuntimeStorageStatus,
 };
 use tv_bot_core_types::{
     BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerStatusSnapshot,
@@ -69,6 +71,8 @@ pub struct RuntimeStatusContext {
     pub recorded_trade_latency_count: usize,
     pub open_positions: Vec<BrokerPositionSnapshot>,
     pub working_orders: Vec<BrokerOrderUpdate>,
+    pub reconnect_review: RuntimeReconnectReviewStatus,
+    pub shutdown_review: RuntimeShutdownReviewStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +98,8 @@ pub enum RuntimeOperatorError {
     },
     #[error("{0}")]
     Compile(String),
+    #[error("{0}")]
+    InvalidRequest(String),
     #[error("runtime transition failed: {source}")]
     RuntimeKernel {
         #[source]
@@ -110,9 +116,10 @@ impl RuntimeOperatorError {
                 source: RuntimeKernelError::OverrideRequired,
             } => HttpStatusCode::PreconditionRequired,
             Self::Io { .. } => HttpStatusCode::InternalServerError,
-            Self::Compile(_) | Self::RuntimeKernel { .. } | Self::StrategyNotLoaded => {
-                HttpStatusCode::Conflict
-            }
+            Self::Compile(_)
+            | Self::InvalidRequest(_)
+            | Self::RuntimeKernel { .. }
+            | Self::StrategyNotLoaded => HttpStatusCode::Conflict,
         }
     }
 }
@@ -157,6 +164,8 @@ impl RuntimeOperatorState {
                 .loaded_strategy
                 .as_ref()
                 .and_then(|strategy| strategy.instrument_resolution_error.clone()),
+            reconnect_review: context.reconnect_review.clone(),
+            shutdown_review: context.shutdown_review.clone(),
             http_bind: context.http_bind.clone(),
             websocket_bind: context.websocket_bind.clone(),
             command_dispatch_ready: context.command_dispatch_ready,
@@ -298,6 +307,10 @@ impl RuntimeOperatorState {
                     mode_label(&self.runtime.current_mode())
                 ))
             }
+            RuntimeLifecycleCommand::ResolveReconnectReview { .. } => {
+                Ok("reconnect review prepared".to_owned())
+            }
+            RuntimeLifecycleCommand::Shutdown { .. } => Ok("shutdown review prepared".to_owned()),
             RuntimeLifecycleCommand::Flatten { .. } => Ok("flatten prepared".to_owned()),
         }
     }
@@ -336,7 +349,9 @@ impl RuntimeOperatorState {
                             active_contract_id: Some(contract_id),
                         },
                         state: ExecutionStateContext {
-                            runtime_can_submit_orders: self.runtime.can_submit_orders(),
+                            // Safety exits must remain available even when the runtime is paused
+                            // or disarmed, because flatten is part of recovery and shutdown flow.
+                            runtime_can_submit_orders: true,
                             new_entries_allowed: false,
                             current_position: current_position.clone(),
                             working_orders: self
@@ -363,6 +378,59 @@ impl RuntimeOperatorState {
                 },
             },
         })
+    }
+
+    pub fn resolve_active_contract_id(
+        &self,
+        context: &RuntimeStatusContext,
+        requested_contract_id: Option<i64>,
+    ) -> Result<i64, RuntimeOperatorError> {
+        if let Some(contract_id) = requested_contract_id {
+            if contract_id > 0 {
+                return Ok(contract_id);
+            }
+
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "contract id must be greater than zero".to_owned(),
+            ));
+        }
+
+        let contract_ids = context
+            .open_positions
+            .iter()
+            .filter(|position| position.quantity != 0)
+            .filter_map(position_contract_id)
+            .collect::<BTreeSet<_>>();
+
+        match contract_ids.len() {
+            0 => Err(RuntimeOperatorError::InvalidRequest(
+                "no open position with a resolvable Tradovate contract id is currently available"
+                    .to_owned(),
+            )),
+            1 => contract_ids.iter().next().copied().ok_or_else(|| {
+                RuntimeOperatorError::InvalidRequest(
+                    "no open position with a resolvable Tradovate contract id is currently available"
+                        .to_owned(),
+                )
+            }),
+            _ => Err(RuntimeOperatorError::InvalidRequest(
+                "multiple open positions are active; an explicit contract id is required"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    pub fn all_open_positions_broker_protected(&self, context: &RuntimeStatusContext) -> bool {
+        let open_positions = context
+            .open_positions
+            .iter()
+            .filter(|position| position.quantity != 0)
+            .collect::<Vec<_>>();
+
+        !open_positions.is_empty()
+            && open_positions
+                .iter()
+                .all(|position| position.protective_orders_present)
     }
 
     pub fn sanitize_command_request(
@@ -664,6 +732,13 @@ impl RuntimeOperatorState {
     }
 }
 
+fn position_contract_id(position: &BrokerPositionSnapshot) -> Option<i64> {
+    position
+        .symbol
+        .strip_prefix("contract:")
+        .and_then(|contract_id| contract_id.parse::<i64>().ok())
+}
+
 fn compile_loaded_strategy(path: PathBuf, compilation: StrategyCompilation) -> LoadedStrategyState {
     let resolver = FrontMonthResolver::with_system_clock(StaticContractChainProvider::new());
     let (instrument_mapping, instrument_resolution_error) =
@@ -727,6 +802,22 @@ mod tests {
             recorded_trade_latency_count: 1,
             open_positions: Vec::new(),
             working_orders: Vec::new(),
+            reconnect_review: RuntimeReconnectReviewStatus {
+                required: false,
+                reason: None,
+                last_decision: None,
+                open_position_count: 0,
+                working_order_count: 0,
+            },
+            shutdown_review: RuntimeShutdownReviewStatus {
+                pending_signal: false,
+                blocked: false,
+                awaiting_flatten: false,
+                decision: None,
+                reason: None,
+                open_position_count: 0,
+                all_positions_broker_protected: false,
+            },
         }
     }
 
