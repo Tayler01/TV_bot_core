@@ -61,20 +61,22 @@ pub struct RiskEvaluator;
 
 impl RiskEvaluator {
     pub fn evaluate(request: &RiskEvaluationRequest) -> RiskEvaluationOutcome {
-        let mut warnings = Vec::new();
-        let hard_override_reasons =
-            evaluate_broker_protection_support(&request.strategy, &request.state, &mut warnings);
-
         match &request.intent {
             ExecutionIntent::Enter { .. } => {
+                let mut warnings = Vec::new();
+                let hard_override_reasons = evaluate_broker_protection_support(
+                    &request.strategy,
+                    &request.state,
+                    &mut warnings,
+                );
                 Self::evaluate_enter(request, warnings, hard_override_reasons)
             }
             _ => build_override_outcome(
                 request.intent.clone(),
                 None,
                 "risk checks passed",
-                warnings,
-                hard_override_reasons,
+                Vec::new(),
+                Vec::new(),
                 request.state.hard_override_active,
             ),
         }
@@ -602,6 +604,7 @@ mod tests {
 
     fn sample_position(quantity: i32) -> BrokerPositionSnapshot {
         BrokerPositionSnapshot {
+            account_id: Some("101".to_owned()),
             symbol: "GCM2026".to_owned(),
             quantity,
             average_price: Some(Decimal::new(238_500, 2)),
@@ -771,6 +774,38 @@ mod tests {
         assert_eq!(
             outcome.hard_override_reasons,
             vec!["broker-side take-profit protection is unavailable".to_owned()]
+        );
+    }
+
+    #[test]
+    fn flatten_bypasses_broker_protection_override_requirements() {
+        let mut strategy = sample_strategy();
+        strategy.execution.broker_preferences.stop_loss = BrokerPreference::BrokerRequired;
+        strategy.execution.broker_preferences.take_profit = BrokerPreference::BrokerRequired;
+
+        let mut state = sample_state();
+        state.current_position = Some(sample_position(1));
+        state.broker_support.stop_loss = false;
+        state.broker_support.take_profit = false;
+
+        let outcome = RiskEvaluator::evaluate(&RiskEvaluationRequest {
+            strategy,
+            instrument: sample_instrument(),
+            state,
+            intent: ExecutionIntent::Flatten {
+                reason: "manual flatten".to_owned(),
+            },
+        });
+
+        assert_eq!(outcome.decision.status, RiskDecisionStatus::Accepted);
+        assert_eq!(outcome.decision.reason, "risk checks passed");
+        assert!(outcome.decision.warnings.is_empty());
+        assert!(outcome.hard_override_reasons.is_empty());
+        assert_eq!(
+            outcome.adjusted_intent,
+            ExecutionIntent::Flatten {
+                reason: "manual flatten".to_owned(),
+            }
         );
     }
 

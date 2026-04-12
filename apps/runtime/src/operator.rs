@@ -779,10 +779,27 @@ fn mode_label(mode: &RuntimeMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use tv_bot_control_api::RuntimeLifecycleCommand;
-    use tv_bot_core_types::EntryOrderType;
+    use async_trait::async_trait;
+    use secrecy::SecretString;
+    use tv_bot_broker_tradovate::{
+        TradovateAccessToken, TradovateAccount, TradovateAccountApi, TradovateAccountListRequest,
+        TradovateAuthApi, TradovateAuthRequest, TradovateCredentials, TradovateError,
+        TradovateExecutionApi, TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
+        TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
+        TradovatePlaceOsoResult, TradovateRoutingPreferences, TradovateSessionConfig,
+        TradovateSessionManager, TradovateSyncApi, TradovateSyncConnectRequest, TradovateSyncEvent,
+        TradovateSyncSnapshot, TradovateUserSyncRequest,
+    };
+    use tv_bot_control_api::{ControlApiCommand, ManualCommandSource, RuntimeLifecycleCommand};
+    use tv_bot_core_types::{EntryOrderType, RiskDecisionStatus};
+    use tv_bot_journal::{EventJournal, InMemoryJournal};
+    use tv_bot_runtime_kernel::{RuntimeCommand, RuntimeControlLoop};
 
     use super::*;
 
@@ -988,6 +1005,226 @@ mod tests {
                 end_to_end_sync_latency_ms: None,
             },
         }
+    }
+
+    #[derive(Clone)]
+    struct TestAuthApi {
+        token: Arc<Mutex<Option<TradovateAccessToken>>>,
+    }
+
+    #[derive(Clone)]
+    struct TestAccountApi {
+        accounts: Arc<Vec<TradovateAccount>>,
+    }
+
+    #[derive(Clone)]
+    struct TestSyncApi {
+        snapshots: Arc<Mutex<VecDeque<TradovateSyncSnapshot>>>,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct TestExecutionApi {
+        place_orders: Arc<Mutex<Vec<TradovatePlaceOrderRequest>>>,
+        place_osos: Arc<Mutex<Vec<TradovatePlaceOsoRequest>>>,
+        liquidations: Arc<Mutex<Vec<TradovateLiquidatePositionRequest>>>,
+    }
+
+    #[async_trait]
+    impl TradovateAuthApi for TestAuthApi {
+        async fn request_access_token(
+            &self,
+            _request: TradovateAuthRequest,
+        ) -> Result<TradovateAccessToken, TradovateError> {
+            self.token
+                .lock()
+                .expect("auth mutex should not poison")
+                .clone()
+                .ok_or_else(|| TradovateError::AuthTransport {
+                    message: "missing token".to_owned(),
+                })
+        }
+
+        async fn renew_access_token(
+            &self,
+            _request: tv_bot_broker_tradovate::TradovateRenewAccessTokenRequest,
+        ) -> Result<TradovateAccessToken, TradovateError> {
+            self.request_access_token(TradovateAuthRequest {
+                http_base_url: String::new(),
+                environment: tv_bot_core_types::BrokerEnvironment::Demo,
+                credentials: sample_credentials(),
+            })
+            .await
+        }
+    }
+
+    #[async_trait]
+    impl TradovateAccountApi for TestAccountApi {
+        async fn list_accounts(
+            &self,
+            _request: TradovateAccountListRequest,
+        ) -> Result<Vec<TradovateAccount>, TradovateError> {
+            Ok(self.accounts.as_ref().clone())
+        }
+    }
+
+    #[async_trait]
+    impl TradovateSyncApi for TestSyncApi {
+        async fn connect(
+            &self,
+            _request: TradovateSyncConnectRequest,
+        ) -> Result<(), TradovateError> {
+            Ok(())
+        }
+
+        async fn request_user_sync(
+            &self,
+            _request: TradovateUserSyncRequest,
+        ) -> Result<TradovateSyncSnapshot, TradovateError> {
+            self.snapshots
+                .lock()
+                .expect("sync mutex should not poison")
+                .pop_front()
+                .ok_or_else(|| TradovateError::SyncTransport {
+                    message: "missing sync snapshot".to_owned(),
+                })
+        }
+
+        async fn next_event(&self) -> Result<Option<TradovateSyncEvent>, TradovateError> {
+            Ok(None)
+        }
+
+        async fn disconnect(&self) -> Result<(), TradovateError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl TradovateExecutionApi for TestExecutionApi {
+        async fn place_order(
+            &self,
+            request: TradovatePlaceOrderRequest,
+        ) -> Result<TradovatePlaceOrderResult, TradovateError> {
+            self.place_orders
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request);
+            Ok(TradovatePlaceOrderResult { order_id: 9101 })
+        }
+
+        async fn place_oso(
+            &self,
+            request: TradovatePlaceOsoRequest,
+        ) -> Result<TradovatePlaceOsoResult, TradovateError> {
+            self.place_osos
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request);
+            Ok(TradovatePlaceOsoResult {
+                order_id: 9102,
+                oso1_id: Some(9103),
+                oso2_id: Some(9104),
+            })
+        }
+
+        async fn liquidate_position(
+            &self,
+            request: TradovateLiquidatePositionRequest,
+        ) -> Result<TradovateLiquidatePositionResult, TradovateError> {
+            self.liquidations
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request);
+            Ok(TradovateLiquidatePositionResult { order_id: 9105 })
+        }
+    }
+
+    fn sample_credentials() -> TradovateCredentials {
+        TradovateCredentials {
+            username: "bot-user".to_owned(),
+            password: SecretString::new("password".to_owned().into()),
+            cid: "cid-123".to_owned(),
+            sec: SecretString::new("sec-456".to_owned().into()),
+            app_id: "tv-bot-core".to_owned(),
+            app_version: "0.1.0".to_owned(),
+            device_id: Some("desktop".to_owned()),
+        }
+    }
+
+    fn sample_token() -> TradovateAccessToken {
+        TradovateAccessToken {
+            access_token: SecretString::new("access-token".to_owned().into()),
+            expiration_time: chrono::DateTime::parse_from_rfc3339("2026-04-10T15:30:00Z")
+                .expect("valid timestamp")
+                .with_timezone(&chrono::Utc),
+            issued_at: chrono::DateTime::parse_from_rfc3339("2026-04-10T13:30:00Z")
+                .expect("valid timestamp")
+                .with_timezone(&chrono::Utc),
+            user_id: Some(7),
+            person_id: Some(11),
+            market_data_access: Some("realtime".to_owned()),
+        }
+    }
+
+    fn empty_sync_snapshot() -> TradovateSyncSnapshot {
+        TradovateSyncSnapshot {
+            occurred_at: chrono::DateTime::parse_from_rfc3339("2026-04-10T13:30:00Z")
+                .expect("valid timestamp")
+                .with_timezone(&chrono::Utc),
+            positions: Vec::new(),
+            working_orders: Vec::new(),
+            fills: Vec::new(),
+            account_snapshot: None,
+            mismatch_reason: None,
+            detail: "synced".to_owned(),
+        }
+    }
+
+    async fn sample_session_manager(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        let auth_api = TestAuthApi {
+            token: Arc::new(Mutex::new(Some(sample_token()))),
+        };
+        let account_api = TestAccountApi {
+            accounts: Arc::new(vec![TradovateAccount {
+                account_id: 101,
+                account_name: "paper-primary".to_owned(),
+                nickname: None,
+                active: true,
+            }]),
+        };
+        let sync_api = TestSyncApi {
+            snapshots: Arc::new(Mutex::new(VecDeque::from([empty_sync_snapshot()]))),
+        };
+
+        let mut manager = TradovateSessionManager::with_system_clock(
+            TradovateSessionConfig::new(
+                tv_bot_core_types::BrokerEnvironment::Demo,
+                "https://demo.tradovateapi.com/v1",
+                "wss://demo.tradovateapi.com/v1/websocket",
+            )
+            .expect("config should be valid"),
+            sample_credentials(),
+            TradovateRoutingPreferences {
+                paper_account_name: Some("paper-primary".to_owned()),
+                live_account_name: None,
+            },
+            auth_api,
+            account_api,
+            sync_api,
+        )
+        .expect("manager should build");
+
+        manager.authenticate().await.expect("auth should succeed");
+        manager
+            .select_account_for_mode(&RuntimeMode::Paper)
+            .await
+            .expect("paper account should select");
+        manager
+            .connect_user_sync()
+            .await
+            .expect("sync should connect");
+
+        manager
     }
 
     fn temp_strategy_path() -> PathBuf {
@@ -1248,6 +1485,142 @@ mod tests {
         assert!(readiness.report.checks.iter().any(|check| {
             check.name == "storage" && check.status == ReadinessCheckStatus::Warning
         }));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn paper_entry_request_dispatches_broker_side_brackets_through_runtime_control_loop() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+        operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::StartWarmup, &sample_context())
+            .expect("warmup should start");
+        operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::MarkWarmupReady, &sample_context())
+            .expect("warmup should complete");
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+                &sample_context(),
+            )
+            .expect("override path should arm");
+
+        let mut request = sample_entry_request();
+        if let ControlApiCommand::ManualIntent { request, .. } = &mut request.command {
+            request.risk_instrument.tick_value_usd = Some(Decimal::ONE);
+            request.execution.intent = ExecutionIntent::Enter {
+                side: tv_bot_core_types::TradeSide::Buy,
+                order_type: EntryOrderType::Market,
+                quantity: 1,
+                protective_brackets_expected: true,
+                reason: "paper acceptance entry".to_owned(),
+            };
+        }
+
+        let sanitized = operator
+            .sanitize_command_request(&sample_context(), request)
+            .expect("request should sanitize");
+
+        let runtime_request = match sanitized.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert_eq!(request.mode, RuntimeMode::Paper);
+                assert!(request.execution.state.runtime_can_submit_orders);
+                assert!(request.execution.state.new_entries_allowed);
+                request
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        };
+        let expected_symbol = runtime_request
+            .execution
+            .instrument
+            .tradovate_symbol
+            .clone();
+
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let mut manager = sample_session_manager().await;
+
+        let outcome = RuntimeControlLoop::handle_command(
+            RuntimeCommand::ManualIntent(runtime_request),
+            &mut manager,
+            &execution_api,
+            &journal,
+        )
+        .await
+        .expect("manual paper entry should dispatch");
+
+        let tv_bot_runtime_kernel::RuntimeCommandOutcome::Execution(outcome) = outcome;
+        assert_eq!(outcome.risk.decision.status, RiskDecisionStatus::Accepted);
+        assert!(outcome.dispatch.is_some());
+        let approved_quantity = outcome
+            .risk
+            .approved_quantity
+            .expect("risk sizing should approve a quantity");
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let oso = &place_osos[0];
+        assert_eq!(oso.context.account_id, 101);
+        assert_eq!(oso.context.account_spec, "paper-primary");
+        assert_eq!(oso.order.symbol, expected_symbol);
+        assert_eq!(oso.order.quantity, approved_quantity);
+        assert_eq!(
+            oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(oso.order.brackets.len(), 2);
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("stop_loss") && bracket.stop_price.is_some()
+        }));
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("take_profit") && bracket.limit_price.is_some()
+        }));
+
+        let journal_actions = journal
+            .list()
+            .expect("journal should list records")
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>();
+        assert!(
+            journal_actions.starts_with(&["intent_received".to_owned(), "decision".to_owned(),])
+        );
+        assert!(journal_actions
+            .iter()
+            .any(|action| action == "hard_override_used"));
+        assert!(journal_actions
+            .iter()
+            .any(|action| action == "dispatch_succeeded"));
 
         let _ = fs::remove_file(strategy_path);
     }
