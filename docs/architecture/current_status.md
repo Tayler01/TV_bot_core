@@ -10,10 +10,10 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 3 foundations are substantially in place.
 - Phase 4 foundations are substantially in place.
 - Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented, while the dashboard remains incomplete.
-- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows.
+- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for reconnect-close and signal-time shutdown blocking.
 - Phase 7 is mostly open.
 
-V1 is not release-ready yet because the dashboard and several paper-mode acceptance flows are still unfinished.
+V1 is not release-ready yet because the dashboard and the remaining full end-to-end paper-trading acceptance campaign are still unfinished.
 
 ## Implemented Through The Current Pass
 
@@ -40,10 +40,11 @@ V1 is not release-ready yet because the dashboard and several paper-mode accepta
 - Safety-critical HTTP mapping for execution-planning failures so blocked/manual entry paths return operator-facing conflicts or precondition responses instead of internal-server-error responses
 - Shutdown-with-open-position safety flow through the runtime host, including signal-time blocking, explicit flatten-first or leave-broker-protected decisions, and status projection of pending shutdown review state
 - Reconnect/open-position recovery review flow through the runtime host and CLI, including explicit leave-broker-protected or reattach acknowledgement and close-position dispatch through the existing audited flatten path
+- Targeted acceptance coverage for execution-engine no-new-entry blocking, paper-account scale-in dispatch, reconnect-review close-position flatten dispatch, and signal-time shutdown review blocking
 
 ## Must Finish Before Advancing Deeper Into Phase 5 And Phase 6
 
-1. Finish the remaining paper-mode and restart/reconnect acceptance campaigns from `V1_ACCEPTANCE_CRITERIA.md`.
+1. Finish the remaining full end-to-end paper-mode acceptance campaign from `V1_ACCEPTANCE_CRITERIA.md`, especially the operator and dashboard-visible flows that still need host-surface validation together rather than crate-level targeting.
 2. Build the dashboard against the now-real host surfaces for status, readiness, commands, events, history, and health.
 3. Expand dashboard-facing operational views on top of the now-sampled health and metrics pipeline.
 
@@ -71,6 +72,7 @@ V1 is not release-ready yet because the dashboard and several paper-mode accepta
 - Strategy-system acceptance is substantially met for V1 built-in rule/runtime behavior, but upload/library UX still needs to be wired through the host surfaces.
 - Runtime-host acceptance is substantially met at the transport layer, and broker plus market-data plus active storage/journal backend state are now surfaced through status/readiness while the richer trading-history projection is available through `/history` and the CLI.
 - Runtime-host observability acceptance is substantially met for persisted latency/health snapshots, host `/health` and `/status` projection, and operator-facing conflict/precondition mapping of safety-blocked execution paths.
+- Restart/reconnect and shutdown-with-open-position acceptance are now substantially met at the host and execution layers, including explicit close-position review routing and signal-time shutdown blocking coverage.
 - Dashboard acceptance is not met yet.
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.

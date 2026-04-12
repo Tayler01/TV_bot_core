@@ -1384,6 +1384,35 @@ mod tests {
     }
 
     #[test]
+    fn entry_is_blocked_when_runtime_disallows_new_positions() {
+        let mut state = state_context();
+        state.new_entries_allowed = false;
+
+        let error = ExecutionPlanner::plan_tradovate(&ExecutionRequest {
+            strategy: sample_strategy(
+                ReversalMode::FlattenFirst,
+                false,
+                1,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BotAllowed,
+            ),
+            instrument: instrument_context(),
+            state,
+            intent: ExecutionIntent::Enter {
+                side: TradeSide::Buy,
+                order_type: EntryOrderType::Market,
+                quantity: 1,
+                protective_brackets_expected: false,
+                reason: "blocked new entry".to_owned(),
+            },
+        })
+        .expect_err("new entries should be blocked when runtime disallows them");
+
+        assert_eq!(error, ExecutionEngineError::NewEntriesBlocked);
+    }
+
+    #[test]
     fn same_side_scale_in_is_planned_when_strategy_enables_it() {
         let mut state = state_context();
         state.current_position = Some(sample_position(1));
@@ -1613,6 +1642,65 @@ mod tests {
             .lock()
             .expect("execution mutex should not poison")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_and_execute_dispatches_scale_in_through_paper_account() {
+        let execution_api = FakeExecutionApi::default();
+        let mut manager = sample_session_manager().await;
+
+        let mut state = state_context();
+        state.current_position = Some(sample_position(1));
+
+        let report = plan_and_execute_tradovate(
+            &ExecutionRequest {
+                strategy: sample_strategy(
+                    ReversalMode::FlattenFirst,
+                    true,
+                    3,
+                    BrokerPreference::BrokerPreferred,
+                    BrokerPreference::BrokerPreferred,
+                    BrokerPreference::BotAllowed,
+                ),
+                instrument: instrument_context(),
+                state,
+                intent: ExecutionIntent::Enter {
+                    side: TradeSide::Buy,
+                    order_type: EntryOrderType::Market,
+                    quantity: 1,
+                    protective_brackets_expected: false,
+                    reason: "paper scale in".to_owned(),
+                },
+            },
+            &mut manager,
+            &execution_api,
+        )
+        .await
+        .expect("paper scale-in should dispatch successfully");
+
+        assert_eq!(report.results.len(), 1);
+        assert!(matches!(
+            &report.results[0],
+            ExecutionDispatchResult::OrderSubmitted {
+                order_id: 7001,
+                used_brackets: false,
+                ..
+            }
+        ));
+
+        let orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].context.account_id, 101);
+        assert_eq!(orders[0].order.symbol, "GCM2026");
+        assert_eq!(orders[0].order.quantity, 1);
+        assert!(liquidations.is_empty());
     }
 
     #[tokio::test]

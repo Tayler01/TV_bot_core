@@ -2362,6 +2362,11 @@ mod tests {
     struct FakeDispatcher {
         result: Option<Result<RuntimeCommandOutcome, RuntimeCommandError>>,
         snapshot: RuntimeBrokerSnapshot,
+        dispatched_commands: std::sync::Arc<std::sync::Mutex<Vec<RuntimeCommand>>>,
+    }
+
+    fn empty_dispatch_log() -> std::sync::Arc<std::sync::Mutex<Vec<RuntimeCommand>>> {
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
     }
 
     #[derive(Default)]
@@ -2379,8 +2384,12 @@ mod tests {
     impl RuntimeCommandDispatcher for FakeDispatcher {
         async fn dispatch(
             &mut self,
-            _command: RuntimeCommand,
+            command: RuntimeCommand,
         ) -> Result<RuntimeCommandOutcome, RuntimeCommandError> {
+            self.dispatched_commands
+                .lock()
+                .expect("dispatch log mutex should not poison")
+                .push(command);
             self.result
                 .take()
                 .expect("fake dispatcher should have a queued result")
@@ -2894,6 +2903,7 @@ mod tests {
                         },
                     })),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -2960,6 +2970,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_outcome())),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3050,6 +3061,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_outcome())),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3105,6 +3117,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_dispatched_outcome())),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3211,6 +3224,7 @@ mod tests {
                         },
                     })),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3297,6 +3311,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_outcome())),
                     snapshot,
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3349,6 +3364,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconnect_review_close_position_dispatches_flatten_request() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let dispatched_commands = empty_dispatch_log();
+        let mut snapshot = sample_dispatch_snapshot();
+        if let Some(status) = snapshot.broker_status.as_mut() {
+            status.sync_state = tv_bot_core_types::BrokerSyncState::ReviewRequired;
+            status.review_required_reason =
+                Some("active broker position detected after reconnect".to_owned());
+        }
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot,
+                    dispatched_commands: dispatched_commands.clone(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        for command in [
+            RuntimeLifecycleCommand::LoadStrategy {
+                path: strategy_path.clone(),
+            },
+            RuntimeLifecycleCommand::SetMode {
+                mode: RuntimeMode::Paper,
+            },
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/runtime/commands")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&RuntimeLifecycleRequest {
+                                source: ManualCommandSource::Cli,
+                                command,
+                            })
+                            .expect("request should serialize"),
+                        ))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("router should respond");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                                decision: RuntimeReconnectDecision::ClosePosition,
+                                contract_id: Some(4444),
+                                reason: Some("close during reconnect review".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+
+        let dispatched_commands = dispatched_commands
+            .lock()
+            .expect("dispatch log mutex should not poison");
+        assert_eq!(dispatched_commands.len(), 1);
+        match &dispatched_commands[0] {
+            RuntimeCommand::ManualIntent(request) => {
+                assert_eq!(request.mode, RuntimeMode::Paper);
+                assert_eq!(request.action_source, ActionSource::Cli);
+                assert_eq!(request.execution.instrument.active_contract_id, Some(4444));
+                assert!(request.execution.state.current_position.is_some());
+                assert_eq!(
+                    request.execution.intent,
+                    ExecutionIntent::Flatten {
+                        reason: "close during reconnect review".to_owned(),
+                    }
+                );
+            }
+            other => panic!("unexpected runtime command: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
     async fn shutdown_command_blocks_when_open_position_lacks_broker_protection() {
         let history = test_history();
         let latency_collector = test_latency_collector();
@@ -3360,6 +3492,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_outcome())),
                     snapshot,
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3423,6 +3556,7 @@ mod tests {
                 Box::new(FakeDispatcher {
                     result: Some(Ok(sample_outcome())),
                     snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
                 }),
                 history.clone(),
                 latency_collector.clone(),
@@ -3495,6 +3629,42 @@ mod tests {
         assert!(lifecycle_response.status.shutdown_review.awaiting_flatten);
 
         let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_blocks_until_operator_reviews_open_position() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+
+        let should_stop = handle_runtime_shutdown_signal(&state).await;
+
+        assert!(!should_stop);
+
+        let review = state.shutdown_review.lock().await.clone();
+        assert!(review.pending_signal);
+        assert!(review.blocked);
+        assert!(!review.awaiting_flatten);
+        assert!(review
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("choose flatten first")));
     }
 
     #[test]

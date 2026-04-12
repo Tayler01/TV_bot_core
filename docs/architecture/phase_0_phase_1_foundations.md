@@ -64,6 +64,7 @@ Important guardrails already enforced:
 - execution-planning failures that represent safety or readiness conflicts now map to operator-facing HTTP conflict/precondition responses instead of surfacing as generic internal-server errors
 - reconnect/open-position recovery now has an explicit operator review path through `/runtime/commands` and the CLI, including safe acknowledge-vs-close behavior that still reuses the audited flatten path when position closure is chosen
 - shutdown with open positions now blocks on signal by default, projects pending review state through `/status`, and requires an explicit flatten-first or leave-broker-protected decision before the host exits
+- targeted acceptance coverage now explicitly exercises new-entry blocking inside the execution planner, paper-account same-side scale-in dispatch, reconnect-review close-position flatten dispatch, and signal-time shutdown review blocking
 
 Verification status:
 
@@ -83,4 +84,7 @@ Verification status:
 - `cargo test -j 1 -p tv-bot-broker-tradovate -p tv-bot-control-api -p tv-bot-runtime -p tv-bot-cli` passes when run against a fresh target directory, covering Tradovate live auth/sync/execution transport, runtime-host history projection sync and `/history` routing, CLI history inspection, and the control-plane surfaces that depend on those broker/runtime paths.
 - `cargo test -j 1 -p tv-bot-metrics -p tv-bot-health -p tv-bot-control-api -p tv-bot-execution-engine -p tv-bot-runtime -p tv-bot-cli` passes when run against a fresh target directory, covering runtime-collected latency persistence, durable health supervision, operator-facing HTTP mapping of execution-planning conflicts, server-side degraded-entry blocking, runtime-host `/health` and `/status` observability projection, and positive scale-in planning when explicitly enabled.
 - `cargo test -j 1 -p tv-bot-health -p tv-bot-runtime -p tv-bot-cli` passes when run against a fresh target directory, covering persisted health snapshots, cross-platform runtime resource sampling projection through `/health` and `/status`, and the CLI operator view for sampled CPU and memory telemetry.
+- `cargo test -j 1 -p tv-bot-execution-engine` passes after formatting, including the acceptance-style execution tests for runtime new-entry blocking and paper-account scale-in dispatch.
+- `cargo test -j 1 -p tv-bot-runtime reconnect_review_close_position_dispatches_flatten_request` passes with the shared serial target directory, covering reconnect-review close-position routing through the audited flatten path.
+- `cargo test -j 1 -p tv-bot-runtime shutdown_signal_blocks_until_operator_reviews_open_position` passes with the shared serial target directory, covering signal-time shutdown blocking when a broker position remains open.
 - This workspace lives under Windows + OneDrive, so subsequent full-workspace reruns may still hit transient `LNK1104` file-locking on generated test executables. The current post-change full-workspace rerun reproduced that linker lock in unrelated `broker_tradovate` test executables, so serial targeted verification remains the safest retry path when that happens.
