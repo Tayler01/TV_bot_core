@@ -106,6 +106,11 @@ enum RuntimeMarketDataState {
         service: MarketDataService<DatabentoLiveTransport>,
         last_snapshot: Option<MarketDataServiceSnapshot>,
     },
+    #[cfg(test)]
+    SnapshotOverride {
+        snapshot: MarketDataServiceSnapshot,
+        detail: Option<String>,
+    },
 }
 
 struct RuntimeMarketDataManager {
@@ -392,6 +397,30 @@ impl RuntimeMarketDataManager {
             RuntimeMarketDataState::Unconfigured { detail }
             | RuntimeMarketDataState::PendingStrategy { detail }
             | RuntimeMarketDataState::StrategyBlocked { detail } => Err(detail.clone()),
+            #[cfg(test)]
+            RuntimeMarketDataState::SnapshotOverride { snapshot, .. } => {
+                snapshot.warmup_requested = true;
+                snapshot.warmup_mode = DatabentoWarmupMode::LiveOnly;
+                snapshot.replay_caught_up = true;
+                snapshot.session.market_data.warmup.started_at = Some(
+                    snapshot
+                        .session
+                        .market_data
+                        .warmup
+                        .started_at
+                        .unwrap_or(now),
+                );
+                snapshot.session.market_data.warmup.updated_at = now;
+                snapshot.trade_ready = matches!(
+                    snapshot.session.market_data.health,
+                    tv_bot_market_data::MarketDataHealth::Healthy
+                ) && matches!(
+                    snapshot.session.market_data.warmup.status,
+                    tv_bot_core_types::WarmupStatus::Ready
+                );
+                snapshot.updated_at = now;
+                Ok(Some(snapshot.clone()))
+            }
         }
     }
 
@@ -455,6 +484,13 @@ impl RuntimeMarketDataManager {
                 snapshot: None,
                 detail: Some(detail.clone()),
             },
+            #[cfg(test)]
+            RuntimeMarketDataState::SnapshotOverride { snapshot, detail } => {
+                RuntimeMarketDataView {
+                    snapshot: Some(snapshot.clone()),
+                    detail: detail.clone(),
+                }
+            }
         }
     }
 }
@@ -955,13 +991,14 @@ async fn lifecycle_state_command_handler(
 ) -> Response {
     let context = status_context(&state, true).await;
     let history_command = command.clone();
-    let message = {
+    let command_result = {
         let mut operator = state.operator_state.lock().await;
-        match operator.apply_lifecycle_command(command, &context) {
-            Ok(message) => message,
-            Err(error) => {
-                return runtime_lifecycle_error_response(&state, error).await;
-            }
+        operator.apply_lifecycle_command(command, &context)
+    };
+    let message = match command_result {
+        Ok(message) => message,
+        Err(error) => {
+            return runtime_lifecycle_error_response(&state, error).await;
         }
     };
 
@@ -979,17 +1016,17 @@ async fn load_strategy_runtime_command_handler(
     source: tv_bot_control_api::ManualCommandSource,
 ) -> Response {
     let context = status_context(&state, true).await;
-    let (message, market_data_seed, current_mode) = {
+    let command_result = {
         let mut operator = state.operator_state.lock().await;
-        let message = match operator
-            .apply_lifecycle_command(RuntimeLifecycleCommand::LoadStrategy { path }, &context)
-        {
-            Ok(message) => message,
-            Err(error) => return runtime_lifecycle_error_response(&state, error).await,
-        };
+        let message = operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::LoadStrategy { path }, &context);
         let market_data_seed = operator.market_data_seed().ok();
         let current_mode = operator.status_snapshot(&context).mode;
         (message, market_data_seed, current_mode)
+    };
+    let (message, market_data_seed, current_mode) = match command_result {
+        (Ok(message), market_data_seed, current_mode) => (message, market_data_seed, current_mode),
+        (Err(error), _, _) => return runtime_lifecycle_error_response(&state, error).await,
     };
 
     {
@@ -1031,12 +1068,13 @@ async fn start_warmup_runtime_command_handler(
     }
 
     let context = status_context(&state, true).await;
-    let message = {
+    let command_result = {
         let mut operator = state.operator_state.lock().await;
-        match operator.apply_lifecycle_command(RuntimeLifecycleCommand::StartWarmup, &context) {
-            Ok(message) => message,
-            Err(error) => return runtime_lifecycle_error_response(&state, error).await,
-        }
+        operator.apply_lifecycle_command(RuntimeLifecycleCommand::StartWarmup, &context)
+    };
+    let message = match command_result {
+        Ok(message) => message,
+        Err(error) => return runtime_lifecycle_error_response(&state, error).await,
     };
 
     if let Err(error) =
@@ -1090,12 +1128,13 @@ async fn reconnect_review_runtime_command_handler(
 
     match decision {
         RuntimeReconnectDecision::ClosePosition => {
-            let contract_id = {
+            let contract_id_result = {
                 let operator = state.operator_state.lock().await;
-                match operator.resolve_active_contract_id(&context, contract_id) {
-                    Ok(contract_id) => contract_id,
-                    Err(error) => return runtime_lifecycle_error_response(&state, error).await,
-                }
+                operator.resolve_active_contract_id(&context, contract_id)
+            };
+            let contract_id = match contract_id_result {
+                Ok(contract_id) => contract_id,
+                Err(error) => return runtime_lifecycle_error_response(&state, error).await,
             };
             let reason = reason.unwrap_or_else(|| {
                 "reconnect review requested closing the broker position".to_owned()
@@ -1260,12 +1299,13 @@ async fn shutdown_runtime_command_handler(
             runtime_lifecycle_success_response(&state, HttpStatusCode::Ok, message, None).await
         }
         RuntimeShutdownDecision::FlattenFirst => {
-            let contract_id = {
+            let contract_id_result = {
                 let operator = state.operator_state.lock().await;
-                match operator.resolve_active_contract_id(&context, contract_id) {
-                    Ok(contract_id) => contract_id,
-                    Err(error) => return runtime_lifecycle_error_response(&state, error).await,
-                }
+                operator.resolve_active_contract_id(&context, contract_id)
+            };
+            let contract_id = match contract_id_result {
+                Ok(contract_id) => contract_id,
+                Err(error) => return runtime_lifecycle_error_response(&state, error).await,
             };
             let reason =
                 reason.unwrap_or_else(|| "shutdown requested flatten before exit".to_owned());
@@ -2334,7 +2374,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use axum::{body::Body, http::Request};
+    use axum::{body::Body, http::Request, response::Response, Router};
     use http_body_util::BodyExt;
     use rust_decimal::Decimal;
     use secrecy::SecretString;
@@ -2382,6 +2422,13 @@ mod tests {
 
     fn empty_dispatch_log() -> std::sync::Arc<std::sync::Mutex<Vec<RuntimeCommand>>> {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
+    }
+
+    async fn request_with_timeout(app: Router, request: Request<Body>, label: &str) -> Response {
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), app.oneshot(request))
+            .await
+            .unwrap_or_else(|_| panic!("{label} timed out"))
+            .expect("router should respond")
     }
 
     #[derive(Default)]
@@ -2910,6 +2957,83 @@ mod tests {
         }
     }
 
+    fn sample_market_data_snapshot(
+        health: tv_bot_market_data::MarketDataHealth,
+    ) -> MarketDataServiceSnapshot {
+        let now = chrono::Utc::now();
+        let trade_feed_state = if matches!(health, tv_bot_market_data::MarketDataHealth::Degraded) {
+            tv_bot_market_data::FeedReadinessState::Degraded
+        } else {
+            tv_bot_market_data::FeedReadinessState::Ready
+        };
+        let trade_feed_detail = if matches!(health, tv_bot_market_data::MarketDataHealth::Degraded)
+        {
+            "trade feed degraded"
+        } else {
+            "trade feed ready"
+        };
+
+        MarketDataServiceSnapshot {
+            session: tv_bot_market_data::DatabentoSessionStatus {
+                market_data: tv_bot_market_data::MarketDataStatusSnapshot {
+                    provider: "databento".to_owned(),
+                    dataset: "GLBX.MDP3".to_owned(),
+                    connection_state: tv_bot_market_data::MarketDataConnectionState::Subscribed,
+                    health,
+                    feed_statuses: vec![
+                        tv_bot_market_data::FeedStatus {
+                            instrument_symbol: "GCM2026".to_owned(),
+                            feed: tv_bot_core_types::FeedType::Trades,
+                            state: trade_feed_state,
+                            last_event_at: Some(now),
+                            detail: trade_feed_detail.to_owned(),
+                        },
+                        tv_bot_market_data::FeedStatus {
+                            instrument_symbol: "GCM2026".to_owned(),
+                            feed: tv_bot_core_types::FeedType::Ohlcv1m,
+                            state: tv_bot_market_data::FeedReadinessState::Ready,
+                            last_event_at: Some(now),
+                            detail: "bar feed ready".to_owned(),
+                        },
+                    ],
+                    warmup: tv_bot_market_data::WarmupProgress {
+                        status: WarmupStatus::Ready,
+                        ready_requires_all: true,
+                        buffers: vec![tv_bot_market_data::BufferStatus {
+                            symbol: "GCM2026".to_owned(),
+                            timeframe: tv_bot_core_types::Timeframe::OneMinute,
+                            available_bars: 10,
+                            required_bars: 10,
+                            capacity: 10,
+                            ready: true,
+                        }],
+                        started_at: Some(now),
+                        updated_at: now,
+                        failure_reason: None,
+                    },
+                    reconnect_count: 0,
+                    last_heartbeat_at: Some(now),
+                    last_disconnect_reason: None,
+                    updated_at: now,
+                },
+            },
+            warmup_requested: true,
+            warmup_mode: tv_bot_market_data::DatabentoWarmupMode::LiveOnly,
+            replay_caught_up: true,
+            trade_ready: matches!(health, tv_bot_market_data::MarketDataHealth::Healthy),
+            updated_at: now,
+        }
+    }
+
+    async fn set_test_market_data_snapshot(
+        state: &RuntimeHostState,
+        snapshot: MarketDataServiceSnapshot,
+        detail: Option<String>,
+    ) {
+        let mut market_data = state.market_data.lock().await;
+        market_data.state = RuntimeMarketDataState::SnapshotOverride { snapshot, detail };
+    }
+
     fn sample_strategy() -> CompiledStrategy {
         CompiledStrategy {
             metadata: StrategyMetadata {
@@ -3301,26 +3425,25 @@ mod tests {
         let strategy_path = temp_strategy_path();
         write_strategy_file(&strategy_path);
 
-        let load_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/runtime/commands")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&RuntimeLifecycleRequest {
-                            source: ManualCommandSource::Cli,
-                            command: RuntimeLifecycleCommand::LoadStrategy {
-                                path: strategy_path.clone(),
-                            },
-                        })
-                        .expect("request should serialize"),
-                    ))
-                    .expect("request should build"),
-            )
-            .await
-            .expect("router should respond");
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy request",
+        )
+        .await;
         assert_eq!(load_response.status(), StatusCode::OK);
 
         let response = app
@@ -3546,6 +3669,394 @@ mod tests {
                 "dispatch_succeeded".to_owned(),
             ]
         );
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn arm_command_returns_precondition_required_when_override_is_missing() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state(
+            execution_api,
+            journal,
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        )
+        .await;
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::Arm {
+                            allow_override: false,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "arm without override request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+        assert_eq!(
+            lifecycle_response.status_code,
+            HttpStatusCode::PreconditionRequired
+        );
+        assert!(lifecycle_response
+            .message
+            .contains("hard override is required"));
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(lifecycle_response.status.arm_state, ArmState::Disarmed);
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn paper_entry_command_is_blocked_when_market_data_is_degraded_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state(
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        )
+        .await;
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+            (
+                "arm runtime request",
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "healthy status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(status_before.arm_state, ArmState::Armed);
+        assert_eq!(
+            status_before
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Degraded),
+            Some("market data is degraded; new entries must remain blocked".to_owned()),
+        )
+        .await;
+
+        let status_degraded = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "degraded status request",
+        )
+        .await;
+        assert_eq!(status_degraded.status(), StatusCode::OK);
+        let status_degraded_body = status_degraded
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_degraded: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_degraded_body).expect("status json should parse");
+        assert_eq!(status_degraded.mode, RuntimeMode::Paper);
+        assert_eq!(status_degraded.arm_state, ArmState::Armed);
+        assert_eq!(
+            status_degraded.market_data_detail.as_deref(),
+            Some("market data is degraded; new entries must remain blocked")
+        );
+        assert_eq!(
+            status_degraded
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Degraded)
+        );
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&sample_request()).expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "degraded entry command request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let command_response: HttpCommandResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(command_response.status_code, HttpStatusCode::Conflict);
+        match command_response.body {
+            HttpResponseBody::Error { message } => {
+                assert!(message.contains("new entries are blocked"));
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert_eq!(
+            history_after.projection.total_order_records,
+            history_before.projection.total_order_records
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let journal_actions = journal_records
+            .iter()
+            .map(|record| record.action.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_failed".to_owned(),
+            ]
+        );
+        assert!(journal_records[2].payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("new entries are blocked")));
 
         let _ = fs::remove_file(strategy_path);
     }
