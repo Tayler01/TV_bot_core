@@ -13,6 +13,7 @@ import {
   loadStrategyLibrary,
   parseControlApiEvent,
   sendLifecycleCommand,
+  updateRuntimeSettings,
   uploadStrategyMarkdown,
   validateStrategyPath,
   type DashboardSnapshot,
@@ -38,8 +39,10 @@ import type {
   RuntimeLifecycleCommand,
   RuntimeLifecycleResponse,
   RuntimeMode,
+  RuntimeEditableSettings,
   RuntimeReconnectReviewStatus,
   RuntimeShutdownReviewStatus,
+  RuntimeSettingsSnapshot,
   RuntimeStatusSnapshot,
   RuntimeStrategyCatalogEntry,
   RuntimeStrategyLibraryResponse,
@@ -119,6 +122,14 @@ interface EventFeedViewModel {
   recentEvents: EventFeedItem[];
   lastEventAt: string | null;
   error: string | null;
+}
+
+interface RuntimeSettingsDraft {
+  startupMode: RuntimeMode;
+  defaultStrategyPath: string;
+  allowSqliteFallback: boolean;
+  paperAccountName: string;
+  liveAccountName: string;
 }
 
 interface TradePerformanceViewModel {
@@ -319,6 +330,30 @@ function validationTone(validation: RuntimeStrategyValidationResponse | null): B
   }
 
   return "healthy";
+}
+
+function settingsDraftFromSnapshot(settings: RuntimeSettingsSnapshot): RuntimeSettingsDraft {
+  return {
+    startupMode: settings.editable.startup_mode,
+    defaultStrategyPath: settings.editable.default_strategy_path ?? "",
+    allowSqliteFallback: settings.editable.allow_sqlite_fallback,
+    paperAccountName: settings.editable.paper_account_name ?? "",
+    liveAccountName: settings.editable.live_account_name ?? "",
+  };
+}
+
+function runtimeSettingsRequestFromDraft(draft: RuntimeSettingsDraft): RuntimeEditableSettings {
+  const defaultStrategyPath = draft.defaultStrategyPath.trim();
+  const paperAccountName = draft.paperAccountName.trim();
+  const liveAccountName = draft.liveAccountName.trim();
+
+  return {
+    startup_mode: draft.startupMode,
+    default_strategy_path: defaultStrategyPath.length > 0 ? defaultStrategyPath : null,
+    allow_sqlite_fallback: draft.allowSqliteFallback,
+    paper_account_name: paperAccountName.length > 0 ? paperAccountName : null,
+    live_account_name: liveAccountName.length > 0 ? liveAccountName : null,
+  };
 }
 
 function strategyLabel(validation: RuntimeStrategyValidationResponse | null): string {
@@ -883,6 +918,8 @@ function App() {
   );
   const [shutdownReason, setShutdownReason] = useState("dashboard shutdown review decision");
   const [selectedStrategyUploadFile, setSelectedStrategyUploadFile] = useState<File | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<RuntimeSettingsDraft | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
 
   const refreshSnapshot = useEffectEvent(async (signal?: AbortSignal) => {
     const attemptedAt = new Date().toISOString();
@@ -1079,6 +1116,62 @@ function App() {
         libraryState: current.library ? "ready" : "error",
         libraryError: message,
       }));
+    }
+  });
+
+  const saveRuntimeSettings = useEffectEvent(async () => {
+    if (!settingsDraft) {
+      return;
+    }
+
+    setPendingAction("Saving runtime settings");
+    setCommandFeedback(null);
+
+    try {
+      const result = await updateRuntimeSettings({
+        source: "dashboard",
+        settings: runtimeSettingsRequestFromDraft(settingsDraft),
+      });
+      let refreshedSnapshot: DashboardSnapshot | null = null;
+
+      try {
+        refreshedSnapshot = await loadDashboardSnapshot();
+      } catch {
+        refreshedSnapshot = null;
+      }
+
+      setViewModel((current) => ({
+        ...current,
+        snapshot:
+          refreshedSnapshot ??
+          (current.snapshot
+            ? {
+                ...current.snapshot,
+                settings: result.settings,
+                fetchedAt: new Date().toISOString(),
+              }
+            : null),
+        loadState: "ready",
+        error: null,
+        lastAttemptedAt: new Date().toISOString(),
+      }));
+      setSettingsDraft(settingsDraftFromSnapshot(result.settings));
+      setSettingsDirty(false);
+      setCommandFeedback({
+        tone: result.settings.persistence_mode === "config_file" ? "healthy" : "warning",
+        message: result.message,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Dashboard failed to save runtime settings through the local control API.";
+      setCommandFeedback({
+        tone: "danger",
+        message,
+      });
+    } finally {
+      setPendingAction(null);
     }
   });
 
@@ -1321,6 +1414,14 @@ function App() {
   }, [strategyViewModel.selectedPath]);
 
   const snapshot = viewModel.snapshot;
+  useEffect(() => {
+    if (!snapshot || settingsDirty) {
+      return;
+    }
+
+    setSettingsDraft(settingsDraftFromSnapshot(snapshot.settings));
+  }, [settingsDirty, snapshot]);
+
   const selectedStrategyEntry =
     strategyViewModel.library?.strategies.find(
       (entry) => entry.path === strategyViewModel.selectedPath,
@@ -1402,6 +1503,8 @@ function App() {
     snapshot != null &&
     pendingAction === null &&
     snapshot.status.operator_new_entries_enabled === false;
+  const canSaveSettings =
+    snapshot != null && settingsDraft != null && settingsDirty && pendingAction === null;
   const reviewActionsDisabled = reviewButtonDisabled(pendingAction, snapshot);
   const reconnectCloseDisabled =
     reviewActionsDisabled || snapshot?.status.reconnect_review.required !== true;
@@ -1809,6 +1912,171 @@ function App() {
                   through the local runtime host, keeping file writes and validation inside the
                   backend-owned strategy library workflow.
                 </p>
+              </section>
+
+              <section className="control-card control-card--wide">
+                <p className="control-card__title">Runtime settings</p>
+                <div className="pill-row">
+                  <Pill
+                    label={
+                      snapshot.settings.persistence_mode === "config_file"
+                        ? "Config file backed"
+                        : "Session only"
+                    }
+                    tone={
+                      snapshot.settings.persistence_mode === "config_file" ? "healthy" : "warning"
+                    }
+                  />
+                  <Pill
+                    label={snapshot.settings.restart_required ? "Restart required" : "Live applied"}
+                    tone={snapshot.settings.restart_required ? "warning" : "healthy"}
+                  />
+                  <Pill
+                    label={snapshot.settings.config_file_path ?? "No config file path"}
+                    tone={snapshot.settings.config_file_path ? "info" : "warning"}
+                  />
+                </div>
+                <div className="control-grid">
+                  <label className="field">
+                    <span>Startup mode</span>
+                    <select
+                      aria-label="Runtime startup mode"
+                      value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSettingsDirty(true);
+                        setSettingsDraft((current) => ({
+                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                          startupMode: event.target.value as RuntimeMode,
+                        }));
+                      }}
+                    >
+                      <option value="paper">Paper</option>
+                      <option value="observation">Observation</option>
+                      <option value="paused">Paused</option>
+                      <option value="live">Live</option>
+                    </select>
+                  </label>
+                  <label className="field field--wide">
+                    <span>Default strategy path</span>
+                    <input
+                      aria-label="Default strategy path"
+                      placeholder="strategies/examples/gc_momentum_fade_v1.md"
+                      value={
+                        settingsDraft?.defaultStrategyPath ??
+                        (snapshot.settings.editable.default_strategy_path ?? "")
+                      }
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSettingsDirty(true);
+                        setSettingsDraft((current) => ({
+                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                          defaultStrategyPath: event.target.value,
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Persistence fallback</span>
+                    <select
+                      aria-label="Persistence fallback policy"
+                      value={
+                        (settingsDraft?.allowSqliteFallback ??
+                        snapshot.settings.editable.allow_sqlite_fallback)
+                          ? "allow"
+                          : "block"
+                      }
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSettingsDirty(true);
+                        setSettingsDraft((current) => ({
+                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                          allowSqliteFallback: event.target.value === "allow",
+                        }));
+                      }}
+                    >
+                      <option value="block">Require primary Postgres</option>
+                      <option value="allow">Allow SQLite fallback</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Paper account name</span>
+                    <input
+                      aria-label="Paper account name"
+                      placeholder="paper-primary"
+                      value={
+                        settingsDraft?.paperAccountName ??
+                        (snapshot.settings.editable.paper_account_name ?? "")
+                      }
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSettingsDirty(true);
+                        setSettingsDraft((current) => ({
+                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                          paperAccountName: event.target.value,
+                        }));
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Live account name</span>
+                    <input
+                      aria-label="Live account name"
+                      placeholder="live-primary"
+                      value={
+                        settingsDraft?.liveAccountName ??
+                        (snapshot.settings.editable.live_account_name ?? "")
+                      }
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSettingsDirty(true);
+                        setSettingsDraft((current) => ({
+                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                          liveAccountName: event.target.value,
+                        }));
+                      }}
+                    />
+                  </label>
+                </div>
+                <div className="action-row">
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={!canSaveSettings}
+                    onClick={() => {
+                      void saveRuntimeSettings();
+                    }}
+                  >
+                    Save runtime settings
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={!settingsDirty || pendingAction !== null}
+                    onClick={() => {
+                      setSettingsDraft(settingsDraftFromSnapshot(snapshot.settings));
+                      setSettingsDirty(false);
+                    }}
+                  >
+                    Reset form
+                  </button>
+                </div>
+                <dl className="definition-list">
+                  <Definition label="HTTP bind" value={snapshot.settings.http_bind} />
+                  <Definition label="WebSocket bind" value={snapshot.settings.websocket_bind} />
+                  <Definition
+                    label="Config path"
+                    value={snapshot.settings.config_file_path ?? "Runtime launched without a config file"}
+                  />
+                  <Definition
+                    label="Effective path"
+                    value={
+                      snapshot.settings.editable.default_strategy_path ??
+                      "No default strategy path"
+                    }
+                  />
+                </dl>
+                <p className="control-card__note">{snapshot.settings.detail}</p>
               </section>
 
               <section className="control-card">

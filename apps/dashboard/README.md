@@ -9,9 +9,11 @@ The dashboard consumes only the local control plane:
 - `GET /readiness`
 - `GET /history`
 - `GET /journal`
+- `GET /settings`
 - `GET /strategies`
 - `POST /strategies/upload`
 - `POST /strategies/validate`
+- `POST /settings`
 - `POST /runtime/commands`
 - `GET /events`
 
@@ -21,6 +23,7 @@ The current dashboard now covers:
 
 - explicit runtime mode with strong paper/live separation
 - strategy library upload, browsing, and host-backed validation before load
+- host-backed runtime settings editing for startup mode, default strategy path, SQLite fallback policy, and paper/live account routing names
 - strategy load through the audited runtime lifecycle command path
 - warmup, arm/disarm, pause/resume, mode switch, explicit `disable new entries`, manual entry, close-position, and cancel-working-orders controls
 - reconnect and shutdown review action cards through the runtime lifecycle command path

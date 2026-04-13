@@ -74,6 +74,15 @@ pub struct ControlApiConfig {
     pub websocket_bind: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeSettingsFileUpdate {
+    pub startup_mode: RuntimeMode,
+    pub default_strategy_path: Option<PathBuf>,
+    pub allow_sqlite_fallback: bool,
+    pub paper_account_name: Option<String>,
+    pub live_account_name: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct LoggingConfig {
     pub level: String,
@@ -131,6 +140,28 @@ pub enum ConfigError {
         key: String,
         value: String,
         message: String,
+    },
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigUpdateError {
+    #[error("failed to read config file `{path}`: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config file `{path}`: {source}")]
+    TomlDeserialize {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+    #[error("failed to serialize config file `{path}`: {source}")]
+    TomlSerialize {
+        path: PathBuf,
+        #[source]
+        source: toml::ser::Error,
     },
 }
 
@@ -492,6 +523,126 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
     }
 }
 
+pub fn persist_runtime_settings_update(
+    path: &Path,
+    update: &RuntimeSettingsFileUpdate,
+) -> Result<(), ConfigUpdateError> {
+    let body = fs::read_to_string(path).map_err(|source| ConfigUpdateError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut document = toml::from_str::<toml::Value>(&body).map_err(|source| {
+        ConfigUpdateError::TomlDeserialize {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+
+    if !document.is_table() {
+        document = toml::Value::Table(Default::default());
+    }
+
+    let root = document
+        .as_table_mut()
+        .expect("config root should be a table");
+    let runtime = ensure_table(root, "runtime");
+    runtime.insert(
+        "startup_mode".to_owned(),
+        toml::Value::String(runtime_mode_value(&update.startup_mode).to_owned()),
+    );
+    set_optional_path(
+        runtime,
+        "default_strategy_path",
+        update.default_strategy_path.as_ref(),
+    );
+    runtime.insert(
+        "allow_sqlite_fallback".to_owned(),
+        toml::Value::Boolean(update.allow_sqlite_fallback),
+    );
+
+    let broker = ensure_table(root, "broker");
+    set_optional_string(
+        broker,
+        "paper_account_name",
+        update.paper_account_name.as_deref(),
+    );
+    set_optional_string(
+        broker,
+        "live_account_name",
+        update.live_account_name.as_deref(),
+    );
+
+    let serialized =
+        toml::to_string_pretty(&document).map_err(|source| ConfigUpdateError::TomlSerialize {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    fs::write(path, serialized).map_err(|source| ConfigUpdateError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    Ok(())
+}
+
+fn ensure_table<'a>(
+    parent: &'a mut toml::map::Map<String, toml::Value>,
+    key: &str,
+) -> &'a mut toml::map::Map<String, toml::Value> {
+    let entry = parent
+        .entry(key.to_owned())
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    if !entry.is_table() {
+        *entry = toml::Value::Table(Default::default());
+    }
+
+    entry
+        .as_table_mut()
+        .expect("config section should be a table")
+}
+
+fn set_optional_string(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    match value {
+        Some(value) => {
+            table.insert(key.to_owned(), toml::Value::String(value.to_owned()));
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+fn set_optional_path(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    value: Option<&PathBuf>,
+) {
+    match value {
+        Some(value) => {
+            table.insert(
+                key.to_owned(),
+                toml::Value::String(value.to_string_lossy().to_string()),
+            );
+        }
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+fn runtime_mode_value(mode: &RuntimeMode) -> &'static str {
+    match mode {
+        RuntimeMode::Paper => "paper",
+        RuntimeMode::Live => "live",
+        RuntimeMode::Observation => "observation",
+        RuntimeMode::Paused => "paused",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,5 +773,67 @@ mod tests {
         assert_eq!(config.broker.cid.as_deref(), Some("cid-123"));
         assert!(config.broker.password.is_some());
         assert!(config.broker.sec.is_some());
+    }
+
+    #[test]
+    fn persists_runtime_settings_subset_back_into_existing_config_file() {
+        let temp_path = std::env::temp_dir().join(format!(
+            "tv_bot_config_runtime_settings_{}_{}.toml",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        fs::write(
+            &temp_path,
+            r#"
+                [runtime]
+                startup_mode = "observation"
+                default_strategy_path = "strategies/old.md"
+                allow_sqlite_fallback = false
+
+                [broker]
+                environment = "demo"
+                username = "operator"
+                paper_account_name = "paper-primary"
+
+                [control_api]
+                http_bind = "127.0.0.1:8080"
+                websocket_bind = "127.0.0.1:8081"
+            "#,
+        )
+        .expect("temp config should write");
+
+        persist_runtime_settings_update(
+            &temp_path,
+            &RuntimeSettingsFileUpdate {
+                startup_mode: RuntimeMode::Paper,
+                default_strategy_path: None,
+                allow_sqlite_fallback: true,
+                paper_account_name: Some("paper-secondary".to_owned()),
+                live_account_name: Some("live-primary".to_owned()),
+            },
+        )
+        .expect("settings update should persist");
+
+        let updated = AppConfig::load(Some(&temp_path), &MapEnvironment::default())
+            .expect("updated config should reload");
+        assert!(matches!(updated.runtime.startup_mode, RuntimeMode::Paper));
+        assert_eq!(updated.runtime.default_strategy_path, None);
+        assert!(updated.runtime.allow_sqlite_fallback);
+        assert_eq!(
+            updated.broker.paper_account_name.as_deref(),
+            Some("paper-secondary")
+        );
+        assert_eq!(
+            updated.broker.live_account_name.as_deref(),
+            Some("live-primary")
+        );
+        assert_eq!(updated.broker.username.as_deref(), Some("operator"));
+        assert_eq!(updated.control_api.http_bind, "127.0.0.1:8080");
+
+        let updated_body = fs::read_to_string(&temp_path).expect("updated config should read");
+        assert!(!updated_body.contains("default_strategy_path"));
+
+        let _ = fs::remove_file(temp_path);
     }
 }

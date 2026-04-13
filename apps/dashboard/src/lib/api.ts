@@ -7,6 +7,9 @@ import type {
   RuntimeLifecycleRequest,
   RuntimeLifecycleResponse,
   RuntimeReadinessSnapshot,
+  RuntimeSettingsSnapshot,
+  RuntimeSettingsUpdateRequest,
+  RuntimeSettingsUpdateResponse,
   RuntimeStrategyLibraryResponse,
   RuntimeStrategyUploadRequest,
   RuntimeStrategyValidationRequest,
@@ -20,6 +23,7 @@ export interface DashboardSnapshot {
   history: RuntimeHistorySnapshot;
   journal: RuntimeJournalSnapshot;
   health: RuntimeHostHealthResponse;
+  settings: RuntimeSettingsSnapshot;
   fetchedAt: string;
 }
 
@@ -91,12 +95,13 @@ async function parseLifecycleResponse(response: Response): Promise<RuntimeLifecy
 export async function loadDashboardSnapshot(
   signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
-  const [status, readiness, history, journal, health] = await Promise.all([
+  const [status, readiness, history, journal, health, settings] = await Promise.all([
     fetchJson<RuntimeStatusSnapshot>("/status", signal),
     fetchJson<RuntimeReadinessSnapshot>("/readiness", signal),
     fetchJson<RuntimeHistorySnapshot>("/history", signal),
     fetchJson<RuntimeJournalSnapshot>("/journal", signal),
     fetchJson<RuntimeHostHealthResponse>("/health", signal),
+    fetchJson<RuntimeSettingsSnapshot>("/settings", signal),
   ]);
 
   return {
@@ -105,6 +110,7 @@ export async function loadDashboardSnapshot(
     history,
     journal,
     health,
+    settings,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -192,6 +198,27 @@ export async function uploadStrategyMarkdown(
   }
 
   return (await response.json()) as RuntimeStrategyValidationResponse;
+}
+
+export async function updateRuntimeSettings(
+  settings: RuntimeSettingsUpdateRequest,
+  signal?: AbortSignal,
+): Promise<RuntimeSettingsUpdateResponse> {
+  const response = await fetch(`${CONTROL_API_BASE_URL}/settings`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(settings),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new ControlApiError("/settings", response.status, await readBody(response));
+  }
+
+  return (await response.json()) as RuntimeSettingsUpdateResponse;
 }
 
 function defaultEventsUrl(): string {

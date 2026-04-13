@@ -400,6 +400,36 @@ export interface RuntimeStrategyValidationResponse {
   errors: RuntimeStrategyIssue[];
 }
 
+export type RuntimeSettingsPersistenceMode = "session_only" | "config_file";
+
+export interface RuntimeEditableSettings {
+  startup_mode: RuntimeMode;
+  default_strategy_path: string | null;
+  allow_sqlite_fallback: boolean;
+  paper_account_name: string | null;
+  live_account_name: string | null;
+}
+
+export interface RuntimeSettingsSnapshot {
+  editable: RuntimeEditableSettings;
+  http_bind: string;
+  websocket_bind: string;
+  config_file_path: string | null;
+  persistence_mode: RuntimeSettingsPersistenceMode;
+  restart_required: boolean;
+  detail: string;
+}
+
+export interface RuntimeSettingsUpdateRequest {
+  source: ManualCommandSource;
+  settings: RuntimeEditableSettings;
+}
+
+export interface RuntimeSettingsUpdateResponse {
+  message: string;
+  settings: RuntimeSettingsSnapshot;
+}
+
 export interface EventJournalRecord {
   event_id: string;
   category: string;

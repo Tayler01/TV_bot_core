@@ -5,6 +5,7 @@ import App from "./App";
 import type {
   LoadedStrategySummary,
   RuntimeLifecycleCommand,
+  RuntimeSettingsSnapshot,
   RuntimeStrategyValidationResponse,
 } from "./types/controlApi";
 
@@ -461,6 +462,23 @@ function installFetchMock(snapshotOverrides?: {
     latest_trade_latency: status.latest_trade_latency,
   };
 
+  const settings: RuntimeSettingsSnapshot = {
+    editable: {
+      startup_mode: "observation",
+      default_strategy_path: "strategies/sample.md",
+      allow_sqlite_fallback: true,
+      paper_account_name: "paper-primary",
+      live_account_name: "live-primary",
+    },
+    http_bind: "127.0.0.1:8080",
+    websocket_bind: "127.0.0.1:8081",
+    config_file_path: "runtime.example.toml",
+    persistence_mode: "config_file",
+    restart_required: true,
+    detail:
+      "settings edits are saved to the runtime config file for the next restart; environment overrides may still take precedence",
+  };
+
   const strategyLibrary = {
     scanned_roots: ["strategies/uploads", "strategies/examples"],
     strategies: [
@@ -570,6 +588,36 @@ function installFetchMock(snapshotOverrides?: {
 
     if (endpoint.endsWith("/health")) {
       return jsonResponse(health);
+    }
+
+    if (endpoint.endsWith("/settings") && (init?.method === undefined || init.method === "GET")) {
+      return jsonResponse(settings);
+    }
+
+    if (endpoint.endsWith("/settings") && init?.method === "POST") {
+      const request = JSON.parse(String(init.body ?? "{}")) as {
+        source: string;
+        settings: {
+          startup_mode: RuntimeSettingsSnapshot["editable"]["startup_mode"];
+          default_strategy_path: string | null;
+          allow_sqlite_fallback: boolean;
+          paper_account_name: string | null;
+          live_account_name: string | null;
+        };
+      };
+
+      settings.editable = {
+        startup_mode: request.settings.startup_mode,
+        default_strategy_path: request.settings.default_strategy_path,
+        allow_sqlite_fallback: request.settings.allow_sqlite_fallback,
+        paper_account_name: request.settings.paper_account_name,
+        live_account_name: request.settings.live_account_name,
+      };
+
+      return jsonResponse({
+        message: "saved runtime settings for the next restart",
+        settings,
+      });
     }
 
     if (endpoint.endsWith("/strategies")) {
@@ -974,7 +1022,7 @@ describe("App", () => {
     expect(
       await screen.findByText("Operator dashboard for the local runtime host"),
     ).toBeInTheDocument();
-    expect(await screen.findAllByText("Paper")).toHaveLength(3);
+    expect(await screen.findAllByText("Paper")).toHaveLength(4);
     expect(await screen.findByText("paper-primary")).toBeInTheDocument();
     expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(2);
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
@@ -988,6 +1036,8 @@ describe("App", () => {
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
     expect(await screen.findByText("Latency stage breakdown")).toBeInTheDocument();
     expect(await screen.findByText("Persisted operator journal and audit trail")).toBeInTheDocument();
+    expect(await screen.findByText("Runtime settings")).toBeInTheDocument();
+    expect(await screen.findByText("Config file backed")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
     expect(await screen.findByText(/Fill fill-1 \| order 8102/)).toBeInTheDocument();
     expect(await screen.findByText(/Trade trade-1/)).toBeInTheDocument();
@@ -1191,6 +1241,56 @@ describe("App", () => {
       filename: "uploaded-breakout.md",
       markdown:
         "# Uploaded Breakout\n\n## Metadata\n```yaml\nschema_version: 1\nstrategy_id: uploaded-breakout\nname: Uploaded Breakout\nversion: 1.0.0\nauthor: tests\ndescription: uploaded strategy\n```\n",
+    });
+  });
+
+  it("saves runtime settings through the host-backed settings endpoint", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Runtime startup mode"), {
+      target: { value: "paper" },
+    });
+    fireEvent.change(await screen.findByLabelText("Default strategy path"), {
+      target: { value: "strategies/uploads/next-run.md" },
+    });
+    fireEvent.change(await screen.findByLabelText("Persistence fallback policy"), {
+      target: { value: "block" },
+    });
+    fireEvent.change(await screen.findByLabelText("Paper account name"), {
+      target: { value: "paper-secondary" },
+    });
+    fireEvent.change(await screen.findByLabelText("Live account name"), {
+      target: { value: "live-ops" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Save runtime settings" }));
+
+    expect(
+      await screen.findByText("saved runtime settings for the next restart"),
+    ).toBeInTheDocument();
+
+    const settingsCall = fetchSpy.mock.calls.find((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/settings") && call[1]?.method === "POST";
+    });
+
+    expect(JSON.parse(String(settingsCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      settings: {
+        startup_mode: "paper",
+        default_strategy_path: "strategies/uploads/next-run.md",
+        allow_sqlite_fallback: false,
+        paper_account_name: "paper-secondary",
+        live_account_name: "live-ops",
+      },
     });
   });
 

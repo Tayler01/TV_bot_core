@@ -247,6 +247,49 @@ pub struct RuntimeStrategyValidationResponse {
     pub errors: Vec<RuntimeStrategyIssue>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeEditableSettings {
+    pub startup_mode: RuntimeMode,
+    pub default_strategy_path: Option<PathBuf>,
+    pub allow_sqlite_fallback: bool,
+    pub paper_account_name: Option<String>,
+    pub live_account_name: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSettingsPersistenceMode {
+    SessionOnly,
+    ConfigFile,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSettingsSnapshot {
+    pub editable: RuntimeEditableSettings,
+    pub http_bind: String,
+    pub websocket_bind: String,
+    pub config_file_path: Option<PathBuf>,
+    pub persistence_mode: RuntimeSettingsPersistenceMode,
+    pub restart_required: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSettingsUpdateRequest {
+    pub source: ManualCommandSource,
+    pub settings: RuntimeEditableSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeSettingsUpdateResponse {
+    pub message: String,
+    pub settings: RuntimeSettingsSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeReconnectDecision {

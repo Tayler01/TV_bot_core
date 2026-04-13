@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     configure_tracing(&config.logging.level, config.logging.json);
 
     let runtime = RuntimeStateMachine::new(config.runtime.startup_mode.clone());
-    host::run_runtime_host(config, runtime)
+    host::run_runtime_host(config_path, config, runtime)
         .await
         .map_err(|error| -> Box<dyn Error> { Box::new(error) })
 }

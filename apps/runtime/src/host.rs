@@ -33,14 +33,18 @@ use tv_bot_broker_tradovate::{
     TradovateCredentials, TradovateError, TradovateLiveClient, TradovateLiveClientConfig,
     TradovateRoutingPreferences, TradovateSessionConfig,
 };
-use tv_bot_config::AppConfig;
+use tv_bot_config::{
+    persist_runtime_settings_update, AppConfig, ConfigUpdateError, RuntimeSettingsFileUpdate,
+};
 use tv_bot_control_api::{
     ControlApiCommand, ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest,
     HttpCommandResponse, HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
-    RuntimeCommandDispatcher, RuntimeHistorySnapshot, RuntimeJournalSnapshot, RuntimeJournalStatus,
-    RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
-    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
-    RuntimeReconnectReviewStatus, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
+    RuntimeCommandDispatcher, RuntimeEditableSettings, RuntimeHistorySnapshot,
+    RuntimeJournalSnapshot, RuntimeJournalStatus, RuntimeKernelCommandDispatcher,
+    RuntimeLifecycleCommand, RuntimeLifecycleRequest, RuntimeLifecycleResponse,
+    RuntimeReadinessSnapshot, RuntimeReconnectDecision, RuntimeReconnectReviewStatus,
+    RuntimeSettingsPersistenceMode, RuntimeSettingsSnapshot, RuntimeSettingsUpdateRequest,
+    RuntimeSettingsUpdateResponse, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
     RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, RuntimeStrategyCatalogEntry,
     RuntimeStrategyIssue, RuntimeStrategyIssueSeverity, RuntimeStrategyLibraryResponse,
     RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
@@ -138,6 +142,71 @@ struct ShutdownReviewState {
     decision: Option<RuntimeShutdownDecision>,
     reason: Option<String>,
     requested_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug)]
+struct RuntimeSettingsState {
+    editable: RuntimeEditableSettings,
+    http_bind: String,
+    websocket_bind: String,
+    config_file_path: Option<PathBuf>,
+}
+
+impl RuntimeSettingsState {
+    fn from_config(config: &AppConfig, config_file_path: Option<PathBuf>) -> Self {
+        Self {
+            editable: RuntimeEditableSettings {
+                startup_mode: config.runtime.startup_mode.clone(),
+                default_strategy_path: config.runtime.default_strategy_path.clone(),
+                allow_sqlite_fallback: config.runtime.allow_sqlite_fallback,
+                paper_account_name: config.broker.paper_account_name.clone(),
+                live_account_name: config.broker.live_account_name.clone(),
+            },
+            http_bind: config.control_api.http_bind.clone(),
+            websocket_bind: config.control_api.websocket_bind.clone(),
+            config_file_path,
+        }
+    }
+
+    fn snapshot(&self) -> RuntimeSettingsSnapshot {
+        let persistence_mode = if self.config_file_path.is_some() {
+            RuntimeSettingsPersistenceMode::ConfigFile
+        } else {
+            RuntimeSettingsPersistenceMode::SessionOnly
+        };
+        let detail = match persistence_mode {
+            RuntimeSettingsPersistenceMode::ConfigFile => {
+                "settings edits are saved to the runtime config file for the next restart; environment overrides may still take precedence".to_owned()
+            }
+            RuntimeSettingsPersistenceMode::SessionOnly => {
+                "runtime launched without a config file path; settings edits stay in this session only and still apply on the next restart of this process".to_owned()
+            }
+        };
+
+        RuntimeSettingsSnapshot {
+            editable: self.editable.clone(),
+            http_bind: self.http_bind.clone(),
+            websocket_bind: self.websocket_bind.clone(),
+            config_file_path: self.config_file_path.clone(),
+            persistence_mode,
+            restart_required: true,
+            detail,
+        }
+    }
+
+    fn apply_update(&mut self, settings: RuntimeEditableSettings) {
+        self.editable = settings;
+    }
+
+    fn file_update(&self) -> RuntimeSettingsFileUpdate {
+        RuntimeSettingsFileUpdate {
+            startup_mode: self.editable.startup_mode.clone(),
+            default_strategy_path: self.editable.default_strategy_path.clone(),
+            allow_sqlite_fallback: self.editable.allow_sqlite_fallback,
+            paper_account_name: self.editable.paper_account_name.clone(),
+            live_account_name: self.editable.live_account_name.clone(),
+        }
+    }
 }
 
 trait RuntimeDispatcherHandle: RuntimeCommandDispatcher {
@@ -533,6 +602,7 @@ pub struct RuntimeHostState {
     storage_status: RuntimeStorageStatus,
     journal_status: RuntimeJournalStatus,
     strategy_library_roots: Vec<PathBuf>,
+    runtime_settings: Arc<Mutex<RuntimeSettingsState>>,
     shutdown_signal: watch::Sender<bool>,
     shutdown_review: Arc<Mutex<ShutdownReviewState>>,
 }
@@ -648,10 +718,11 @@ pub enum RuntimeHostError {
 }
 
 pub async fn run_runtime_host(
+    config_path: Option<PathBuf>,
     config: AppConfig,
     runtime: RuntimeStateMachine,
 ) -> Result<(), RuntimeHostError> {
-    let state = build_runtime_host_state(&config, runtime)?;
+    let state = build_runtime_host_state_with_config_path(config_path, &config, runtime)?;
     let mut shutdown_receiver = state.shutdown_signal.subscribe();
     let http_router = build_http_router(state.clone());
     let websocket_router = build_websocket_router(state.clone());
@@ -806,6 +877,10 @@ pub fn build_http_router(state: RuntimeHostState) -> Router {
         .route("/readiness", get(readiness_handler))
         .route("/history", get(history_handler))
         .route("/journal", get(journal_handler))
+        .route(
+            "/settings",
+            get(settings_handler).post(update_settings_handler),
+        )
         .route("/strategies", get(strategy_library_handler))
         .route("/strategies/upload", post(strategy_upload_handler))
         .route("/strategies/validate", post(strategy_validation_handler))
@@ -822,6 +897,14 @@ pub fn build_websocket_router(state: RuntimeHostState) -> Router {
 }
 
 pub fn build_runtime_host_state(
+    config: &AppConfig,
+    runtime: RuntimeStateMachine,
+) -> Result<RuntimeHostState, RuntimeHostError> {
+    build_runtime_host_state_with_config_path(None, config, runtime)
+}
+
+fn build_runtime_host_state_with_config_path(
+    config_file_path: Option<PathBuf>,
     config: &AppConfig,
     runtime: RuntimeStateMachine,
 ) -> Result<RuntimeHostState, RuntimeHostError> {
@@ -907,6 +990,10 @@ pub fn build_runtime_host_state(
         storage_status,
         journal_status,
         strategy_library_roots,
+        runtime_settings: Arc::new(Mutex::new(RuntimeSettingsState::from_config(
+            config,
+            config_file_path,
+        ))),
         shutdown_signal,
         shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
     })
@@ -1107,6 +1194,91 @@ async fn journal_handler(State(state): State<RuntimeHostState>) -> Response {
                 .into_response()
         }
     }
+}
+
+async fn settings_handler(State(state): State<RuntimeHostState>) -> Json<RuntimeSettingsSnapshot> {
+    let settings = state.runtime_settings.lock().await.snapshot();
+    Json(settings)
+}
+
+async fn update_settings_handler(
+    State(state): State<RuntimeHostState>,
+    Json(request): Json<RuntimeSettingsUpdateRequest>,
+) -> Response {
+    let normalized = normalize_runtime_settings(request.settings);
+    let source = request.source.into();
+
+    let (config_file_path, next_settings, settings_snapshot, file_update) = {
+        let current = state.runtime_settings.lock().await.clone();
+        let mut next = current.clone();
+        next.apply_update(normalized);
+        let snapshot = next.snapshot();
+        let file_update = next.file_update();
+        (
+            current.config_file_path.clone(),
+            next,
+            snapshot,
+            file_update,
+        )
+    };
+
+    if let Some(path) = config_file_path.as_ref() {
+        if let Err(error) = persist_runtime_settings_update(path, &file_update) {
+            let _ = state.health_supervisor.note_error();
+            warn!(?error, path = %path.display(), "failed to persist runtime settings update");
+            journal_host_event(
+                &state,
+                "config",
+                "settings_update_failed",
+                source,
+                EventSeverity::Error,
+                json!({
+                    "config_file_path": path,
+                    "message": error.to_string(),
+                }),
+            )
+            .await;
+
+            return config_update_error_response(error);
+        }
+    }
+
+    {
+        let mut settings = state.runtime_settings.lock().await;
+        *settings = next_settings;
+    }
+
+    journal_host_event(
+        &state,
+        "config",
+        "settings_updated",
+        source,
+        EventSeverity::Info,
+        json!({
+            "startup_mode": settings_snapshot.editable.startup_mode,
+            "default_strategy_path": settings_snapshot.editable.default_strategy_path,
+            "allow_sqlite_fallback": settings_snapshot.editable.allow_sqlite_fallback,
+            "paper_account_name": settings_snapshot.editable.paper_account_name,
+            "live_account_name": settings_snapshot.editable.live_account_name,
+            "persistence_mode": settings_snapshot.persistence_mode,
+            "config_file_path": settings_snapshot.config_file_path,
+            "restart_required": settings_snapshot.restart_required,
+        }),
+    )
+    .await;
+
+    Json(RuntimeSettingsUpdateResponse {
+        message: match settings_snapshot.persistence_mode {
+            RuntimeSettingsPersistenceMode::ConfigFile => {
+                "saved runtime settings for the next restart".to_owned()
+            }
+            RuntimeSettingsPersistenceMode::SessionOnly => {
+                "updated runtime settings for this session; no config file path is available for persistence".to_owned()
+            }
+        },
+        settings: settings_snapshot,
+    })
+    .into_response()
 }
 
 async fn strategy_library_handler(State(state): State<RuntimeHostState>) -> Response {
@@ -2137,6 +2309,37 @@ fn status_code(code: HttpStatusCode) -> StatusCode {
     }
 }
 
+fn normalize_runtime_settings(settings: RuntimeEditableSettings) -> RuntimeEditableSettings {
+    RuntimeEditableSettings {
+        startup_mode: settings.startup_mode,
+        default_strategy_path: normalize_optional_path(settings.default_strategy_path),
+        allow_sqlite_fallback: settings.allow_sqlite_fallback,
+        paper_account_name: normalize_optional_string(settings.paper_account_name),
+        live_account_name: normalize_optional_string(settings.live_account_name),
+    }
+}
+
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    })
+}
+
+fn normalize_optional_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    value.and_then(|value| {
+        if value.as_os_str().to_string_lossy().trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
 async fn status_context(
     state: &RuntimeHostState,
     sync_market_data_warmup: bool,
@@ -2784,6 +2987,10 @@ fn runtime_host_error_response(status: StatusCode, message: String) -> Response 
         }),
     )
         .into_response()
+}
+
+fn config_update_error_response(error: ConfigUpdateError) -> Response {
+    runtime_host_error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
 fn json_message_response(status: StatusCode, message: String) -> Response {
@@ -4168,12 +4375,13 @@ mod tests {
         latency_collector: Arc<RuntimeLatencyCollector>,
         health_supervisor: Arc<RuntimeHealthSupervisor>,
     ) -> RuntimeHostState {
-        test_state_with_strategy_roots(
+        test_state_with_settings(
             dispatcher,
             history,
             latency_collector,
             health_supervisor,
             Vec::new(),
+            None,
         )
     }
 
@@ -4183,6 +4391,41 @@ mod tests {
         latency_collector: Arc<RuntimeLatencyCollector>,
         health_supervisor: Arc<RuntimeHealthSupervisor>,
         strategy_library_roots: Vec<PathBuf>,
+    ) -> RuntimeHostState {
+        test_state_with_settings(
+            dispatcher,
+            history,
+            latency_collector,
+            health_supervisor,
+            strategy_library_roots,
+            None,
+        )
+    }
+
+    fn test_state_with_config_path(
+        dispatcher: BoxedDispatcher,
+        history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
+        config_file_path: PathBuf,
+    ) -> RuntimeHostState {
+        test_state_with_settings(
+            dispatcher,
+            history,
+            latency_collector,
+            health_supervisor,
+            Vec::new(),
+            Some(config_file_path),
+        )
+    }
+
+    fn test_state_with_settings(
+        dispatcher: BoxedDispatcher,
+        history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
+        strategy_library_roots: Vec<PathBuf>,
+        config_file_path: Option<PathBuf>,
     ) -> RuntimeHostState {
         let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build");
         let handler = HttpCommandHandler::with_publisher(
@@ -4235,6 +4478,18 @@ mod tests {
                 detail: "event journal records are durably persisted to Postgres".to_owned(),
             },
             strategy_library_roots,
+            runtime_settings: Arc::new(Mutex::new(RuntimeSettingsState {
+                editable: RuntimeEditableSettings {
+                    startup_mode: RuntimeMode::Observation,
+                    default_strategy_path: None,
+                    allow_sqlite_fallback: false,
+                    paper_account_name: Some("paper-primary".to_owned()),
+                    live_account_name: Some("live-primary".to_owned()),
+                },
+                http_bind: "127.0.0.1:8080".to_owned(),
+                websocket_bind: "127.0.0.1:8081".to_owned(),
+                config_file_path,
+            })),
             shutdown_signal: watch::channel(false).0,
             shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
         }
@@ -4681,6 +4936,14 @@ mod tests {
             .expect("system time should be valid")
             .as_nanos();
         std::env::temp_dir().join(format!("tv_bot_runtime_host_{unique}.md"))
+    }
+
+    fn temp_config_path() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!("tv_bot_runtime_host_{unique}.toml"))
     }
 
     fn temp_strategy_library_root() -> PathBuf {
@@ -9215,6 +9478,195 @@ selection:
             .reason
             .as_deref()
             .is_some_and(|reason| reason.contains("choose flatten first")));
+    }
+
+    #[tokio::test]
+    async fn settings_route_reports_session_only_when_runtime_has_no_config_file_path() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("GET")
+                .uri("/settings")
+                .body(Body::empty())
+                .expect("request should build"),
+            "settings route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let settings: RuntimeSettingsSnapshot =
+            serde_json::from_slice(&body).expect("settings json should parse");
+
+        assert_eq!(
+            settings.persistence_mode,
+            RuntimeSettingsPersistenceMode::SessionOnly
+        );
+        assert_eq!(settings.config_file_path, None);
+        assert!(settings.restart_required);
+        assert!(settings.detail.contains("session only"));
+    }
+
+    #[tokio::test]
+    async fn updating_settings_persists_to_runtime_config_file() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let config_path = temp_config_path();
+        fs::write(
+            &config_path,
+            r#"
+                [runtime]
+                startup_mode = "observation"
+                default_strategy_path = "strategies/sample.md"
+                allow_sqlite_fallback = false
+
+                [broker]
+                paper_account_name = "paper-primary"
+                live_account_name = "live-primary"
+
+                [control_api]
+                http_bind = "127.0.0.1:8080"
+                websocket_bind = "127.0.0.1:8081"
+            "#,
+        )
+        .expect("config file should write");
+
+        let app = build_http_router(test_state_with_config_path(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+            config_path.clone(),
+        ));
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeSettingsUpdateRequest {
+                        source: ManualCommandSource::Dashboard,
+                        settings: RuntimeEditableSettings {
+                            startup_mode: RuntimeMode::Paper,
+                            default_strategy_path: Some(PathBuf::from(
+                                "strategies/uploads/next-run.md",
+                            )),
+                            allow_sqlite_fallback: true,
+                            paper_account_name: Some("paper-secondary".to_owned()),
+                            live_account_name: Some("live-ops".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "settings update",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let settings_response: RuntimeSettingsUpdateResponse =
+            serde_json::from_slice(&body).expect("settings response json should parse");
+
+        assert_eq!(
+            settings_response.message,
+            "saved runtime settings for the next restart"
+        );
+        assert_eq!(
+            settings_response.settings.persistence_mode,
+            RuntimeSettingsPersistenceMode::ConfigFile
+        );
+        assert_eq!(
+            settings_response.settings.config_file_path,
+            Some(config_path.clone())
+        );
+        assert!(matches!(
+            settings_response.settings.editable.startup_mode,
+            RuntimeMode::Paper
+        ));
+        assert_eq!(
+            settings_response.settings.editable.default_strategy_path,
+            Some(PathBuf::from("strategies/uploads/next-run.md"))
+        );
+        assert!(settings_response.settings.editable.allow_sqlite_fallback);
+        assert_eq!(
+            settings_response
+                .settings
+                .editable
+                .paper_account_name
+                .as_deref(),
+            Some("paper-secondary")
+        );
+        assert_eq!(
+            settings_response
+                .settings
+                .editable
+                .live_account_name
+                .as_deref(),
+            Some("live-ops")
+        );
+
+        let persisted = AppConfig::load(Some(&config_path), &MapEnvironment::default())
+            .expect("persisted config should reload");
+        assert!(matches!(persisted.runtime.startup_mode, RuntimeMode::Paper));
+        assert_eq!(
+            persisted.runtime.default_strategy_path,
+            Some(PathBuf::from("strategies/uploads/next-run.md"))
+        );
+        assert!(persisted.runtime.allow_sqlite_fallback);
+        assert_eq!(
+            persisted.broker.paper_account_name.as_deref(),
+            Some("paper-secondary")
+        );
+        assert_eq!(
+            persisted.broker.live_account_name.as_deref(),
+            Some("live-ops")
+        );
+
+        let _ = fs::remove_file(config_path);
     }
 
     #[test]
