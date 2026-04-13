@@ -3457,6 +3457,22 @@ mod tests {
         }
     }
 
+    fn sync_snapshot_with_working_orders_only() -> TradovateSyncSnapshot {
+        let mut snapshot = sample_dispatch_snapshot();
+        snapshot.open_positions.clear();
+        snapshot.fills.clear();
+
+        TradovateSyncSnapshot {
+            occurred_at: Utc::now(),
+            positions: snapshot.open_positions,
+            working_orders: snapshot.working_orders,
+            fills: snapshot.fills,
+            account_snapshot: snapshot.account_snapshot,
+            mismatch_reason: None,
+            detail: "synced working orders".to_owned(),
+        }
+    }
+
     fn sync_snapshot_without_open_exposure() -> TradovateSyncSnapshot {
         let mut snapshot = sample_dispatch_snapshot();
         snapshot.open_positions.clear();
@@ -3628,6 +3644,80 @@ mod tests {
         manager.acknowledge_reconnect_review(TradovateReconnectDecision::LeaveBrokerProtected);
 
         manager
+    }
+
+    async fn sample_session_manager_with_startup_review_required_for_snapshot(
+        startup_snapshot: TradovateSyncSnapshot,
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        let auth_api = TestAuthApi {
+            token: Arc::new(StdMutex::new(Some(sample_token()))),
+        };
+        let account_api = TestAccountApi {
+            accounts: Arc::new(vec![TradovateAccount {
+                account_id: 101,
+                account_name: "paper-primary".to_owned(),
+                nickname: None,
+                active: true,
+            }]),
+        };
+        let sync_api = TestSyncApi {
+            snapshots: Arc::new(StdMutex::new(VecDeque::from([startup_snapshot]))),
+            events: Arc::new(StdMutex::new(VecDeque::new())),
+        };
+
+        let mut manager = TradovateSessionManager::with_system_clock(
+            TradovateSessionConfig::new(
+                tv_bot_core_types::BrokerEnvironment::Demo,
+                "https://demo.tradovateapi.com/v1",
+                "wss://demo.tradovateapi.com/v1/websocket",
+            )
+            .expect("config should be valid"),
+            sample_credentials(),
+            TradovateRoutingPreferences {
+                paper_account_name: Some("paper-primary".to_owned()),
+                live_account_name: None,
+            },
+            auth_api,
+            account_api,
+            sync_api,
+        )
+        .expect("manager should build");
+
+        manager.authenticate().await.expect("auth should succeed");
+        manager
+            .select_account_for_mode(&RuntimeMode::Paper)
+            .await
+            .expect("paper account should select");
+        manager
+            .connect_user_sync()
+            .await
+            .expect("startup sync should connect");
+
+        manager
+    }
+
+    async fn sample_session_manager_with_startup_review_required_working_orders(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        sample_session_manager_with_startup_review_required_for_snapshot(
+            sync_snapshot_with_working_orders_only(),
+        )
+        .await
+    }
+
+    async fn sample_session_manager_with_startup_review_required(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        sample_session_manager_with_startup_review_required_for_snapshot(
+            sync_snapshot_with_open_position(),
+        )
+        .await
+    }
+
+    async fn sample_session_manager_with_contract_startup_review_required(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        sample_session_manager_with_startup_review_required_for_snapshot(
+            sync_snapshot_with_contract_position(),
+        )
+        .await
     }
 
     async fn sample_session_manager_with_reconnect_review_required_for_snapshot(
@@ -6669,6 +6759,932 @@ selection:
             reconnect_resolution.payload["working_order_count"].as_u64(),
             Some(1)
         );
+    }
+
+    #[tokio::test]
+    async fn startup_review_blocks_new_paper_entry_until_operator_resolution_through_runtime_host()
+    {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_startup_review_required_working_orders().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "startup review set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "startup review mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(status_before.arm_state, ArmState::Disarmed);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some("existing broker-side position or working orders detected at startup")
+        );
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 0);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let blocked_arm_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::Arm {
+                            allow_override: true,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review blocked arm request",
+        )
+        .await;
+
+        assert_eq!(blocked_arm_response.status(), StatusCode::CONFLICT);
+        let blocked_arm_body = blocked_arm_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_arm: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_arm_body).expect("response json should parse");
+        assert_eq!(blocked_arm.status_code, HttpStatusCode::Conflict);
+        assert!(blocked_arm
+            .message
+            .contains("readiness report contains blocking issues"));
+        assert!(blocked_arm.command_result.is_none());
+        assert!(blocked_arm.status.reconnect_review.required);
+        assert_eq!(blocked_arm.status.arm_state, ArmState::Disarmed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let resolved_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::ReattachBotManagement,
+                            contract_id: None,
+                            reason: Some("resume paper trading after startup review".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review resolution request",
+        )
+        .await;
+
+        assert_eq!(resolved_response.status(), StatusCode::OK);
+        let resolved_body = resolved_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let resolved_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&resolved_body).expect("response json should parse");
+        assert_eq!(resolved_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            resolved_response.message,
+            "reconnect review resolved with reattach_bot_management"
+        );
+        assert!(!resolved_response.status.reconnect_review.required);
+        assert_eq!(resolved_response.status.arm_state, ArmState::Disarmed);
+        assert_eq!(
+            resolved_response.status.reconnect_review.last_decision,
+            Some(RuntimeReconnectDecision::ReattachBotManagement)
+        );
+        assert_eq!(
+            resolved_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+
+        let armed_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::Arm {
+                            allow_override: true,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review arm after resolution request",
+        )
+        .await;
+
+        assert_eq!(armed_response.status(), StatusCode::OK);
+        let armed_body = armed_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let armed_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&armed_body).expect("response json should parse");
+        assert_eq!(armed_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            armed_response.message,
+            "runtime armed with temporary override"
+        );
+        assert_eq!(armed_response.status.arm_state, ArmState::Armed);
+        assert!(!armed_response.status.reconnect_review.required);
+
+        let allowed_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("startup review paper entry".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review allowed manual entry request",
+        )
+        .await;
+
+        assert_eq!(allowed_entry_response.status(), StatusCode::OK);
+        let allowed_entry_body = allowed_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let allowed_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&allowed_entry_body).expect("response json should parse");
+        assert_eq!(allowed_entry.status_code, HttpStatusCode::Ok);
+        assert_eq!(allowed_entry.message, "manual entry command dispatched");
+        let command_result = allowed_entry
+            .command_result
+            .expect("manual entry should return a command result after review");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let oso = &place_osos[0];
+        assert_eq!(oso.context.account_id, 101);
+        assert_eq!(oso.context.account_spec, "paper-primary");
+        assert_eq!(oso.order.symbol, "GCM2026");
+        assert_eq!(oso.order.quantity, 1);
+        assert_eq!(
+            oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(oso.order.brackets.len(), 2);
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("stop_loss") && bracket.stop_price.is_some()
+        }));
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("take_profit") && bracket.limit_price.is_some()
+        }));
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let journal_actions = journal_records
+            .iter()
+            .map(|record| record.action.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "reconnect_review_resolved".to_owned(),
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_succeeded".to_owned(),
+            ]
+        );
+        let reconnect_resolution = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_resolved")
+            .expect("startup review resolution should be journaled");
+        assert_eq!(reconnect_resolution.category, "broker");
+        assert_eq!(reconnect_resolution.source, ActionSource::Dashboard);
+        assert_eq!(
+            reconnect_resolution.payload["decision"].as_str(),
+            Some("reattach_bot_management")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["reason"].as_str(),
+            Some("resume paper trading after startup review")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["open_position_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            reconnect_resolution.payload["working_order_count"].as_u64(),
+            Some(1)
+        );
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn startup_review_after_existing_position_can_leave_broker_protected_through_runtime_host(
+    ) {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_startup_review_required().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state);
+
+        let set_mode_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::SetMode {
+                            mode: RuntimeMode::Paper,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review leave set mode paper request",
+        )
+        .await;
+        assert_eq!(set_mode_response.status(), StatusCode::OK);
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review leave status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some("existing broker-side position or working orders detected at startup")
+        );
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 1);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review leave history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::LeaveBrokerProtected,
+                            contract_id: None,
+                            reason: Some("leave paper protections in place at startup".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review leave protected request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "reconnect review resolved with leave_broker_protected"
+        );
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            lifecycle_response.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(!lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            Some(RuntimeReconnectDecision::LeaveBrokerProtected)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::Synchronized)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review leave history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_position_records
+                >= history_before.projection.total_position_records
+        );
+        assert!(history_after.projection.total_position_records > 0);
+        assert_eq!(
+            history_after
+                .projection
+                .latest_position
+                .as_ref()
+                .map(|record| record.symbol.as_str()),
+            Some("GCM2026")
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let reconnect_resolution = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_resolved")
+            .expect("startup leave resolution should be journaled");
+        assert_eq!(reconnect_resolution.category, "broker");
+        assert_eq!(reconnect_resolution.source, ActionSource::Dashboard);
+        assert_eq!(
+            reconnect_resolution.payload["decision"].as_str(),
+            Some("leave_broker_protected")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["reason"].as_str(),
+            Some("leave paper protections in place at startup")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["open_position_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            reconnect_resolution.payload["working_order_count"].as_u64(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_review_close_position_dispatches_flatten_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_contract_startup_review_required().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state);
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        for command in [
+            RuntimeLifecycleCommand::LoadStrategy {
+                path: strategy_path.clone(),
+            },
+            RuntimeLifecycleCommand::SetMode {
+                mode: RuntimeMode::Paper,
+            },
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "startup review close setup request",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review close status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some("existing broker-side position or working orders detected at startup")
+        );
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 1);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review close history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::ClosePosition,
+                            contract_id: None,
+                            reason: Some("close paper position at startup".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "startup review close request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "reconnect close command dispatched"
+        );
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            lifecycle_response.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            None
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(0)
+        );
+        let command_result = lifecycle_response
+            .command_result
+            .expect("startup close should return a command result");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(liquidations.len(), 1);
+        let liquidation = &liquidations[0];
+        assert_eq!(liquidation.context.account_id, 101);
+        assert_eq!(liquidation.context.account_spec, "paper-primary");
+        assert_eq!(liquidation.contract_id, 4444);
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "startup review close history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+        assert!(history_after.projection.latest_order.is_some());
+
+        let journal_records = journal.list().expect("journal should list records");
+        let journal_actions = journal_records
+            .iter()
+            .map(|record| record.action.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "reconnect_review_close_requested".to_owned(),
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_succeeded".to_owned(),
+            ]
+        );
+        let reconnect_close = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_close_requested")
+            .expect("startup close request should be journaled");
+        assert_eq!(reconnect_close.category, "broker");
+        assert_eq!(reconnect_close.source, ActionSource::Dashboard);
+        assert_eq!(
+            reconnect_close.payload["reason"].as_str(),
+            Some("close paper position at startup")
+        );
+        assert_eq!(reconnect_close.payload["contract_id"].as_i64(), Some(4444));
+
+        let _ = fs::remove_file(strategy_path);
     }
 
     #[tokio::test]
