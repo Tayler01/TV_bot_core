@@ -3471,6 +3471,21 @@ mod tests {
         }
     }
 
+    fn sync_snapshot_with_position_only() -> TradovateSyncSnapshot {
+        let mut snapshot = sample_dispatch_snapshot();
+        snapshot.working_orders.clear();
+
+        TradovateSyncSnapshot {
+            occurred_at: Utc::now(),
+            positions: snapshot.open_positions,
+            working_orders: snapshot.working_orders,
+            fills: snapshot.fills,
+            account_snapshot: snapshot.account_snapshot,
+            mismatch_reason: None,
+            detail: "synced position only".to_owned(),
+        }
+    }
+
     fn sync_snapshot_with_contract_position() -> TradovateSyncSnapshot {
         let mut snapshot = sample_dispatch_snapshot();
         if let Some(position) = snapshot.open_positions.first_mut() {
@@ -3847,6 +3862,240 @@ mod tests {
             sync_snapshot_with_contract_position(),
         )
         .await
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ReviewTriggerPhase {
+        Startup,
+        Reconnect,
+    }
+
+    async fn sample_session_manager_for_review_phase(
+        phase: ReviewTriggerPhase,
+        snapshot: TradovateSyncSnapshot,
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        match phase {
+            ReviewTriggerPhase::Startup => {
+                sample_session_manager_with_startup_review_required_for_snapshot(snapshot).await
+            }
+            ReviewTriggerPhase::Reconnect => {
+                sample_session_manager_with_reconnect_review_required_for_snapshot(snapshot).await
+            }
+        }
+    }
+
+    async fn assert_review_required_snapshot_blocks_arming_through_runtime_host(
+        phase: ReviewTriggerPhase,
+        scenario_label: &str,
+        snapshot: TradovateSyncSnapshot,
+        expected_open_position_count: usize,
+        expected_working_order_count: usize,
+    ) {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_for_review_phase(phase, snapshot).await,
+            execution_api.clone(),
+            journal,
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_request_label = format!("{scenario_label} load strategy request");
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            &load_request_label,
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label_suffix, command) in [
+            (
+                "set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+        ] {
+            let request_label = format!("{scenario_label} {label_suffix}");
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                &request_label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_request_label = format!("{scenario_label} status request");
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            &status_request_label,
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some(match phase {
+                ReviewTriggerPhase::Startup => {
+                    "existing broker-side position or working orders detected at startup"
+                }
+                ReviewTriggerPhase::Reconnect => {
+                    "existing broker-side position or working orders detected after reconnect"
+                }
+            })
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.open_position_count,
+            expected_open_position_count
+        );
+        assert_eq!(
+            status_before.reconnect_review.working_order_count,
+            expected_working_order_count
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(match phase {
+                ReviewTriggerPhase::Startup => 0,
+                ReviewTriggerPhase::Reconnect => 1,
+            })
+        );
+
+        let arm_request_label = format!("{scenario_label} blocked arm request");
+        let blocked_arm_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::Arm {
+                            allow_override: true,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            &arm_request_label,
+        )
+        .await;
+
+        assert_eq!(blocked_arm_response.status(), StatusCode::CONFLICT);
+        let blocked_arm_body = blocked_arm_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_arm: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_arm_body).expect("response json should parse");
+        assert_eq!(blocked_arm.status_code, HttpStatusCode::Conflict);
+        assert!(blocked_arm
+            .message
+            .contains("readiness report contains blocking issues"));
+        assert!(blocked_arm.command_result.is_none());
+        assert!(blocked_arm.status.reconnect_review.required);
+        assert_eq!(blocked_arm.status.arm_state, ArmState::Disarmed);
+        assert_eq!(
+            blocked_arm.status.reconnect_review.open_position_count,
+            expected_open_position_count
+        );
+        assert_eq!(
+            blocked_arm.status.reconnect_review.working_order_count,
+            expected_working_order_count
+        );
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let _ = fs::remove_file(strategy_path);
     }
 
     fn test_history() -> RuntimeHistoryRecorder {
@@ -6948,6 +7197,72 @@ selection:
             lifecycle_response.status.reconnect_review.last_decision,
             Some(RuntimeReconnectDecision::LeaveBrokerProtected)
         );
+    }
+
+    #[tokio::test]
+    async fn startup_review_matrix_blocks_arming_for_position_and_order_variants() {
+        for (scenario_label, snapshot, expected_open_positions, expected_working_orders) in [
+            (
+                "startup mixed exposure",
+                sync_snapshot_with_open_position(),
+                1,
+                1,
+            ),
+            (
+                "startup position only",
+                sync_snapshot_with_position_only(),
+                1,
+                0,
+            ),
+            (
+                "startup working orders only",
+                sync_snapshot_with_working_orders_only(),
+                0,
+                1,
+            ),
+        ] {
+            assert_review_required_snapshot_blocks_arming_through_runtime_host(
+                ReviewTriggerPhase::Startup,
+                scenario_label,
+                snapshot,
+                expected_open_positions,
+                expected_working_orders,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn reconnect_review_matrix_blocks_arming_for_position_and_order_variants() {
+        for (scenario_label, snapshot, expected_open_positions, expected_working_orders) in [
+            (
+                "reconnect mixed exposure",
+                sync_snapshot_with_open_position(),
+                1,
+                1,
+            ),
+            (
+                "reconnect position only",
+                sync_snapshot_with_position_only(),
+                1,
+                0,
+            ),
+            (
+                "reconnect working orders only",
+                sync_snapshot_with_working_orders_only(),
+                0,
+                1,
+            ),
+        ] {
+            assert_review_required_snapshot_blocks_arming_through_runtime_host(
+                ReviewTriggerPhase::Reconnect,
+                scenario_label,
+                snapshot,
+                expected_open_positions,
+                expected_working_orders,
+            )
+            .await;
+        }
     }
 
     #[tokio::test]
