@@ -1,4 +1,11 @@
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeSet,
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use axum::{
@@ -29,12 +36,14 @@ use tv_bot_broker_tradovate::{
 use tv_bot_config::AppConfig;
 use tv_bot_control_api::{
     ControlApiCommand, ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest,
-    HttpCommandResponse, HttpResponseBody, HttpStatusCode, LocalControlApi,
+    HttpCommandResponse, HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
     RuntimeCommandDispatcher, RuntimeHistorySnapshot, RuntimeJournalStatus,
     RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
     RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
     RuntimeReconnectReviewStatus, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
-    RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, WebSocketEventHub,
+    RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, RuntimeStrategyCatalogEntry,
+    RuntimeStrategyIssue, RuntimeStrategyIssueSeverity, RuntimeStrategyLibraryResponse,
+    RuntimeStrategyValidationRequest, RuntimeStrategyValidationResponse, WebSocketEventHub,
     WebSocketEventHubError, WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
@@ -58,6 +67,9 @@ use tv_bot_runtime_kernel::{
     RuntimeCommand, RuntimeCommandError, RuntimeCommandOutcome, RuntimeStateMachine,
 };
 use tv_bot_state_store::InMemoryStateStore;
+use tv_bot_strategy_loader::{
+    StrategyIssue, StrategyIssueSeverity, StrictStrategyCompiler,
+};
 
 use crate::history::{RuntimeBrokerSnapshot, RuntimeHistoryError, RuntimeHistoryRecorder};
 use crate::operator::{
@@ -511,6 +523,7 @@ pub struct RuntimeHostState {
     command_dispatch_detail: String,
     storage_status: RuntimeStorageStatus,
     journal_status: RuntimeJournalStatus,
+    strategy_library_roots: Vec<PathBuf>,
     shutdown_signal: watch::Sender<bool>,
     shutdown_review: Arc<Mutex<ShutdownReviewState>>,
 }
@@ -779,6 +792,8 @@ pub fn build_http_router(state: RuntimeHostState) -> Router {
         .route("/status", get(status_handler))
         .route("/readiness", get(readiness_handler))
         .route("/history", get(history_handler))
+        .route("/strategies", get(strategy_library_handler))
+        .route("/strategies/validate", post(strategy_validation_handler))
         .route("/runtime/commands", post(runtime_command_handler))
         .route("/commands", post(command_handler))
         .with_state(state)
@@ -814,6 +829,7 @@ pub fn build_runtime_host_state(
     .map_err(|source| RuntimeHostError::JournalSetup { source })?;
     let journal_status = build_journal_status(&persistence_selection);
     let storage_status = build_storage_status(&persistence_selection);
+    let strategy_library_roots = discover_strategy_library_roots(config);
     let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY)
         .map_err(|source| RuntimeHostError::EventHub { source })?;
     let (shutdown_signal, _) = watch::channel(false);
@@ -875,9 +891,71 @@ pub fn build_runtime_host_state(
         command_dispatch_detail,
         storage_status,
         journal_status,
+        strategy_library_roots,
         shutdown_signal,
         shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
     })
+}
+
+fn discover_strategy_library_roots(config: &AppConfig) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    if let Some(path) = config.runtime.default_strategy_path.as_ref() {
+        if let Some(parent) = path.parent() {
+            push_strategy_library_root(parent, &mut roots, &mut seen);
+        }
+    }
+
+    if let Some(examples_root) = discover_examples_root() {
+        push_strategy_library_root(&examples_root, &mut roots, &mut seen);
+    }
+
+    roots
+}
+
+fn discover_examples_root() -> Option<PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+
+    loop {
+        let candidate = current.join("strategies").join("examples");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+
+        if !current.pop() {
+            break;
+        }
+    }
+
+    None
+}
+
+fn push_strategy_library_root(
+    candidate: &Path,
+    roots: &mut Vec<PathBuf>,
+    seen: &mut BTreeSet<PathBuf>,
+) {
+    if !candidate.is_dir() {
+        return;
+    }
+
+    let normalized = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.to_path_buf());
+    if seen.insert(normalized.clone()) {
+        roots.push(normalized);
+    }
+}
+
+fn display_strategy_path(path: &Path) -> String {
+    if let Ok(current_dir) = std::env::current_dir() {
+        if let Ok(relative) = path.strip_prefix(&current_dir) {
+            return relative.display().to_string();
+        }
+    }
+
+    path.display().to_string()
 }
 
 async fn bind_listener(kind: &'static str, bind: &str) -> Result<TcpListener, RuntimeHostError> {
@@ -940,6 +1018,64 @@ async fn history_handler(State(state): State<RuntimeHostState>) -> Response {
             )
                 .into_response()
         }
+    }
+}
+
+async fn strategy_library_handler(State(state): State<RuntimeHostState>) -> Response {
+    let roots = state.strategy_library_roots.clone();
+
+    match tokio::task::spawn_blocking(move || scan_strategy_library(roots)).await {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err(error)) => runtime_host_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => runtime_host_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("strategy library scan task failed: {error}"),
+        ),
+    }
+}
+
+async fn strategy_validation_handler(
+    State(state): State<RuntimeHostState>,
+    Json(request): Json<RuntimeStrategyValidationRequest>,
+) -> Response {
+    let path = request.path.clone();
+
+    match tokio::task::spawn_blocking(move || validate_strategy_path(path)).await {
+        Ok(Ok(response)) => {
+            let source = request.source.into();
+            let severity = if response.valid {
+                EventSeverity::Info
+            } else {
+                EventSeverity::Warning
+            };
+            let action = if response.valid {
+                "validation_succeeded"
+            } else {
+                "validation_failed"
+            };
+
+            journal_host_event(
+                &state,
+                "strategy",
+                action,
+                source,
+                severity,
+                json!({
+                    "path": response.display_path,
+                    "valid": response.valid,
+                    "warning_count": response.warnings.len(),
+                    "error_count": response.errors.len(),
+                }),
+            )
+            .await;
+
+            Json(response).into_response()
+        }
+        Ok(Err(error)) => runtime_host_error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => runtime_host_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("strategy validation task failed: {error}"),
+        ),
     }
 }
 
@@ -2058,6 +2194,171 @@ async fn sync_system_health(
     }
 }
 
+fn scan_strategy_library(roots: Vec<PathBuf>) -> Result<RuntimeStrategyLibraryResponse, String> {
+    let mut strategy_paths = Vec::new();
+
+    for root in &roots {
+        collect_strategy_paths(root, &mut strategy_paths)?;
+    }
+
+    strategy_paths.sort();
+
+    let strategies = strategy_paths
+        .into_iter()
+        .map(validate_strategy_path)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|response| RuntimeStrategyCatalogEntry {
+            path: response.path,
+            display_path: response.display_path,
+            valid: response.valid,
+            title: response.title,
+            strategy_id: response
+                .summary
+                .as_ref()
+                .map(|summary| summary.strategy_id.clone()),
+            name: response
+                .summary
+                .as_ref()
+                .map(|summary| summary.name.clone()),
+            version: response
+                .summary
+                .as_ref()
+                .map(|summary| summary.version.clone()),
+            market_family: response
+                .summary
+                .as_ref()
+                .map(|summary| summary.market_family.clone()),
+            warning_count: response.warnings.len(),
+            error_count: response.errors.len(),
+        })
+        .collect();
+
+    Ok(RuntimeStrategyLibraryResponse {
+        scanned_roots: roots,
+        strategies,
+    })
+}
+
+fn collect_strategy_paths(root: &Path, strategy_paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in fs::read_dir(root).map_err(|source| {
+        format!(
+            "failed to read strategy library root `{}`: {source}",
+            root.display()
+        )
+    })? {
+        let entry = entry.map_err(|source| {
+            format!(
+                "failed to read strategy library entry under `{}`: {source}",
+                root.display()
+            )
+        })?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_strategy_paths(&path, strategy_paths)?;
+            continue;
+        }
+
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            strategy_paths.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResponse, String> {
+    let markdown = fs::read_to_string(&path).map_err(|source| {
+        format!(
+            "failed to read strategy file `{}`: {source}",
+            path.display()
+        )
+    })?;
+    let display_path = display_strategy_path(&path);
+    let markdown_title = extract_markdown_title(&markdown);
+
+    match StrictStrategyCompiler.compile_markdown(&markdown) {
+        Ok(compilation) => {
+            let summary = LoadedStrategySummary {
+                path: path.clone(),
+                title: compilation.title.clone(),
+                strategy_id: compilation.compiled.metadata.strategy_id.clone(),
+                name: compilation.compiled.metadata.name.clone(),
+                version: compilation.compiled.metadata.version.clone(),
+                market_family: compilation.compiled.market.market.clone(),
+                warning_count: compilation.warnings.len(),
+            };
+
+            Ok(RuntimeStrategyValidationResponse {
+                path,
+                display_path,
+                valid: true,
+                title: compilation.title,
+                summary: Some(summary),
+                warnings: compilation
+                    .warnings
+                    .into_iter()
+                    .map(control_api_strategy_issue)
+                    .collect(),
+                errors: Vec::new(),
+            })
+        }
+        Err(error) => Ok(RuntimeStrategyValidationResponse {
+            path,
+            display_path,
+            valid: false,
+            title: markdown_title,
+            summary: None,
+            warnings: error
+                .warnings
+                .into_iter()
+                .map(control_api_strategy_issue)
+                .collect(),
+            errors: error
+                .errors
+                .into_iter()
+                .map(control_api_strategy_issue)
+                .collect(),
+        }),
+    }
+}
+
+fn extract_markdown_title(markdown: &str) -> Option<String> {
+    markdown
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("# ").map(str::trim))
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn control_api_strategy_issue(issue: StrategyIssue) -> RuntimeStrategyIssue {
+    RuntimeStrategyIssue {
+        severity: match issue.severity {
+            StrategyIssueSeverity::Error => RuntimeStrategyIssueSeverity::Error,
+            StrategyIssueSeverity::Warning => RuntimeStrategyIssueSeverity::Warning,
+        },
+        message: issue.message,
+        section: issue.section,
+        field: issue.field,
+        line: issue.line,
+    }
+}
+
+fn runtime_host_error_response(status: StatusCode, message: String) -> Response {
+    (
+        status,
+        Json(HttpCommandResponse {
+            status_code: HttpStatusCode::InternalServerError,
+            body: HttpResponseBody::Error { message },
+        }),
+    )
+        .into_response()
+}
+
 async fn runtime_lifecycle_success_response(
     state: &RuntimeHostState,
     response_status: HttpStatusCode,
@@ -2449,6 +2750,7 @@ mod tests {
     #[derive(Clone)]
     struct TestSyncApi {
         snapshots: Arc<StdMutex<VecDeque<TradovateSyncSnapshot>>>,
+        events: Arc<StdMutex<VecDeque<TradovateSyncEvent>>>,
     }
 
     #[derive(Clone, Debug, Default)]
@@ -2538,7 +2840,11 @@ mod tests {
         }
 
         async fn next_event(&self) -> Result<Option<TradovateSyncEvent>, TradovateError> {
-            Ok(None)
+            Ok(self
+                .events
+                .lock()
+                .expect("sync mutex should not poison")
+                .pop_front())
         }
 
         async fn disconnect(&self) -> Result<(), TradovateError> {
@@ -2706,6 +3012,23 @@ mod tests {
         }
     }
 
+    fn sync_snapshot_without_open_exposure() -> TradovateSyncSnapshot {
+        let mut snapshot = sample_dispatch_snapshot();
+        snapshot.open_positions.clear();
+        snapshot.working_orders.clear();
+        snapshot.fills.clear();
+
+        TradovateSyncSnapshot {
+            occurred_at: Utc::now(),
+            positions: snapshot.open_positions,
+            working_orders: snapshot.working_orders,
+            fills: snapshot.fills,
+            account_snapshot: snapshot.account_snapshot,
+            mismatch_reason: None,
+            detail: "synced clean".to_owned(),
+        }
+    }
+
     async fn sample_session_manager_with_open_position(
     ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
         let auth_api = TestAuthApi {
@@ -2723,6 +3046,7 @@ mod tests {
             snapshots: Arc::new(StdMutex::new(VecDeque::from([
                 sync_snapshot_with_open_position(),
             ]))),
+            events: Arc::new(StdMutex::new(VecDeque::new())),
         };
 
         let mut manager = TradovateSessionManager::with_system_clock(
@@ -2753,6 +3077,87 @@ mod tests {
             .await
             .expect("sync should connect");
         manager.acknowledge_reconnect_review(TradovateReconnectDecision::LeaveBrokerProtected);
+
+        manager
+    }
+
+    async fn sample_session_manager_with_reconnect_review_required(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        let auth_api = TestAuthApi {
+            token: Arc::new(StdMutex::new(Some(sample_token()))),
+        };
+        let account_api = TestAccountApi {
+            accounts: Arc::new(vec![TradovateAccount {
+                account_id: 101,
+                account_name: "paper-primary".to_owned(),
+                nickname: None,
+                active: true,
+            }]),
+        };
+        let sync_api = TestSyncApi {
+            snapshots: Arc::new(StdMutex::new(VecDeque::from([
+                sync_snapshot_without_open_exposure(),
+                sync_snapshot_with_open_position(),
+            ]))),
+            events: Arc::new(StdMutex::new(VecDeque::from([
+                TradovateSyncEvent::Disconnected {
+                    occurred_at: Utc::now(),
+                    reason: "test reconnect".to_owned(),
+                },
+                TradovateSyncEvent::Reconnected {
+                    occurred_at: Utc::now(),
+                    detail: "test reconnect completed".to_owned(),
+                },
+            ]))),
+        };
+
+        let mut manager = TradovateSessionManager::with_system_clock(
+            TradovateSessionConfig::new(
+                tv_bot_core_types::BrokerEnvironment::Demo,
+                "https://demo.tradovateapi.com/v1",
+                "wss://demo.tradovateapi.com/v1/websocket",
+            )
+            .expect("config should be valid"),
+            sample_credentials(),
+            TradovateRoutingPreferences {
+                paper_account_name: Some("paper-primary".to_owned()),
+                live_account_name: None,
+            },
+            auth_api,
+            account_api,
+            sync_api,
+        )
+        .expect("manager should build");
+
+        manager.authenticate().await.expect("auth should succeed");
+        manager
+            .select_account_for_mode(&RuntimeMode::Paper)
+            .await
+            .expect("paper account should select");
+        manager
+            .connect_user_sync()
+            .await
+            .expect("initial sync should connect");
+        let disconnect_event = manager
+            .poll_next_event()
+            .await
+            .expect("disconnect event should poll");
+        assert!(matches!(
+            disconnect_event,
+            Some(TradovateSyncEvent::Disconnected { .. })
+        ));
+        let reconnect_event = manager
+            .poll_next_event()
+            .await
+            .expect("reconnect event should poll");
+        assert!(matches!(
+            reconnect_event,
+            Some(TradovateSyncEvent::Reconnected { .. })
+        ));
+        manager
+            .reconnect_user_sync()
+            .await
+            .expect("reconnect sync should connect");
 
         manager
     }
@@ -2827,6 +3232,22 @@ mod tests {
         latency_collector: Arc<RuntimeLatencyCollector>,
         health_supervisor: Arc<RuntimeHealthSupervisor>,
     ) -> RuntimeHostState {
+        test_state_with_strategy_roots(
+            dispatcher,
+            history,
+            latency_collector,
+            health_supervisor,
+            Vec::new(),
+        )
+    }
+
+    fn test_state_with_strategy_roots(
+        dispatcher: BoxedDispatcher,
+        history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
+        strategy_library_roots: Vec<PathBuf>,
+    ) -> RuntimeHostState {
         let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build");
         let handler = HttpCommandHandler::with_publisher(
             LocalControlApi::new(dispatcher),
@@ -2877,12 +3298,14 @@ mod tests {
                 durable: true,
                 detail: "event journal records are durably persisted to Postgres".to_owned(),
             },
+            strategy_library_roots,
             shutdown_signal: watch::channel(false).0,
             shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
         }
     }
 
-    async fn build_kernel_backed_state(
+    fn build_kernel_backed_state_with_manager(
+        manager: TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi>,
         execution_api: TestExecutionApi,
         journal: InMemoryJournal,
         history: RuntimeHistoryRecorder,
@@ -2892,11 +3315,7 @@ mod tests {
         let event_hub = WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build");
         let dispatcher = BoxedDispatcher::new(
             Box::new(KernelBackedDispatcher {
-                inner: RuntimeKernelCommandDispatcher::new(
-                    sample_session_manager_with_open_position().await,
-                    execution_api,
-                    journal,
-                ),
+                inner: RuntimeKernelCommandDispatcher::new(manager, execution_api, journal),
             }),
             history.clone(),
             latency_collector.clone(),
@@ -2905,6 +3324,23 @@ mod tests {
         );
 
         test_state(dispatcher, history, latency_collector, health_supervisor)
+    }
+
+    async fn build_kernel_backed_state(
+        execution_api: TestExecutionApi,
+        journal: InMemoryJournal,
+        history: RuntimeHistoryRecorder,
+        latency_collector: Arc<RuntimeLatencyCollector>,
+        health_supervisor: Arc<RuntimeHealthSupervisor>,
+    ) -> RuntimeHostState {
+        build_kernel_backed_state_with_manager(
+            sample_session_manager_with_open_position().await,
+            execution_api,
+            journal,
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        )
     }
 
     fn sample_request() -> HttpCommandRequest {
@@ -3311,6 +3747,14 @@ mod tests {
         std::env::temp_dir().join(format!("tv_bot_runtime_host_{unique}.md"))
     }
 
+    fn temp_strategy_library_root() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!("tv_bot_runtime_host_library_{unique}"))
+    }
+
     fn temp_sqlite_path() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3325,6 +3769,29 @@ mod tests {
             include_str!("../../../strategies/examples/gc_momentum_fade_v1.md"),
         )
         .expect("strategy file should write");
+    }
+
+    fn write_invalid_strategy_file(path: &PathBuf) {
+        fs::write(
+            path,
+            r#"# Broken Strategy
+
+## Metadata
+schema_version: 1
+strategy_id: broken_strategy_v1
+name: Broken Strategy
+version: "1.0.0"
+author: tests
+description: broken validation fixture
+tags: []
+
+## Market
+market: gold
+selection:
+  contract_mode: front_month_auto
+"#,
+        )
+        .expect("invalid strategy file should write");
     }
 
     #[tokio::test]
@@ -3489,6 +3956,163 @@ mod tests {
         }
 
         let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn strategies_route_lists_valid_and_invalid_strategy_files() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let strategy_root = temp_strategy_library_root();
+        fs::create_dir_all(&strategy_root).expect("strategy root should create");
+
+        let valid_path = strategy_root.join("gc_valid.md");
+        let invalid_path = strategy_root.join("broken.md");
+        write_strategy_file(&valid_path);
+        write_invalid_strategy_file(&invalid_path);
+
+        let app = build_http_router(test_state_with_strategy_roots(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+            vec![strategy_root.clone()],
+        ));
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/strategies")
+                .body(Body::empty())
+                .expect("request should build"),
+            "strategy library request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let library: RuntimeStrategyLibraryResponse =
+            serde_json::from_slice(&body).expect("library json should parse");
+
+        assert_eq!(library.scanned_roots, vec![strategy_root.clone()]);
+        assert_eq!(library.strategies.len(), 2);
+
+        let valid_entry = library
+            .strategies
+            .iter()
+            .find(|entry| entry.path == valid_path)
+            .expect("valid entry should be present");
+        assert!(valid_entry.valid);
+        assert_eq!(
+            valid_entry.strategy_id.as_deref(),
+            Some("gc_momentum_fade_v1")
+        );
+        assert_eq!(valid_entry.name.as_deref(), Some("GC Momentum Fade"));
+        assert_eq!(valid_entry.error_count, 0);
+
+        let invalid_entry = library
+            .strategies
+            .iter()
+            .find(|entry| entry.path == invalid_path)
+            .expect("invalid entry should be present");
+        assert!(!invalid_entry.valid);
+        assert_eq!(invalid_entry.title.as_deref(), Some("Broken Strategy"));
+        assert!(invalid_entry.error_count > 0);
+        assert!(invalid_entry.strategy_id.is_none());
+
+        let _ = fs::remove_dir_all(strategy_root);
+    }
+
+    #[tokio::test]
+    async fn strategy_validation_route_returns_compile_issues_and_journals_result() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state(
+            execution_api,
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        )
+        .await;
+        let app = build_http_router(state);
+        let strategy_path = temp_strategy_path();
+        write_invalid_strategy_file(&strategy_path);
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/strategies/validate")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeStrategyValidationRequest {
+                        source: ManualCommandSource::Dashboard,
+                        path: strategy_path.clone(),
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "strategy validation request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let validation: RuntimeStrategyValidationResponse =
+            serde_json::from_slice(&body).expect("validation json should parse");
+
+        assert_eq!(validation.path, strategy_path);
+        assert_eq!(validation.title.as_deref(), Some("Broken Strategy"));
+        assert!(!validation.valid);
+        assert!(validation.summary.is_none());
+        assert!(!validation.errors.is_empty());
+        assert!(validation
+            .errors
+            .iter()
+            .all(|issue| issue.severity == RuntimeStrategyIssueSeverity::Error));
+
+        let journal_records = journal.list().expect("journal should list records");
+        let validation_record = journal_records
+            .iter()
+            .find(|record| record.action == "validation_failed")
+            .expect("validation result should be journaled");
+        assert_eq!(validation_record.category, "strategy");
+        assert_eq!(validation_record.source, ActionSource::Dashboard);
+        assert_eq!(
+            validation_record.payload["path"].as_str(),
+            Some(validation.display_path.as_str())
+        );
+        assert_eq!(validation_record.payload["valid"].as_bool(), Some(false));
+        assert_eq!(
+            validation_record.payload["error_count"].as_u64(),
+            Some(validation.errors.len() as u64)
+        );
+
+        let _ = fs::remove_file(validation.path);
     }
 
     #[tokio::test]
@@ -4062,6 +4686,269 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn paper_scale_in_command_dispatches_broker_side_brackets_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state(
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        )
+        .await;
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+            (
+                "arm runtime request",
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper scale-in status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(status_before.arm_state, ArmState::Armed);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert_eq!(
+            status_before
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "history before scale-in request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let mut request = sample_request();
+        match &mut request.command {
+            ControlApiCommand::ManualIntent { request, .. }
+            | ControlApiCommand::StrategyIntent { request } => {
+                request.execution.intent = ExecutionIntent::Enter {
+                    side: tv_bot_core_types::TradeSide::Buy,
+                    order_type: EntryOrderType::Market,
+                    quantity: 1,
+                    protective_brackets_expected: true,
+                    reason: "manual paper scale in".to_owned(),
+                };
+            }
+        }
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&request).expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper scale-in command request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let command_response: HttpCommandResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(command_response.status_code, HttpStatusCode::Ok);
+        match command_response.body {
+            HttpResponseBody::CommandResult(result) => {
+                assert_eq!(result.status, ControlApiCommandStatus::Executed);
+                assert_eq!(result.risk_status, RiskDecisionStatus::Accepted);
+                assert!(result.dispatch_performed);
+            }
+            other => panic!("unexpected body: {other:?}"),
+        }
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let oso = &place_osos[0];
+        assert_eq!(oso.context.account_id, 101);
+        assert_eq!(oso.context.account_spec, "paper-primary");
+        assert_eq!(oso.order.symbol, "GCM2026");
+        assert_eq!(oso.order.quantity, 1);
+        assert_eq!(
+            oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(oso.order.brackets.len(), 2);
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("stop_loss") && bracket.stop_price.is_some()
+        }));
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("take_profit") && bracket.limit_price.is_some()
+        }));
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "history after scale-in request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+        assert!(history_after.projection.latest_order.is_some());
+
+        let journal_actions = journal
+            .list()
+            .expect("journal should list records")
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_succeeded".to_owned(),
+            ]
+        );
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
     async fn history_route_projects_broker_snapshot_state() {
         let history = test_history();
         let latency_collector = test_latency_collector();
@@ -4370,6 +5257,247 @@ mod tests {
         assert_eq!(
             lifecycle_response.status.reconnect_review.last_decision,
             Some(RuntimeReconnectDecision::LeaveBrokerProtected)
+        );
+    }
+
+    #[tokio::test]
+    async fn paper_reconnect_review_after_disconnect_can_reattach_bot_management_through_runtime_host(
+    ) {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_reconnect_review_required().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state);
+
+        let set_mode_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::SetMode {
+                            mode: RuntimeMode::Paper,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "set mode paper request",
+        )
+        .await;
+        assert_eq!(set_mode_response.status(), StatusCode::OK);
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some("existing broker-side position or working orders detected after reconnect")
+        );
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 1);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(1)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::ReattachBotManagement,
+                            contract_id: None,
+                            reason: Some("resume paper bot management after reconnect".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper reconnect reattach request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "reconnect review resolved with reattach_bot_management"
+        );
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            lifecycle_response.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(!lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            Some(RuntimeReconnectDecision::ReattachBotManagement)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::Synchronized)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(1)
+        );
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_position_records
+                >= history_before.projection.total_position_records
+        );
+        assert!(history_after.projection.total_position_records > 0);
+        assert_eq!(
+            history_after
+                .projection
+                .latest_position
+                .as_ref()
+                .map(|record| record.symbol.as_str()),
+            Some("GCM2026")
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let reconnect_resolution = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_resolved")
+            .expect("reconnect resolution should be journaled");
+        assert_eq!(reconnect_resolution.category, "broker");
+        assert_eq!(
+            reconnect_resolution.payload["reason"].as_str(),
+            Some("resume paper bot management after reconnect")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["open_position_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            reconnect_resolution.payload["working_order_count"].as_u64(),
+            Some(1)
         );
     }
 

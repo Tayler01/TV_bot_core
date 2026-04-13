@@ -172,6 +172,64 @@ pub struct RuntimeHistorySnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RuntimeStrategyIssueSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyIssue {
+    pub severity: RuntimeStrategyIssueSeverity,
+    pub message: String,
+    pub section: Option<String>,
+    pub field: Option<String>,
+    pub line: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyCatalogEntry {
+    pub path: PathBuf,
+    pub display_path: String,
+    pub valid: bool,
+    pub title: Option<String>,
+    pub strategy_id: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub market_family: Option<String>,
+    pub warning_count: usize,
+    pub error_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyLibraryResponse {
+    pub scanned_roots: Vec<PathBuf>,
+    pub strategies: Vec<RuntimeStrategyCatalogEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyValidationRequest {
+    pub source: ManualCommandSource,
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyValidationResponse {
+    pub path: PathBuf,
+    pub display_path: String,
+    pub valid: bool,
+    pub title: Option<String>,
+    pub summary: Option<LoadedStrategySummary>,
+    pub warnings: Vec<RuntimeStrategyIssue>,
+    pub errors: Vec<RuntimeStrategyIssue>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeReconnectDecision {
     ClosePosition,
     LeaveBrokerProtected,

@@ -1,5 +1,52 @@
 # Dashboard
 
-Reserved for the React dashboard described in `AGENTS.md` and `V1_ACCEPTANCE_CRITERIA.md`.
+This package contains the local React dashboard for the trading runtime.
 
-This directory is intentionally present in the repo structure before the dashboard implementation lands so the GitHub tree matches the architecture plan.
+The dashboard consumes only the local control plane:
+
+- `GET /health`
+- `GET /status`
+- `GET /readiness`
+- `GET /history`
+- `GET /strategies`
+- `POST /strategies/validate`
+- `POST /runtime/commands`
+- `GET /events` (reserved for the next dashboard slices)
+
+## Current Slice
+
+The current dashboard now covers:
+
+- explicit runtime mode with strong paper/live separation
+- strategy library browsing and host-backed validation before load
+- strategy load through the audited runtime lifecycle command path
+- warmup, arm/disarm, pause/resume, mode switch, and flatten controls
+- account routing
+- grouped readiness checks
+- broker, feed, storage, and host health
+- history, PnL, and latest latency summaries
+
+## Local Development
+
+From [apps/dashboard](</C:/repos/TV_bot_core/apps/dashboard>):
+
+```bash
+npm install
+npm run dev
+```
+
+The Vite dev server proxies the local runtime control plane by default:
+
+- HTTP proxy target: `http://127.0.0.1:8080`
+- WebSocket proxy target: `ws://127.0.0.1:8081`
+
+If the runtime uses different binds, set:
+
+- `VITE_CONTROL_API_PROXY_TARGET`
+- `VITE_CONTROL_API_WS_PROXY_TARGET`
+
+For static builds or alternate local reverse proxies, `VITE_CONTROL_API_BASE_URL` can point the dashboard at a different local control-plane origin.
+
+## Follow-up Note
+
+After this strategy-control slice, circle back to reconnect hardening and the broader reconnect-review/operator-resolution pass before calling the dashboard and paper campaign complete.

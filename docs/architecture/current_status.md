@@ -9,7 +9,7 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 2 foundations are substantially in place.
 - Phase 3 foundations are substantially in place.
 - Phase 4 foundations are substantially in place.
-- Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented, while the dashboard remains incomplete.
+- Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented and the dashboard now partially wired for operator overview, lifecycle control, and strategy-library validation, while the remaining dashboard views are still incomplete.
 - Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for reconnect-close and signal-time shutdown blocking.
 - Phase 7 is mostly open.
 
@@ -41,6 +41,7 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 - Shutdown-with-open-position safety flow through the runtime host, including signal-time blocking, explicit flatten-first or leave-broker-protected decisions, and status projection of pending shutdown review state
 - Reconnect/open-position recovery review flow through the runtime host and CLI, including explicit leave-broker-protected or reattach acknowledgement and close-position dispatch through the existing audited flatten path
 - Targeted acceptance coverage for execution-engine no-new-entry blocking, paper-account scale-in dispatch, reconnect-review close-position flatten dispatch, and signal-time shutdown review blocking
+- Dashboard overview and first control-center slices in `apps/dashboard`, including host-backed lifecycle commands plus strategy-library browsing and strict strategy validation through new `/strategies` and `/strategies/validate` host surfaces
 
 ## Must Finish Before Advancing Deeper Into Phase 5 And Phase 6
 
@@ -53,8 +54,9 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 ### Phase 5
 
 - Dashboard v1 in `apps/dashboard`
+- Strategy upload UX through the host surface
+- Dashboard event stream and journal-facing operator feed
 - Manual operator flows end to end through the live runtime host
-- Grouped pre-arm readiness screen surfaced through the control plane with live-backed dependency status
 
 ### Phase 6
 
@@ -64,16 +66,17 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 
 - Cross-platform packaging
 - Hardening pass
+- Circle back to reconnect hardening after the first dashboard slice, especially the broader paper reconnect/operator-resolution campaign beyond the current host-level acceptance coverage
 - Paper-trading test campaigns
 - Operational docs and runbooks
 
 ## Acceptance Gaps Still Open
 
-- Strategy-system acceptance is substantially met for V1 built-in rule/runtime behavior, but upload/library UX still needs to be wired through the host surfaces.
+- Strategy-system acceptance is substantially met for V1 built-in rule/runtime behavior, and host-backed strategy library plus validation are now exposed to the dashboard, but upload UX is still open.
 - Runtime-host acceptance is substantially met at the transport layer, and broker plus market-data plus active storage/journal backend state are now surfaced through status/readiness while the richer trading-history projection is available through `/history` and the CLI.
 - Runtime-host observability acceptance is substantially met for persisted latency/health snapshots, host `/health` and `/status` projection, and operator-facing conflict/precondition mapping of safety-blocked execution paths.
 - Restart/reconnect and shutdown-with-open-position acceptance are now substantially met at the host and execution layers, including explicit close-position review routing and signal-time shutdown blocking coverage.
-- Dashboard acceptance is not met yet.
+- Dashboard acceptance is not met yet, but the local overview, lifecycle controls, and strategy-library validation surface are now wired through the host.
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.
 - Metrics acceptance is substantially met for V1 host and CLI surfaces: runtime-collected trade-path latency, persisted health snapshots, and sampled CPU/memory runtime-resource telemetry are now persisted and surfaced, while the richer dashboard-facing operator views are still incomplete.
