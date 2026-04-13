@@ -1,5 +1,7 @@
 export type DecimalValue = number | string;
 
+export type ActionSource = "dashboard" | "cli" | "system";
+export type EventSeverity = "info" | "warning" | "error";
 export type RuntimeMode = "paper" | "live" | "observation" | "paused";
 export type ArmState = "armed" | "disarmed";
 export type WarmupStatus =
@@ -324,6 +326,16 @@ export interface RuntimeStrategyValidationResponse {
   errors: RuntimeStrategyIssue[];
 }
 
+export interface EventJournalRecord {
+  event_id: string;
+  category: string;
+  action: string;
+  source: ActionSource;
+  severity: EventSeverity;
+  occurred_at: string;
+  payload: unknown;
+}
+
 export interface RuntimeHostHealthResponse {
   status: string;
   system_health: SystemHealthSnapshot | null;
@@ -400,3 +412,40 @@ export interface RuntimeLifecycleResponse {
   readiness: RuntimeReadinessSnapshot;
   command_result: ControlApiCommandResult | null;
 }
+
+export type ControlApiEvent =
+  | {
+      kind: "command_result";
+      source: ActionSource;
+      result: ControlApiCommandResult;
+      occurred_at: string;
+    }
+  | {
+      kind: "readiness_report";
+      report: ArmReadinessReport;
+      occurred_at: string;
+    }
+  | {
+      kind: "broker_status";
+      snapshot: BrokerStatusSnapshot;
+      occurred_at: string;
+    }
+  | {
+      kind: "system_health";
+      snapshot: SystemHealthSnapshot;
+      occurred_at: string;
+    }
+  | {
+      kind: "trade_latency";
+      record: TradePathLatencyRecord;
+      occurred_at: string;
+    }
+  | {
+      kind: "history_snapshot";
+      projection: ProjectedTradingHistoryState;
+      occurred_at: string;
+    }
+  | {
+      kind: "journal_record";
+      record: EventJournalRecord;
+    };

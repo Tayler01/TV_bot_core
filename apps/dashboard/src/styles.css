@@ -470,6 +470,15 @@ select {
   color: #8d4d00;
 }
 
+.review-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(248, 242, 234, 0.88);
+}
+
 .definition-list {
   display: grid;
   grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
@@ -486,6 +495,33 @@ select {
 .definition-list dd {
   margin: 0;
   line-height: 1.5;
+}
+
+.event-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.event-list__item {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(248, 242, 234, 0.88);
+}
+
+.event-list__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.event-list__item p {
+  margin: 10px 0 0;
+  line-height: 1.5;
+  color: #536078;
 }
 
 @media (max-width: 1180px) {

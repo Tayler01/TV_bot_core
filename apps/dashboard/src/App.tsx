@@ -7,8 +7,10 @@ import {
 } from "react";
 
 import {
+  controlApiEventsUrl,
   loadDashboardSnapshot,
   loadStrategyLibrary,
+  parseControlApiEvent,
   sendLifecycleCommand,
   validateStrategyPath,
   type DashboardSnapshot,
@@ -24,6 +26,7 @@ import {
   formatSignedCurrency,
 } from "./lib/format";
 import type {
+  ControlApiEvent,
   ReadinessCheckStatus,
   RuntimeLifecycleCommand,
   RuntimeLifecycleResponse,
@@ -37,9 +40,12 @@ import type {
 } from "./types/controlApi";
 
 const REFRESH_INTERVAL_MS = 5_000;
+const EVENTS_RECONNECT_DELAY_MS = 1_500;
+const MAX_RECENT_EVENTS = 12;
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type BannerTone = "healthy" | "warning" | "danger" | "info";
+type EventConnectionState = "connecting" | "open" | "closed" | "error" | "unsupported";
 
 interface ViewModel {
   snapshot: DashboardSnapshot | null;
@@ -68,6 +74,21 @@ interface StrategySummaryViewModel {
   selectedPath: string;
 }
 
+interface EventFeedItem {
+  id: string;
+  headline: string;
+  detail: string;
+  tone: BannerTone;
+  occurredAt: string;
+}
+
+interface EventFeedViewModel {
+  connectionState: EventConnectionState;
+  recentEvents: EventFeedItem[];
+  lastEventAt: string | null;
+  error: string | null;
+}
+
 const INITIAL_VIEW_MODEL: ViewModel = {
   snapshot: null,
   loadState: "idle",
@@ -83,6 +104,13 @@ const INITIAL_STRATEGY_VIEW_MODEL: StrategySummaryViewModel = {
   libraryState: "idle",
   validationState: "idle",
   selectedPath: "",
+};
+
+const INITIAL_EVENT_FEED_VIEW_MODEL: EventFeedViewModel = {
+  connectionState: "connecting",
+  recentEvents: [],
+  lastEventAt: null,
+  error: null,
 };
 
 function modeTone(mode: RuntimeMode): "paper" | "live" | "neutral" {
@@ -231,6 +259,171 @@ function strategyLabel(validation: RuntimeStrategyValidationResponse | null): st
   return validation.title ?? validation.display_path;
 }
 
+function reviewButtonDisabled(
+  pendingAction: string | null,
+  snapshot: DashboardSnapshot | null,
+): boolean {
+  return pendingAction !== null || snapshot?.status.command_dispatch_ready !== true;
+}
+
+function eventItemTone(event: ControlApiEvent): BannerTone {
+  switch (event.kind) {
+    case "command_result":
+      return event.result.status === "rejected"
+        ? "warning"
+        : event.result.status === "requires_override"
+          ? "warning"
+          : "healthy";
+    case "readiness_report":
+      return event.report.hard_override_required ? "warning" : "info";
+    case "system_health":
+      return event.snapshot.error_count > 0 || event.snapshot.feed_degraded ? "warning" : "healthy";
+    case "trade_latency":
+      return "info";
+    case "history_snapshot":
+      return "info";
+    case "broker_status":
+      return event.snapshot.health === "healthy" ? "healthy" : "warning";
+    case "journal_record":
+      return event.record.severity === "error"
+        ? "danger"
+        : event.record.severity === "warning"
+          ? "warning"
+          : "info";
+  }
+}
+
+function eventOccurredAt(event: ControlApiEvent): string {
+  return event.kind === "journal_record" ? event.record.occurred_at : event.occurred_at;
+}
+
+function compactJson(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "No payload";
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "Payload unavailable";
+  }
+}
+
+function eventHeadline(event: ControlApiEvent): string {
+  switch (event.kind) {
+    case "command_result":
+      return `Command ${event.result.status}`;
+    case "readiness_report":
+      return "Readiness report updated";
+    case "system_health":
+      return "System health updated";
+    case "trade_latency":
+      return "Trade latency recorded";
+    case "history_snapshot":
+      return "History projection updated";
+    case "broker_status":
+      return "Broker status updated";
+    case "journal_record":
+      return `${event.record.category}:${event.record.action}`;
+  }
+}
+
+function eventDetail(event: ControlApiEvent): string {
+  switch (event.kind) {
+    case "command_result":
+      return event.result.reason;
+    case "readiness_report":
+      return event.report.risk_summary;
+    case "system_health":
+      return `Errors ${formatInteger(event.snapshot.error_count)} | Feed degraded ${
+        event.snapshot.feed_degraded ? "yes" : "no"
+      }`;
+    case "trade_latency":
+      return `End-to-end fill ${formatLatency(
+        event.record.latency.end_to_end_fill_latency_ms,
+      )}`;
+    case "history_snapshot":
+      return `Open trades ${formatInteger(event.projection.open_trade_ids.length)} | Closed trades ${formatInteger(
+        event.projection.closed_trade_count,
+      )}`;
+    case "broker_status":
+      return `${formatMode(event.snapshot.sync_state)} | ${event.snapshot.provider}`;
+    case "journal_record":
+      return compactJson(event.record.payload);
+  }
+}
+
+function toEventFeedItem(event: ControlApiEvent): EventFeedItem {
+  const occurredAt = eventOccurredAt(event);
+  return {
+    id:
+      event.kind === "journal_record"
+        ? event.record.event_id
+        : `${event.kind}-${occurredAt}-${eventHeadline(event)}`,
+    headline: eventHeadline(event),
+    detail: eventDetail(event),
+    tone: eventItemTone(event),
+    occurredAt,
+  };
+}
+
+function mergeEventIntoSnapshot(
+  snapshot: DashboardSnapshot | null,
+  event: ControlApiEvent,
+): DashboardSnapshot | null {
+  if (!snapshot) {
+    return snapshot;
+  }
+
+  switch (event.kind) {
+    case "readiness_report":
+      return {
+        ...snapshot,
+        fetchedAt: new Date().toISOString(),
+        readiness: {
+          ...snapshot.readiness,
+          report: event.report,
+        },
+      };
+    case "system_health":
+      return {
+        ...snapshot,
+        fetchedAt: new Date().toISOString(),
+        status: {
+          ...snapshot.status,
+          system_health: event.snapshot,
+        },
+        health: {
+          ...snapshot.health,
+          system_health: event.snapshot,
+        },
+      };
+    case "trade_latency":
+      return {
+        ...snapshot,
+        fetchedAt: new Date().toISOString(),
+        status: {
+          ...snapshot.status,
+          latest_trade_latency: event.record,
+        },
+        health: {
+          ...snapshot.health,
+          latest_trade_latency: event.record,
+        },
+      };
+    case "history_snapshot":
+      return {
+        ...snapshot,
+        fetchedAt: new Date().toISOString(),
+        history: {
+          projection: event.projection,
+        },
+      };
+    default:
+      return snapshot;
+  }
+}
+
 function Panel({
   eyebrow,
   title,
@@ -302,10 +495,15 @@ function App() {
   const [strategyViewModel, setStrategyViewModel] = useState<StrategySummaryViewModel>(
     INITIAL_STRATEGY_VIEW_MODEL,
   );
+  const [eventFeed, setEventFeed] = useState<EventFeedViewModel>(INITIAL_EVENT_FEED_VIEW_MODEL);
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [flattenContractId, setFlattenContractId] = useState("");
   const [flattenReason, setFlattenReason] = useState("dashboard flatten request");
+  const [reconnectReason, setReconnectReason] = useState(
+    "dashboard reconnect review resolution",
+  );
+  const [shutdownReason, setShutdownReason] = useState("dashboard shutdown review decision");
 
   const refreshSnapshot = useEffectEvent(async (signal?: AbortSignal) => {
     const attemptedAt = new Date().toISOString();
@@ -395,6 +593,58 @@ function App() {
         return null;
       } finally {
         setPendingAction(null);
+      }
+    },
+  );
+
+  const executeReconnectDecision = useEffectEvent(
+    async (decision: "close_position" | "leave_broker_protected" | "reattach_bot_management") => {
+      const confirmMessage =
+        decision === "close_position"
+          ? "Close the active broker position as part of reconnect recovery?"
+          : undefined;
+
+      const result = await executeLifecycleCommand(
+        {
+          kind: "resolve_reconnect_review",
+          decision,
+          contract_id: null,
+          reason: reconnectReason.trim() || null,
+        },
+        {
+          pendingLabel: `Resolving reconnect review with ${decision}`,
+          confirmMessage,
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        setReconnectReason("dashboard reconnect review resolution");
+      }
+    },
+  );
+
+  const executeShutdownDecision = useEffectEvent(
+    async (decision: "flatten_first" | "leave_broker_protected") => {
+      const confirmMessage =
+        decision === "flatten_first"
+          ? "Request flatten-first shutdown handling now? The runtime will flatten and then continue shutdown once the broker position is flat."
+          : "Approve shutdown while leaving broker-protected positions in place?";
+
+      const result = await executeLifecycleCommand(
+        {
+          kind: "shutdown",
+          decision,
+          contract_id: null,
+          reason: shutdownReason.trim() || null,
+        },
+        {
+          pendingLabel: `Submitting shutdown review decision ${decision}`,
+          confirmMessage,
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        setShutdownReason("dashboard shutdown review decision");
       }
     },
   );
@@ -495,6 +745,117 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof WebSocket === "undefined") {
+      setEventFeed({
+        connectionState: "unsupported",
+        recentEvents: [],
+        lastEventAt: null,
+        error: "This environment does not provide WebSocket support.",
+      });
+      return;
+    }
+
+    let active = true;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      if (!active) {
+        return;
+      }
+
+      setEventFeed((current) => ({
+        ...current,
+        connectionState: "connecting",
+        error: null,
+      }));
+
+      socket = new WebSocket(controlApiEventsUrl());
+
+      socket.onopen = () => {
+        if (!active) {
+          return;
+        }
+
+        setEventFeed((current) => ({
+          ...current,
+          connectionState: "open",
+          error: null,
+        }));
+      };
+
+      socket.onmessage = (message) => {
+        if (!active || typeof message.data !== "string") {
+          return;
+        }
+
+        try {
+          const event = parseControlApiEvent(message.data);
+          const feedItem = toEventFeedItem(event);
+
+          setEventFeed((current) => ({
+            ...current,
+            connectionState: "open",
+            recentEvents: [feedItem, ...current.recentEvents].slice(0, MAX_RECENT_EVENTS),
+            lastEventAt: feedItem.occurredAt,
+            error: null,
+          }));
+          setViewModel((current) => ({
+            ...current,
+            snapshot: mergeEventIntoSnapshot(current.snapshot, event),
+          }));
+        } catch (error) {
+          const detail =
+            error instanceof Error ? error.message : "Dashboard could not parse an event.";
+          setEventFeed((current) => ({
+            ...current,
+            connectionState: "error",
+            error: detail,
+          }));
+        }
+      };
+
+      socket.onerror = () => {
+        if (!active) {
+          return;
+        }
+
+        setEventFeed((current) => ({
+          ...current,
+          connectionState: "error",
+          error: "Local event stream reported a transport error.",
+        }));
+      };
+
+      socket.onclose = () => {
+        if (!active) {
+          return;
+        }
+
+        setEventFeed((current) => ({
+          ...current,
+          connectionState: "closed",
+          error: current.error ?? "Event stream closed; retrying shortly.",
+        }));
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, EVENTS_RECONNECT_DELAY_MS);
+      };
+    };
+
+    connect();
+
+    return () => {
+      active = false;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      socket?.close();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!strategyViewModel.selectedPath) {
       return;
     }
@@ -540,6 +901,15 @@ function App() {
     strategyViewModel.selectedPath.length > 0 &&
     strategyViewModel.validation?.valid === true &&
     pendingAction === null;
+  const reviewActionsDisabled = reviewButtonDisabled(pendingAction, snapshot);
+  const reconnectCloseDisabled =
+    reviewActionsDisabled || snapshot?.status.reconnect_review.required !== true;
+  const shutdownLeaveDisabled =
+    reviewActionsDisabled ||
+    snapshot?.status.shutdown_review.blocked !== true ||
+    snapshot.status.shutdown_review.all_positions_broker_protected !== true;
+  const shutdownFlattenDisabled =
+    reviewActionsDisabled || snapshot?.status.shutdown_review.blocked !== true;
 
   return (
     <main className="shell">
@@ -1325,10 +1695,150 @@ function App() {
                 )}
               />
             </dl>
+            {snapshot.status.reconnect_review.required ? (
+              <section className="review-card">
+                <p className="control-card__title">Reconnect review actions</p>
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="Reconnect review reason"
+                    placeholder="dashboard reconnect review resolution"
+                    value={reconnectReason}
+                    onChange={(event) => {
+                      setReconnectReason(event.target.value);
+                    }}
+                  />
+                </label>
+                <div className="action-row">
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={reviewActionsDisabled}
+                    onClick={() => {
+                      void executeReconnectDecision("reattach_bot_management");
+                    }}
+                  >
+                    Reattach bot management
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={reviewActionsDisabled}
+                    onClick={() => {
+                      void executeReconnectDecision("leave_broker_protected");
+                    }}
+                  >
+                    Leave broker-side
+                  </button>
+                  <button
+                    className="command-button command-button--danger"
+                    type="button"
+                    disabled={reconnectCloseDisabled}
+                    onClick={() => {
+                      void executeReconnectDecision("close_position");
+                    }}
+                  >
+                    Close position
+                  </button>
+                </div>
+                <p className="control-card__note">
+                  The runtime host resolves the active contract id when there is only one open
+                  broker position, so reconnect-close can stay inside the audited control path.
+                </p>
+              </section>
+            ) : null}
+            {snapshot.status.shutdown_review.blocked ? (
+              <section className="review-card">
+                <p className="control-card__title">Shutdown review actions</p>
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="Shutdown review reason"
+                    placeholder="dashboard shutdown review decision"
+                    value={shutdownReason}
+                    onChange={(event) => {
+                      setShutdownReason(event.target.value);
+                    }}
+                  />
+                </label>
+                <div className="action-row">
+                  <button
+                    className="command-button command-button--danger"
+                    type="button"
+                    disabled={shutdownFlattenDisabled}
+                    onClick={() => {
+                      void executeShutdownDecision("flatten_first");
+                    }}
+                  >
+                    Flatten first
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={shutdownLeaveDisabled}
+                    onClick={() => {
+                      void executeShutdownDecision("leave_broker_protected");
+                    }}
+                  >
+                    Leave broker-protected
+                  </button>
+                </div>
+                <p className="control-card__note">
+                  Leave-in-place is only enabled when every open position reports broker-side
+                  protection through the runtime host snapshot.
+                </p>
+              </section>
+            ) : null}
             <p className="panel__footnote">
-              Follow-up after this dashboard overview: circle back to reconnect hardening for the
-              broader operator-resolution campaign and final paper-mode recovery polish.
+              Follow-up after this dashboard safety slice: circle back to reconnect hardening for
+              the broader operator-resolution campaign and final paper-mode recovery polish.
             </p>
+          </Panel>
+
+          <Panel
+            eyebrow="Events"
+            title="Local operator feed from /events"
+            detail={
+              eventFeed.lastEventAt
+                ? `Last event ${formatDateTime(eventFeed.lastEventAt)}`
+                : "Waiting for the local event stream"
+            }
+          >
+            <div className="pill-row">
+              <Pill
+                label={`Stream ${eventFeed.connectionState}`}
+                tone={
+                  eventFeed.connectionState === "open"
+                    ? "healthy"
+                    : eventFeed.connectionState === "connecting"
+                      ? "info"
+                      : "warning"
+                }
+              />
+              <Pill
+                label={`${formatInteger(eventFeed.recentEvents.length)} recent event(s)`}
+                tone="info"
+              />
+            </div>
+            {eventFeed.error ? <p className="panel__footnote">{eventFeed.error}</p> : null}
+            {eventFeed.recentEvents.length ? (
+              <ul className="event-list">
+                {eventFeed.recentEvents.map((event) => (
+                  <li key={event.id} className="event-list__item">
+                    <div className="event-list__header">
+                      <strong>{event.headline}</strong>
+                      <Pill label={formatDateTime(event.occurredAt)} tone={event.tone} />
+                    </div>
+                    <p>{event.detail}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="panel__footnote">
+                The dashboard is connected to the local runtime event hub and will render journal,
+                readiness, command, health, and history updates here.
+              </p>
+            )}
           </Panel>
         </div>
       ) : null}

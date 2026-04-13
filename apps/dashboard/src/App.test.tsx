@@ -12,6 +12,59 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+class MockWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+
+  readonly url: string;
+  readyState = MockWebSocket.CONNECTING;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onclose: ((event: Event) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+
+  constructor(url: string | URL) {
+    this.url = String(url);
+    MockWebSocket.instances.push(this);
+
+    queueMicrotask(() => {
+      if (this.readyState !== MockWebSocket.CONNECTING) {
+        return;
+      }
+
+      this.readyState = MockWebSocket.OPEN;
+      this.onopen?.(new Event("open"));
+    });
+  }
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED;
+    this.onclose?.(new Event("close"));
+  }
+
+  emitJson(payload: unknown) {
+    this.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify(payload),
+      }),
+    );
+  }
+}
+
+function installWebSocketMock() {
+  MockWebSocket.instances = [];
+  vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
+
+  return {
+    latest() {
+      return MockWebSocket.instances.at(-1) ?? null;
+    },
+  };
+}
+
 function installFetchMock(snapshotOverrides?: {
   reconnectRequired?: boolean;
   shutdownBlocked?: boolean;
@@ -378,6 +431,7 @@ function installFetchMock(snapshotOverrides?: {
           contract_id?: number;
           reason?: string;
           path?: string;
+          decision?: string;
         };
       };
 
@@ -487,6 +541,63 @@ function installFetchMock(snapshotOverrides?: {
             },
             200,
           );
+        case "resolve_reconnect_review":
+          status.reconnect_review.required = false;
+          status.reconnect_review.last_decision = request.command.decision ?? null;
+          status.reconnect_review.reason = null;
+          status.reconnect_review.open_position_count = 0;
+          status.reconnect_review.working_order_count = 0;
+          readiness.status.reconnect_review = status.reconnect_review;
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message: `reconnect review resolved with ${request.command.decision}`,
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
+        case "shutdown":
+          if (request.command.decision === "flatten_first") {
+            status.shutdown_review.blocked = true;
+            status.shutdown_review.awaiting_flatten = true;
+            (
+              status.shutdown_review as { decision: string | null }
+            ).decision = "flatten_first";
+            status.shutdown_review.reason =
+              "shutdown is waiting for flatten confirmation on 1 open position(s)";
+            readiness.status.shutdown_review = status.shutdown_review;
+            return jsonResponse(
+              {
+                status_code: "Ok",
+                message: "shutdown will continue after the broker position is flat",
+                status,
+                readiness,
+                command_result: null,
+              },
+              200,
+            );
+          }
+
+          status.shutdown_review.blocked = false;
+          status.shutdown_review.awaiting_flatten = false;
+          (
+            status.shutdown_review as { decision: string | null }
+          ).decision = "leave_broker_protected";
+          status.shutdown_review.reason = null;
+          readiness.status.shutdown_review = status.shutdown_review;
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message:
+                "shutdown approved; leaving 1 broker-protected open position(s) in place",
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
         case "flatten":
           return jsonResponse(
             {
@@ -525,10 +636,12 @@ function installFetchMock(snapshotOverrides?: {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("App", () => {
   it("renders the paper overview from the local control API snapshot", async () => {
+    installWebSocketMock();
     installFetchMock();
 
     render(<App />);
@@ -551,6 +664,7 @@ describe("App", () => {
   });
 
   it("surfaces reconnect and shutdown review warnings when they are active", async () => {
+    installWebSocketMock();
     installFetchMock({ reconnectRequired: true, shutdownBlocked: true });
 
     render(<App />);
@@ -567,7 +681,98 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders recent websocket operator events from the local runtime host", async () => {
+    const websocket = installWebSocketMock();
+    installFetchMock();
+
+    render(<App />);
+
+    await screen.findByText("Local operator feed from /events");
+    websocket.latest()?.emitJson({
+      kind: "journal_record",
+      record: {
+        event_id: "evt-1",
+        category: "runtime",
+        action: "shutdown_blocked",
+        source: "system",
+        severity: "warning",
+        occurred_at: "2026-04-12T20:12:03Z",
+        payload: {
+          reason: "shutdown blocked pending explicit review",
+        },
+      },
+    });
+
+    expect(await screen.findByText("runtime:shutdown_blocked")).toBeInTheDocument();
+    expect(
+      await screen.findByText('{"reason":"shutdown blocked pending explicit review"}'),
+    ).toBeInTheDocument();
+  });
+
+  it("submits reconnect and shutdown review actions through runtime lifecycle commands", async () => {
+    const websocket = installWebSocketMock();
+    const { fetchSpy } = installFetchMock({ reconnectRequired: true, shutdownBlocked: true });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    await screen.findByText("Reconnect review actions");
+    websocket.latest()?.emitJson({
+      kind: "command_result",
+      source: "dashboard",
+      result: {
+        status: "executed",
+        risk_status: "accepted",
+        dispatch_performed: false,
+        reason: "dashboard command executed",
+        warnings: [],
+      },
+      occurred_at: "2026-04-12T20:12:03Z",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reattach bot management" }));
+    expect(
+      await screen.findByText("reconnect review resolved with reattach_bot_management"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Flatten first" }));
+    expect(
+      await screen.findByText("shutdown will continue after the broker position is flat"),
+    ).toBeInTheDocument();
+
+    const runtimeCommandCalls = fetchSpy.mock.calls.filter((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/runtime/commands");
+    });
+
+    expect(JSON.parse(String(runtimeCommandCalls[0]?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "resolve_reconnect_review",
+        decision: "reattach_bot_management",
+        contract_id: null,
+        reason: "dashboard reconnect review resolution",
+      },
+    });
+    expect(JSON.parse(String(runtimeCommandCalls[1]?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "shutdown",
+        decision: "flatten_first",
+        contract_id: null,
+        reason: "dashboard shutdown review decision",
+      },
+    });
+  });
+
   it("loads the selected strategy through the runtime lifecycle endpoint", async () => {
+    installWebSocketMock();
     const { fetchSpy } = installFetchMock();
 
     render(<App />);
@@ -599,6 +804,7 @@ describe("App", () => {
   });
 
   it("sends pause through the runtime lifecycle endpoint and updates the control surface", async () => {
+    installWebSocketMock();
     const { fetchSpy } = installFetchMock();
 
     render(<App />);
@@ -629,6 +835,7 @@ describe("App", () => {
   });
 
   it("requires confirmation before posting a flatten command", async () => {
+    installWebSocketMock();
     const { fetchSpy } = installFetchMock();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
@@ -663,6 +870,7 @@ describe("App", () => {
   });
 
   it("posts flatten with the dashboard source once confirmation is accepted", async () => {
+    installWebSocketMock();
     const { fetchSpy } = installFetchMock();
     vi.spyOn(window, "confirm").mockReturnValue(true);
 

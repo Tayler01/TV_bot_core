@@ -1,4 +1,5 @@
 import type {
+  ControlApiEvent,
   RuntimeHistorySnapshot,
   RuntimeHostHealthResponse,
   RuntimeLifecycleCommand,
@@ -38,6 +39,9 @@ export interface LifecycleCommandResult {
 
 const CONTROL_API_BASE_URL = (
   import.meta.env.VITE_CONTROL_API_BASE_URL ?? ""
+).replace(/\/$/, "");
+const CONTROL_API_EVENTS_URL = (
+  import.meta.env.VITE_CONTROL_API_EVENTS_URL ?? ""
 ).replace(/\/$/, "");
 
 async function readBody(response: Response): Promise<string> {
@@ -155,4 +159,31 @@ export async function validateStrategyPath(
   }
 
   return (await response.json()) as RuntimeStrategyValidationResponse;
+}
+
+function defaultEventsUrl(): string {
+  if (typeof window === "undefined") {
+    return "ws://127.0.0.1:8081/events";
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/events`;
+}
+
+export function controlApiEventsUrl(): string {
+  if (CONTROL_API_EVENTS_URL) {
+    return `${CONTROL_API_EVENTS_URL}/events`;
+  }
+
+  if (CONTROL_API_BASE_URL) {
+    const url = new URL(`${CONTROL_API_BASE_URL}/events`, window.location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return url.toString();
+  }
+
+  return defaultEventsUrl();
+}
+
+export function parseControlApiEvent(payload: string): ControlApiEvent {
+  return JSON.parse(payload) as ControlApiEvent;
 }

@@ -11,7 +11,7 @@ The dashboard consumes only the local control plane:
 - `GET /strategies`
 - `POST /strategies/validate`
 - `POST /runtime/commands`
-- `GET /events` (reserved for the next dashboard slices)
+- `GET /events`
 
 ## Current Slice
 
@@ -21,6 +21,8 @@ The current dashboard now covers:
 - strategy library browsing and host-backed validation before load
 - strategy load through the audited runtime lifecycle command path
 - warmup, arm/disarm, pause/resume, mode switch, and flatten controls
+- reconnect and shutdown review action cards through the runtime lifecycle command path
+- local `/events` WebSocket operator feed for journal, command, readiness, history, and health updates
 - account routing
 - grouped readiness checks
 - broker, feed, storage, and host health
@@ -46,7 +48,8 @@ If the runtime uses different binds, set:
 - `VITE_CONTROL_API_WS_PROXY_TARGET`
 
 For static builds or alternate local reverse proxies, `VITE_CONTROL_API_BASE_URL` can point the dashboard at a different local control-plane origin.
+If the event stream is served from a separate WebSocket origin instead of the same host, set `VITE_CONTROL_API_EVENTS_URL`.
 
 ## Follow-up Note
 
-After this strategy-control slice, circle back to reconnect hardening and the broader reconnect-review/operator-resolution pass before calling the dashboard and paper campaign complete.
+After this event-feed and safety-action slice, circle back to reconnect hardening and the broader reconnect-review/operator-resolution pass before calling the dashboard and paper campaign complete.
