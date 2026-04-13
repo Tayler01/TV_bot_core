@@ -287,6 +287,18 @@ pub struct TradovateLiquidatePositionResult {
     pub order_id: i64,
 }
 
+#[derive(Clone, Debug)]
+pub struct TradovateCancelOrderRequest {
+    pub context: TradovateExecutionContext,
+    pub order_id: i64,
+    pub is_automated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TradovateCancelOrderResult {
+    pub order_id: i64,
+}
+
 #[async_trait]
 pub trait TradovateExecutionApi: Send + Sync {
     async fn place_order(
@@ -303,6 +315,11 @@ pub trait TradovateExecutionApi: Send + Sync {
         &self,
         request: TradovateLiquidatePositionRequest,
     ) -> Result<TradovateLiquidatePositionResult, TradovateError>;
+
+    async fn cancel_order(
+        &self,
+        request: TradovateCancelOrderRequest,
+    ) -> Result<TradovateCancelOrderResult, TradovateError>;
 }
 
 #[async_trait]
@@ -381,6 +398,39 @@ impl TradovateExecutionApi for TradovateLiveClient {
         info!(order_id = result.order_id, "Tradovate liquidation accepted");
         Ok(result)
     }
+
+    async fn cancel_order(
+        &self,
+        request: TradovateCancelOrderRequest,
+    ) -> Result<TradovateCancelOrderResult, TradovateError> {
+        if request.order_id <= 0 {
+            return Err(TradovateError::InvalidExecutionRequest {
+                message: "Tradovate order cancellation requires a positive order id".to_owned(),
+            });
+        }
+
+        let mut payload = Map::new();
+        payload.insert(
+            "orderId".to_owned(),
+            Value::Number(Number::from(request.order_id)),
+        );
+        payload.insert("isAutomated".to_owned(), Value::Bool(request.is_automated));
+
+        let response = self
+            .post_execution(
+                "order/cancelorder",
+                &request.context,
+                Value::Object(payload),
+            )
+            .await?;
+
+        let result = response.into_cancel_order_result(request.order_id)?;
+        info!(
+            order_id = result.order_id,
+            "Tradovate cancellation accepted"
+        );
+        Ok(result)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -428,6 +478,16 @@ impl ExecutionResponse {
                     message: "Tradovate liquidateposition response did not include an order id"
                         .to_owned(),
                 })?,
+        })
+    }
+
+    fn into_cancel_order_result(
+        self,
+        requested_order_id: i64,
+    ) -> Result<TradovateCancelOrderResult, TradovateError> {
+        self.ensure_success()?;
+        Ok(TradovateCancelOrderResult {
+            order_id: self.order_id.unwrap_or(requested_order_id),
         })
     }
 

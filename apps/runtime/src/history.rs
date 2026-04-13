@@ -314,6 +314,7 @@ impl RuntimeHistoryRecorder {
                         })?;
                         changed = true;
                     }
+                    ExecutionDispatchResult::OrderCancelled { .. } => {}
                     ExecutionDispatchResult::StrategyPaused { .. } => {}
                 }
             }

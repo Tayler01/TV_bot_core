@@ -311,8 +311,97 @@ impl RuntimeOperatorState {
                 Ok("reconnect review prepared".to_owned())
             }
             RuntimeLifecycleCommand::Shutdown { .. } => Ok("shutdown review prepared".to_owned()),
+            RuntimeLifecycleCommand::ClosePosition { .. } => {
+                Ok("close position prepared".to_owned())
+            }
+            RuntimeLifecycleCommand::CancelWorkingOrders { .. } => {
+                Ok("working-order cancellation prepared".to_owned())
+            }
             RuntimeLifecycleCommand::Flatten { .. } => Ok("flatten prepared".to_owned()),
         }
+    }
+
+    pub fn build_close_position_request(
+        &self,
+        context: &RuntimeStatusContext,
+        source: ManualCommandSource,
+        contract_id: Option<i64>,
+        reason: Option<String>,
+    ) -> Result<HttpCommandRequest, RuntimeOperatorError> {
+        let resolved_contract_id = self.resolve_active_contract_id(context, contract_id)?;
+        self.build_flatten_request(
+            context,
+            source,
+            resolved_contract_id,
+            reason.unwrap_or_else(|| "manual close position".to_owned()),
+        )
+    }
+
+    pub fn build_cancel_working_orders_request(
+        &self,
+        context: &RuntimeStatusContext,
+        source: ManualCommandSource,
+        reason: Option<String>,
+    ) -> Result<HttpCommandRequest, RuntimeOperatorError> {
+        let strategy = self.loaded_strategy()?;
+        let tradovate_symbol = self.loaded_market_symbol(context)?;
+        let current_position = self.active_position_for_symbol(context, &tradovate_symbol, None);
+        let working_orders = self.working_orders_for_symbol(context, &tradovate_symbol);
+
+        if working_orders.is_empty() {
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "no working orders are currently active for the loaded market".to_owned(),
+            ));
+        }
+
+        Ok(HttpCommandRequest {
+            command: ControlApiCommand::ManualIntent {
+                source,
+                request: RuntimeExecutionRequest {
+                    mode: self.runtime.current_mode(),
+                    action_source: source.into(),
+                    execution: ExecutionRequest {
+                        strategy: strategy.compiled.clone(),
+                        instrument: ExecutionInstrumentContext {
+                            tradovate_symbol: tradovate_symbol.clone(),
+                            // Working-order cancellation routes by broker order id, so keep a
+                            // non-zero tick size without introducing a fake market-data lookup.
+                            tick_size: Decimal::ONE,
+                            entry_reference_price: None,
+                            active_contract_id: None,
+                        },
+                        state: ExecutionStateContext {
+                            // Safety cancellations must remain available even when the runtime is
+                            // paused or disarmed.
+                            runtime_can_submit_orders: true,
+                            new_entries_allowed: false,
+                            current_position: current_position.clone(),
+                            working_orders,
+                        },
+                        intent: ExecutionIntent::CancelWorkingOrders {
+                            reason: reason
+                                .unwrap_or_else(|| "manual cancel working orders".to_owned()),
+                        },
+                    },
+                    risk_instrument: RiskInstrumentContext::default(),
+                    risk_state: RiskStateContext {
+                        current_position: current_position.clone(),
+                        unrealized_pnl: current_position
+                            .as_ref()
+                            .and_then(|position| position.unrealized_pnl),
+                        hard_override_active: self.runtime.hard_override_active(),
+                        ..RiskStateContext {
+                            trades_today: 0,
+                            consecutive_losses: 0,
+                            current_position: None,
+                            unrealized_pnl: None,
+                            broker_support: BrokerProtectionSupport::default(),
+                            hard_override_active: false,
+                        }
+                    },
+                },
+            },
+        })
     }
 
     pub fn build_flatten_request(
@@ -323,11 +412,7 @@ impl RuntimeOperatorState {
         reason: String,
     ) -> Result<HttpCommandRequest, RuntimeOperatorError> {
         let strategy = self.loaded_strategy()?;
-        let tradovate_symbol = strategy
-            .instrument_mapping
-            .as_ref()
-            .map(|mapping| mapping.tradovate_symbol.clone())
-            .unwrap_or_else(|| strategy.compiled.market.market.clone());
+        let tradovate_symbol = self.loaded_market_symbol(context)?;
         let current_position =
             self.active_position_for_symbol(context, &tradovate_symbol, Some(contract_id));
 
@@ -520,6 +605,47 @@ impl RuntimeOperatorState {
         self.loaded_strategy
             .as_ref()
             .ok_or(RuntimeOperatorError::StrategyNotLoaded)
+    }
+
+    fn loaded_market_symbol(
+        &self,
+        context: &RuntimeStatusContext,
+    ) -> Result<String, RuntimeOperatorError> {
+        let strategy = self.loaded_strategy()?;
+        if let Some(mapping) = strategy.instrument_mapping.as_ref() {
+            return Ok(mapping.tradovate_symbol.clone());
+        }
+
+        let mut working_symbols = context
+            .working_orders
+            .iter()
+            .filter(|order| order.status == BrokerOrderStatus::Working)
+            .map(|order| order.symbol.clone())
+            .collect::<BTreeSet<_>>();
+        if working_symbols.len() == 1 {
+            return working_symbols.pop_first().ok_or_else(|| {
+                RuntimeOperatorError::InvalidRequest(
+                    "working-order symbol inference unexpectedly failed".to_owned(),
+                )
+            });
+        }
+
+        let mut position_symbols = context
+            .open_positions
+            .iter()
+            .filter(|position| position.quantity != 0)
+            .map(|position| position.symbol.clone())
+            .filter(|symbol| !symbol.starts_with("contract:"))
+            .collect::<BTreeSet<_>>();
+        if position_symbols.len() == 1 {
+            return position_symbols.pop_first().ok_or_else(|| {
+                RuntimeOperatorError::InvalidRequest(
+                    "position symbol inference unexpectedly failed".to_owned(),
+                )
+            });
+        }
+
+        Ok(strategy.compiled.market.market.clone())
     }
 
     fn risk_summary(&self) -> String {
@@ -789,15 +915,16 @@ mod tests {
     use secrecy::SecretString;
     use tv_bot_broker_tradovate::{
         TradovateAccessToken, TradovateAccount, TradovateAccountApi, TradovateAccountListRequest,
-        TradovateAuthApi, TradovateAuthRequest, TradovateCredentials, TradovateError,
-        TradovateExecutionApi, TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
+        TradovateAuthApi, TradovateAuthRequest, TradovateCancelOrderRequest,
+        TradovateCancelOrderResult, TradovateCredentials, TradovateError, TradovateExecutionApi,
+        TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
         TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
         TradovatePlaceOsoResult, TradovateRoutingPreferences, TradovateSessionConfig,
         TradovateSessionManager, TradovateSyncApi, TradovateSyncConnectRequest, TradovateSyncEvent,
         TradovateSyncSnapshot, TradovateUserSyncRequest,
     };
     use tv_bot_control_api::{ControlApiCommand, ManualCommandSource, RuntimeLifecycleCommand};
-    use tv_bot_core_types::{EntryOrderType, RiskDecisionStatus};
+    use tv_bot_core_types::{ActionSource, EntryOrderType, RiskDecisionStatus};
     use tv_bot_journal::{EventJournal, InMemoryJournal};
     use tv_bot_runtime_kernel::{RuntimeCommand, RuntimeControlLoop};
 
@@ -1027,6 +1154,7 @@ mod tests {
         place_orders: Arc<Mutex<Vec<TradovatePlaceOrderRequest>>>,
         place_osos: Arc<Mutex<Vec<TradovatePlaceOsoRequest>>>,
         liquidations: Arc<Mutex<Vec<TradovateLiquidatePositionRequest>>>,
+        cancel_orders: Arc<Mutex<Vec<TradovateCancelOrderRequest>>>,
     }
 
     #[async_trait]
@@ -1135,6 +1263,19 @@ mod tests {
                 .expect("execution mutex should not poison")
                 .push(request);
             Ok(TradovateLiquidatePositionResult { order_id: 9105 })
+        }
+
+        async fn cancel_order(
+            &self,
+            request: TradovateCancelOrderRequest,
+        ) -> Result<TradovateCancelOrderResult, TradovateError> {
+            self.cancel_orders
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request.clone());
+            Ok(TradovateCancelOrderResult {
+                order_id: request.order_id,
+            })
         }
     }
 
@@ -1374,7 +1515,7 @@ mod tests {
             })
             .expect("strategy should be loaded");
         let mut context = sample_context();
-        context.open_positions = vec![sample_position(&tradovate_symbol, 1)];
+        context.open_positions = vec![sample_position("contract:4444", 1)];
         context.working_orders = vec![sample_working_order(&tradovate_symbol)];
 
         let request = operator
@@ -1409,6 +1550,107 @@ mod tests {
                     request.execution.intent,
                     ExecutionIntent::Flatten {
                         reason: "manual flatten".to_owned(),
+                    }
+                );
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
+    fn close_position_request_resolves_active_contract_from_context() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+
+        let mut context = sample_context();
+        context.open_positions = vec![sample_position("contract:4444", 1)];
+
+        let request = operator
+            .build_close_position_request(
+                &context,
+                ManualCommandSource::Dashboard,
+                None,
+                Some("dashboard close".to_owned()),
+            )
+            .expect("close-position request should build");
+
+        match request.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert_eq!(request.action_source, ActionSource::Dashboard);
+                assert_eq!(request.execution.instrument.active_contract_id, Some(4444));
+                assert_eq!(
+                    request.execution.intent,
+                    ExecutionIntent::Flatten {
+                        reason: "dashboard close".to_owned(),
+                    }
+                );
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
+    fn cancel_working_orders_request_uses_loaded_market_working_orders() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+
+        let tradovate_symbol = operator
+            .loaded_strategy
+            .as_ref()
+            .map(|strategy| {
+                strategy
+                    .instrument_mapping
+                    .as_ref()
+                    .map(|mapping| mapping.tradovate_symbol.clone())
+                    .unwrap_or_else(|| strategy.compiled.market.market.clone())
+            })
+            .expect("strategy should be loaded");
+        let mut context = sample_context();
+        context.open_positions = vec![sample_position(&tradovate_symbol, 1)];
+        context.working_orders = vec![sample_working_order(&tradovate_symbol)];
+
+        let request = operator
+            .build_cancel_working_orders_request(
+                &context,
+                ManualCommandSource::Cli,
+                Some("cancel stale entry".to_owned()),
+            )
+            .expect("cancel-working-orders request should build");
+
+        match request.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert_eq!(request.mode, RuntimeMode::Paper);
+                assert!(request.execution.state.runtime_can_submit_orders);
+                assert!(!request.execution.state.new_entries_allowed);
+                assert_eq!(request.execution.state.working_orders.len(), 1);
+                assert_eq!(
+                    request.execution.intent,
+                    ExecutionIntent::CancelWorkingOrders {
+                        reason: "cancel stale entry".to_owned(),
                     }
                 );
             }

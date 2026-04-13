@@ -201,6 +201,7 @@ fn category_for_source(source: ActionSource) -> &'static str {
 fn dispatch_result_name(result: &ExecutionDispatchResult) -> &'static str {
     match result {
         ExecutionDispatchResult::OrderSubmitted { .. } => "order_submitted",
+        ExecutionDispatchResult::OrderCancelled { .. } => "order_cancelled",
         ExecutionDispatchResult::PositionLiquidated { .. } => "position_liquidated",
         ExecutionDispatchResult::StrategyPaused { .. } => "strategy_paused",
     }

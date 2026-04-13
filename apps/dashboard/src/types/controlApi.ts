@@ -239,6 +239,38 @@ export interface PositionRecord {
   captured_at: string;
 }
 
+export interface OrderRecord {
+  broker_order_id: string;
+  strategy_id: string | null;
+  run_id: string | null;
+  account_id: string | null;
+  symbol: string;
+  side: "buy" | "sell";
+  order_type: string | null;
+  quantity: number;
+  filled_quantity: number;
+  average_fill_price: DecimalValue | null;
+  status: string;
+  provider: string;
+  submitted_at: string;
+  updated_at: string;
+}
+
+export interface FillRecord {
+  fill_id: string;
+  broker_order_id: string | null;
+  strategy_id: string | null;
+  run_id: string | null;
+  account_id: string | null;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: number;
+  price: DecimalValue;
+  fee: DecimalValue;
+  commission: DecimalValue;
+  occurred_at: string;
+}
+
 export interface PnlSnapshotRecord {
   snapshot_id: string;
   strategy_id: string | null;
@@ -262,9 +294,14 @@ export interface ProjectedTradingHistoryState {
   total_position_records: number;
   total_pnl_snapshot_records: number;
   total_trade_summary_records: number;
+  active_run_ids: string[];
+  orders: Record<string, OrderRecord>;
   working_order_ids: string[];
+  fills: Record<string, FillRecord>;
   open_position_symbols: string[];
   open_trade_ids: string[];
+  latest_order: OrderRecord | null;
+  latest_fill: FillRecord | null;
   latest_position: PositionRecord | null;
   latest_pnl_snapshot: PnlSnapshotRecord | null;
   closed_trade_count: number;
@@ -384,6 +421,15 @@ export type RuntimeLifecycleCommand =
       kind: "shutdown";
       decision: RuntimeShutdownDecision;
       contract_id: number | null;
+      reason: string | null;
+    }
+  | {
+      kind: "close_position";
+      contract_id: number | null;
+      reason: string | null;
+    }
+  | {
+      kind: "cancel_working_orders";
       reason: string | null;
     }
   | {

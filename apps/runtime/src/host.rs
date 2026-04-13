@@ -67,9 +67,7 @@ use tv_bot_runtime_kernel::{
     RuntimeCommand, RuntimeCommandError, RuntimeCommandOutcome, RuntimeStateMachine,
 };
 use tv_bot_state_store::InMemoryStateStore;
-use tv_bot_strategy_loader::{
-    StrategyIssue, StrategyIssueSeverity, StrictStrategyCompiler,
-};
+use tv_bot_strategy_loader::{StrategyIssue, StrategyIssueSeverity, StrictStrategyCompiler};
 
 use crate::history::{RuntimeBrokerSnapshot, RuntimeHistoryError, RuntimeHistoryRecorder};
 use crate::operator::{
@@ -1112,6 +1110,15 @@ async fn runtime_command_handler(
             shutdown_runtime_command_handler(state, request.source, decision, contract_id, reason)
                 .await
         }
+        RuntimeLifecycleCommand::ClosePosition {
+            contract_id,
+            reason,
+        } => {
+            close_position_runtime_command_handler(state, request.source, contract_id, reason).await
+        }
+        RuntimeLifecycleCommand::CancelWorkingOrders { reason } => {
+            cancel_working_orders_runtime_command_handler(state, request.source, reason).await
+        }
         RuntimeLifecycleCommand::Flatten {
             contract_id,
             reason,
@@ -1242,6 +1249,53 @@ async fn flatten_runtime_command_handler(
 
     dispatch_lifecycle_execution_request(&state, request, "flatten command dispatched".to_owned())
         .await
+}
+
+async fn close_position_runtime_command_handler(
+    state: RuntimeHostState,
+    source: tv_bot_control_api::ManualCommandSource,
+    contract_id: Option<i64>,
+    reason: Option<String>,
+) -> Response {
+    let context = status_context(&state, true).await;
+    let request_result = {
+        let operator = state.operator_state.lock().await;
+        operator.build_close_position_request(&context, source, contract_id, reason)
+    };
+    let request = match request_result {
+        Ok(request) => request,
+        Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+    };
+
+    dispatch_lifecycle_execution_request(
+        &state,
+        request,
+        "close position command dispatched".to_owned(),
+    )
+    .await
+}
+
+async fn cancel_working_orders_runtime_command_handler(
+    state: RuntimeHostState,
+    source: tv_bot_control_api::ManualCommandSource,
+    reason: Option<String>,
+) -> Response {
+    let context = status_context(&state, true).await;
+    let request_result = {
+        let operator = state.operator_state.lock().await;
+        operator.build_cancel_working_orders_request(&context, source, reason)
+    };
+    let request = match request_result {
+        Ok(request) => request,
+        Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+    };
+
+    dispatch_lifecycle_execution_request(
+        &state,
+        request,
+        "working-order cancellation dispatched".to_owned(),
+    )
+    .await
 }
 
 async fn reconnect_review_runtime_command_handler(
@@ -2552,6 +2606,8 @@ async fn sync_history_for_lifecycle_command(
         | RuntimeLifecycleCommand::MarkWarmupReady
         | RuntimeLifecycleCommand::ResolveReconnectReview { .. }
         | RuntimeLifecycleCommand::Shutdown { .. }
+        | RuntimeLifecycleCommand::ClosePosition { .. }
+        | RuntimeLifecycleCommand::CancelWorkingOrders { .. }
         | RuntimeLifecycleCommand::Flatten { .. } => None,
     };
 
@@ -2682,8 +2738,9 @@ mod tests {
     use tower::ServiceExt;
     use tv_bot_broker_tradovate::{
         TradovateAccessToken, TradovateAccount, TradovateAccountApi, TradovateAccountListRequest,
-        TradovateAuthApi, TradovateAuthRequest, TradovateCredentials, TradovateError,
-        TradovateExecutionApi, TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
+        TradovateAuthApi, TradovateAuthRequest, TradovateCancelOrderRequest,
+        TradovateCancelOrderResult, TradovateCredentials, TradovateError, TradovateExecutionApi,
+        TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
         TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
         TradovatePlaceOsoResult, TradovateReconnectDecision, TradovateRoutingPreferences,
         TradovateSessionConfig, TradovateSessionManager, TradovateSyncApi,
@@ -2758,6 +2815,7 @@ mod tests {
         place_orders: Arc<StdMutex<Vec<TradovatePlaceOrderRequest>>>,
         place_osos: Arc<StdMutex<Vec<TradovatePlaceOsoRequest>>>,
         liquidations: Arc<StdMutex<Vec<TradovateLiquidatePositionRequest>>>,
+        cancel_orders: Arc<StdMutex<Vec<TradovateCancelOrderRequest>>>,
     }
 
     type TestKernelDispatcher = RuntimeKernelCommandDispatcher<
@@ -2890,6 +2948,19 @@ mod tests {
                 .push(request);
             Ok(TradovateLiquidatePositionResult { order_id: 8105 })
         }
+
+        async fn cancel_order(
+            &self,
+            request: TradovateCancelOrderRequest,
+        ) -> Result<TradovateCancelOrderResult, TradovateError> {
+            self.cancel_orders
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request.clone());
+            Ok(TradovateCancelOrderResult {
+                order_id: request.order_id,
+            })
+        }
     }
 
     #[async_trait]
@@ -3012,6 +3083,23 @@ mod tests {
         }
     }
 
+    fn sync_snapshot_with_contract_position() -> TradovateSyncSnapshot {
+        let mut snapshot = sample_dispatch_snapshot();
+        if let Some(position) = snapshot.open_positions.first_mut() {
+            position.symbol = "contract:4444".to_owned();
+        }
+
+        TradovateSyncSnapshot {
+            occurred_at: Utc::now(),
+            positions: snapshot.open_positions,
+            working_orders: snapshot.working_orders,
+            fills: snapshot.fills,
+            account_snapshot: snapshot.account_snapshot,
+            mismatch_reason: None,
+            detail: "synced".to_owned(),
+        }
+    }
+
     fn sync_snapshot_without_open_exposure() -> TradovateSyncSnapshot {
         let mut snapshot = sample_dispatch_snapshot();
         snapshot.open_positions.clear();
@@ -3045,6 +3133,58 @@ mod tests {
         let sync_api = TestSyncApi {
             snapshots: Arc::new(StdMutex::new(VecDeque::from([
                 sync_snapshot_with_open_position(),
+            ]))),
+            events: Arc::new(StdMutex::new(VecDeque::new())),
+        };
+
+        let mut manager = TradovateSessionManager::with_system_clock(
+            TradovateSessionConfig::new(
+                tv_bot_core_types::BrokerEnvironment::Demo,
+                "https://demo.tradovateapi.com/v1",
+                "wss://demo.tradovateapi.com/v1/websocket",
+            )
+            .expect("config should be valid"),
+            sample_credentials(),
+            TradovateRoutingPreferences {
+                paper_account_name: Some("paper-primary".to_owned()),
+                live_account_name: None,
+            },
+            auth_api,
+            account_api,
+            sync_api,
+        )
+        .expect("manager should build");
+
+        manager.authenticate().await.expect("auth should succeed");
+        manager
+            .select_account_for_mode(&RuntimeMode::Paper)
+            .await
+            .expect("paper account should select");
+        manager
+            .connect_user_sync()
+            .await
+            .expect("sync should connect");
+        manager.acknowledge_reconnect_review(TradovateReconnectDecision::LeaveBrokerProtected);
+
+        manager
+    }
+
+    async fn sample_session_manager_with_contract_position(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        let auth_api = TestAuthApi {
+            token: Arc::new(StdMutex::new(Some(sample_token()))),
+        };
+        let account_api = TestAccountApi {
+            accounts: Arc::new(vec![TradovateAccount {
+                account_id: 101,
+                account_name: "paper-primary".to_owned(),
+                nickname: None,
+                active: true,
+            }]),
+        };
+        let sync_api = TestSyncApi {
+            snapshots: Arc::new(StdMutex::new(VecDeque::from([
+                sync_snapshot_with_contract_position(),
             ]))),
             events: Arc::new(StdMutex::new(VecDeque::new())),
         };
@@ -3712,7 +3852,7 @@ mod tests {
                 captured_at: chrono::Utc::now(),
             }],
             working_orders: vec![BrokerOrderUpdate {
-                broker_order_id: "ord-1".to_owned(),
+                broker_order_id: "8102".to_owned(),
                 account_id: Some("101".to_owned()),
                 symbol: "GCM2026".to_owned(),
                 side: Some(tv_bot_core_types::TradeSide::Buy),
@@ -3725,7 +3865,7 @@ mod tests {
             }],
             fills: vec![tv_bot_core_types::BrokerFillUpdate {
                 fill_id: "fill-1".to_owned(),
-                broker_order_id: Some("ord-1".to_owned()),
+                broker_order_id: Some("8102".to_owned()),
                 account_id: Some("101".to_owned()),
                 symbol: "GCM2026".to_owned(),
                 side: tv_bot_core_types::TradeSide::Buy,
@@ -4278,6 +4418,247 @@ selection:
                 > history_before.projection.total_order_records
         );
         assert!(history_after.projection.latest_order.is_some());
+
+        let journal_actions = journal
+            .list()
+            .expect("journal should list records")
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_succeeded".to_owned(),
+            ]
+        );
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn close_position_command_resolves_active_contract_and_dispatches_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_contract_position().await,
+            execution_api.clone(),
+            journal,
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state);
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        for command in [
+            RuntimeLifecycleCommand::LoadStrategy {
+                path: strategy_path.clone(),
+            },
+            RuntimeLifecycleCommand::SetMode {
+                mode: RuntimeMode::Paper,
+            },
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "close position setup request",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ClosePosition {
+                            contract_id: None,
+                            reason: Some("dashboard close".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "close position request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "close position command dispatched"
+        );
+        assert_eq!(
+            lifecycle_response
+                .command_result
+                .expect("close position should return a command result")
+                .status,
+            ControlApiCommandStatus::Executed
+        );
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(liquidations.len(), 1);
+        assert_eq!(liquidations[0].context.account_id, 101);
+        assert_eq!(liquidations[0].contract_id, 4444);
+        drop(liquidations);
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn cancel_working_orders_command_dispatches_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_contract_position().await,
+            execution_api.clone(),
+            journal.clone(),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state);
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        for command in [
+            RuntimeLifecycleCommand::LoadStrategy {
+                path: strategy_path.clone(),
+            },
+            RuntimeLifecycleCommand::SetMode {
+                mode: RuntimeMode::Paper,
+            },
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "cancel working orders setup request",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::CancelWorkingOrders {
+                            reason: Some("dashboard cancel stale orders".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "cancel working orders request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "working-order cancellation dispatched"
+        );
+        assert_eq!(
+            lifecycle_response
+                .command_result
+                .expect("cancel working orders should return a command result")
+                .status,
+            ControlApiCommandStatus::Executed
+        );
+
+        let cancel_orders = execution_api
+            .cancel_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(cancel_orders.len(), 1);
+        assert_eq!(cancel_orders[0].context.account_id, 101);
+        assert_eq!(cancel_orders[0].order_id, 8102);
+        drop(cancel_orders);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
 
         let journal_actions = journal
             .list()

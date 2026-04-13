@@ -27,6 +27,8 @@ import {
 } from "./lib/format";
 import type {
   ControlApiEvent,
+  FillRecord,
+  OrderRecord,
   ReadinessCheckStatus,
   RuntimeLifecycleCommand,
   RuntimeLifecycleResponse,
@@ -424,6 +426,23 @@ function mergeEventIntoSnapshot(
   }
 }
 
+function compareDescendingDate(left: string, right: string): number {
+  return new Date(right).getTime() - new Date(left).getTime();
+}
+
+function workingOrdersForProjection(snapshot: DashboardSnapshot): OrderRecord[] {
+  return snapshot.history.projection.working_order_ids
+    .map((orderId) => snapshot.history.projection.orders[orderId])
+    .filter((order): order is OrderRecord => Boolean(order))
+    .sort((left, right) => compareDescendingDate(left.updated_at, right.updated_at));
+}
+
+function recentFillsForProjection(snapshot: DashboardSnapshot): FillRecord[] {
+  return Object.values(snapshot.history.projection.fills)
+    .sort((left, right) => compareDescendingDate(left.occurred_at, right.occurred_at))
+    .slice(0, 6);
+}
+
 function Panel({
   eyebrow,
   title,
@@ -498,8 +517,12 @@ function App() {
   const [eventFeed, setEventFeed] = useState<EventFeedViewModel>(INITIAL_EVENT_FEED_VIEW_MODEL);
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [flattenContractId, setFlattenContractId] = useState("");
-  const [flattenReason, setFlattenReason] = useState("dashboard flatten request");
+  const [closePositionReason, setClosePositionReason] = useState(
+    "dashboard close position request",
+  );
+  const [cancelWorkingOrdersReason, setCancelWorkingOrdersReason] = useState(
+    "dashboard cancel working orders request",
+  );
   const [reconnectReason, setReconnectReason] = useState(
     "dashboard reconnect review resolution",
   );
@@ -891,11 +914,15 @@ function App() {
         : "Arm runtime"
     : "Arm runtime";
   const pauseButtonLabel = snapshot?.status.mode === "paused" ? "Resume runtime" : "Pause runtime";
-  const flattenContractIdValue = Number.parseInt(flattenContractId, 10);
-  const canSubmitFlatten =
-    Number.isInteger(flattenContractIdValue) &&
-    flattenContractIdValue > 0 &&
-    flattenReason.trim().length > 0 &&
+  const openWorkingOrders = snapshot ? workingOrdersForProjection(snapshot) : [];
+  const recentFills = snapshot ? recentFillsForProjection(snapshot) : [];
+  const canClosePosition =
+    (snapshot?.history.projection.open_position_symbols.length ?? 0) > 0 &&
+    closePositionReason.trim().length > 0 &&
+    snapshot?.status.command_dispatch_ready === true;
+  const canCancelWorkingOrders =
+    openWorkingOrders.length > 0 &&
+    cancelWorkingOrdersReason.trim().length > 0 &&
     snapshot?.status.command_dispatch_ready === true;
   const canLoadSelectedStrategy =
     strategyViewModel.selectedPath.length > 0 &&
@@ -1315,68 +1342,115 @@ function App() {
               </section>
 
               <section className="control-card control-card--wide">
-                <p className="control-card__title">Flatten</p>
-                <form
-                  className="flatten-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!canSubmitFlatten) {
-                      return;
-                    }
+                <p className="control-card__title">Operator actions</p>
+                <div className="control-grid">
+                  <section className="control-card control-card--wide">
+                    <p className="control-card__title">Close current position</p>
+                    <form
+                      className="flatten-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!canClosePosition) {
+                          return;
+                        }
 
-                    void (async () => {
-                      const result = await executeLifecycleCommand(
-                        {
-                          kind: "flatten",
-                          contract_id: flattenContractIdValue,
-                          reason: flattenReason.trim(),
-                        },
-                        {
-                          pendingLabel: `Flattening contract ${flattenContractIdValue}`,
-                          confirmMessage: `Flatten contract ${flattenContractIdValue} now? Existing broker-managed exposure will be liquidated.`,
-                        },
-                      );
+                        void (async () => {
+                          const result = await executeLifecycleCommand(
+                            {
+                              kind: "close_position",
+                              contract_id: null,
+                              reason: closePositionReason.trim(),
+                            },
+                            {
+                              pendingLabel: "Closing active broker position",
+                              confirmMessage:
+                                "Close the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot.",
+                            },
+                          );
 
-                      if (result && result.httpStatus === 200) {
-                        setFlattenReason("dashboard flatten request");
-                      }
-                    })();
-                  }}
-                >
-                  <label className="field">
-                    <span>Active contract id</span>
-                    <input
-                      aria-label="Active contract id"
-                      inputMode="numeric"
-                      placeholder="4444"
-                      value={flattenContractId}
-                      onChange={(event) => {
-                        setFlattenContractId(event.target.value);
+                          if (result?.httpStatus === 200) {
+                            setClosePositionReason("dashboard close position request");
+                          }
+                        })();
                       }}
-                    />
-                  </label>
-                  <label className="field field--wide">
-                    <span>Reason</span>
-                    <input
-                      aria-label="Flatten reason"
-                      placeholder="dashboard flatten request"
-                      value={flattenReason}
-                      onChange={(event) => {
-                        setFlattenReason(event.target.value);
+                    >
+                      <label className="field field--wide">
+                        <span>Reason</span>
+                        <input
+                          aria-label="Close position reason"
+                          placeholder="dashboard close position request"
+                          value={closePositionReason}
+                          onChange={(event) => {
+                            setClosePositionReason(event.target.value);
+                          }}
+                        />
+                      </label>
+                      <button
+                        className="command-button command-button--danger"
+                        type="submit"
+                        disabled={pendingAction !== null || !canClosePosition}
+                      >
+                        Close current position
+                      </button>
+                    </form>
+                  </section>
+
+                  <section className="control-card control-card--wide">
+                    <p className="control-card__title">Cancel working orders</p>
+                    <form
+                      className="flatten-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!canCancelWorkingOrders) {
+                          return;
+                        }
+
+                        void (async () => {
+                          const result = await executeLifecycleCommand(
+                            {
+                              kind: "cancel_working_orders",
+                              reason: cancelWorkingOrdersReason.trim(),
+                            },
+                            {
+                              pendingLabel: "Cancelling working broker orders",
+                              confirmMessage:
+                                "Cancel all working broker orders for the loaded market now?",
+                            },
+                          );
+
+                          if (result?.httpStatus === 200) {
+                            setCancelWorkingOrdersReason(
+                              "dashboard cancel working orders request",
+                            );
+                          }
+                        })();
                       }}
-                    />
-                  </label>
-                  <button
-                    className="command-button command-button--danger"
-                    type="submit"
-                    disabled={pendingAction !== null || !canSubmitFlatten}
-                  >
-                    Flatten position
-                  </button>
-                </form>
+                    >
+                      <label className="field field--wide">
+                        <span>Reason</span>
+                        <input
+                          aria-label="Cancel working orders reason"
+                          placeholder="dashboard cancel working orders request"
+                          value={cancelWorkingOrdersReason}
+                          onChange={(event) => {
+                            setCancelWorkingOrdersReason(event.target.value);
+                          }}
+                        />
+                      </label>
+                      <button
+                        className="command-button"
+                        type="submit"
+                        disabled={pendingAction !== null || !canCancelWorkingOrders}
+                      >
+                        Cancel working orders
+                      </button>
+                    </form>
+                  </section>
+                </div>
                 <p className="control-card__note">
-                  The current overview does not project broker contract ids yet, so flatten takes
-                  an explicit contract id until the richer order and position views land.
+                  Both actions stay inside the local runtime host. Close resolves the active
+                  contract automatically when there is a single live position, and cancel routes
+                  only the current market&apos;s working orders through the audited backend path.
                 </p>
               </section>
             </div>
@@ -1607,6 +1681,48 @@ function App() {
                 }
               />
             </dl>
+            <div className="subgrid">
+              <section className="review-card">
+                <p className="control-card__title">Open working orders</p>
+                {openWorkingOrders.length ? (
+                  <ul className="event-list">
+                    {openWorkingOrders.map((order) => (
+                      <li key={order.broker_order_id} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{`${order.symbol} | ${formatMode(order.side)} ${formatInteger(order.quantity)}`}</strong>
+                          <Pill label={formatMode(order.status)} tone="warning" />
+                        </div>
+                        <p>
+                          {`Order ${order.broker_order_id} | ${order.order_type ?? "unknown"} | filled ${formatInteger(order.filled_quantity)} | updated ${formatDateTime(order.updated_at)}`}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel__footnote">No working broker orders are currently projected.</p>
+                )}
+              </section>
+              <section className="review-card">
+                <p className="control-card__title">Recent fills</p>
+                {recentFills.length ? (
+                  <ul className="event-list">
+                    {recentFills.map((fill) => (
+                      <li key={fill.fill_id} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{`${fill.symbol} | ${formatMode(fill.side)} ${formatInteger(fill.quantity)}`}</strong>
+                          <Pill label={formatDecimal(fill.price)} tone="info" />
+                        </div>
+                        <p>
+                          {`Fill ${fill.fill_id}${fill.broker_order_id ? ` | order ${fill.broker_order_id}` : ""} | fees ${formatCurrency(fill.fee)} | commissions ${formatCurrency(fill.commission)} | ${formatDateTime(fill.occurred_at)}`}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel__footnote">No broker fills have been recorded yet.</p>
+                )}
+              </section>
+            </div>
           </Panel>
 
           <Panel eyebrow="Latency" title="Latest trade-path timing">

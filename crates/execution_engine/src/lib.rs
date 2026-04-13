@@ -67,6 +67,11 @@ pub enum ExecutionDispatchResult {
         symbol: String,
         used_brackets: bool,
     },
+    OrderCancelled {
+        order_id: i64,
+        symbol: String,
+        reason: String,
+    },
     PositionLiquidated {
         order_id: i64,
         contract_id: i64,
@@ -81,6 +86,11 @@ pub enum ExecutionDispatchResult {
 pub enum ExecutionAction {
     SubmitOrder(TradovateOrderPlacement),
     SubmitOsoOrder(TradovateOsoOrderPlacement),
+    CancelOrder {
+        order_id: i64,
+        symbol: String,
+        reason: String,
+    },
     LiquidatePosition {
         contract_id: i64,
         reason: String,
@@ -113,6 +123,10 @@ pub enum ExecutionEngineError {
     MissingOpenPosition { intent: &'static str },
     #[error("current broker contract id is required for `{intent}`")]
     MissingContractId { intent: &'static str },
+    #[error("no working broker orders are active for symbol `{symbol}`")]
+    MissingWorkingOrders { symbol: String },
+    #[error("working broker order id `{broker_order_id}` is not a valid Tradovate order id")]
+    InvalidWorkingOrderId { broker_order_id: String },
     #[error("entry order type `{order_type:?}` is not supported by the current execution planner")]
     UnsupportedEntryOrderType { order_type: EntryOrderType },
     #[error("same-side scale-in is disabled by the loaded strategy")]
@@ -171,12 +185,50 @@ impl ExecutionPlanner {
                 }],
                 warnings: Vec::new(),
             }),
-            ExecutionIntent::CancelWorkingOrders { .. } => {
-                Err(ExecutionEngineError::UnsupportedIntent {
-                    intent: "cancel_working_orders",
-                })
+            ExecutionIntent::CancelWorkingOrders { reason } => {
+                Self::plan_cancel_working_orders(request, reason)
             }
         }
+    }
+
+    fn plan_cancel_working_orders(
+        request: &ExecutionRequest,
+        reason: &str,
+    ) -> Result<ExecutionPlan, ExecutionEngineError> {
+        let working_orders = request
+            .state
+            .working_orders
+            .iter()
+            .filter(|order| {
+                order
+                    .symbol
+                    .eq_ignore_ascii_case(&request.instrument.tradovate_symbol)
+            })
+            .filter(|order| matches!(order.status, tv_bot_core_types::BrokerOrderStatus::Working))
+            .map(|order| {
+                let order_id = order.broker_order_id.parse::<i64>().map_err(|_| {
+                    ExecutionEngineError::InvalidWorkingOrderId {
+                        broker_order_id: order.broker_order_id.clone(),
+                    }
+                })?;
+                Ok(ExecutionAction::CancelOrder {
+                    order_id,
+                    symbol: order.symbol.clone(),
+                    reason: reason.to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, ExecutionEngineError>>()?;
+
+        if working_orders.is_empty() {
+            return Err(ExecutionEngineError::MissingWorkingOrders {
+                symbol: request.instrument.tradovate_symbol.clone(),
+            });
+        }
+
+        Ok(ExecutionPlan {
+            actions: working_orders,
+            warnings: Vec::new(),
+        })
     }
 
     fn plan_entry(
@@ -382,6 +434,25 @@ where
                     order_id: result.order_id,
                     symbol,
                     used_brackets: true,
+                });
+            }
+            ExecutionAction::CancelOrder {
+                order_id,
+                symbol,
+                reason,
+            } => {
+                let result = session
+                    .cancel_order(execution_api, order_id)
+                    .await
+                    .map_err(|source| ExecutionDispatchError::Broker {
+                        action: "cancel_order",
+                        source,
+                    })?;
+
+                results.push(ExecutionDispatchResult::OrderCancelled {
+                    order_id: result.order_id,
+                    symbol,
+                    reason,
                 });
             }
             ExecutionAction::LiquidatePosition {
@@ -749,7 +820,8 @@ mod tests {
     use secrecy::SecretString;
     use tv_bot_broker_tradovate::{
         TradovateAccessToken, TradovateAccount, TradovateAccountApi, TradovateAccountListRequest,
-        TradovateAuthApi, TradovateAuthRequest, TradovateCredentials, TradovateExecutionApi,
+        TradovateAuthApi, TradovateAuthRequest, TradovateCancelOrderRequest,
+        TradovateCancelOrderResult, TradovateCredentials, TradovateExecutionApi,
         TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
         TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
         TradovatePlaceOsoResult, TradovateRoutingPreferences, TradovateSessionConfig,
@@ -757,12 +829,12 @@ mod tests {
         TradovateSyncSnapshot, TradovateUserSyncRequest,
     };
     use tv_bot_core_types::{
-        BrokerPreference, BrokerPreferences, DailyLossLimit, DashboardDisplay, DataFeedRequirement,
-        DataRequirements, EntryRules, ExecutionSpec, ExitRules, FailsafeRules, FeedType,
-        MarketConfig, MarketSelection, PartialTakeProfitRule, PositionSizing, PositionSizingMode,
-        RiskLimits, ScalingConfig, SessionMode, SessionRules, SignalCombinationMode,
-        SignalConfirmation, StateBehavior, StrategyMetadata, Timeframe, TradeManagement,
-        WarmupRequirements,
+        BrokerOrderUpdate, BrokerPreference, BrokerPreferences, DailyLossLimit, DashboardDisplay,
+        DataFeedRequirement, DataRequirements, EntryRules, ExecutionSpec, ExitRules, FailsafeRules,
+        FeedType, MarketConfig, MarketSelection, PartialTakeProfitRule, PositionSizing,
+        PositionSizingMode, RiskLimits, ScalingConfig, SessionMode, SessionRules,
+        SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata, Timeframe,
+        TradeManagement, WarmupRequirements,
     };
 
     use super::*;
@@ -856,6 +928,7 @@ mod tests {
         place_orders: Arc<Mutex<Vec<TradovatePlaceOrderRequest>>>,
         place_osos: Arc<Mutex<Vec<TradovatePlaceOsoRequest>>>,
         liquidations: Arc<Mutex<Vec<TradovateLiquidatePositionRequest>>>,
+        cancel_orders: Arc<Mutex<Vec<TradovateCancelOrderRequest>>>,
     }
 
     #[async_trait]
@@ -895,6 +968,19 @@ mod tests {
                 .expect("execution mutex should not poison")
                 .push(request);
             Ok(TradovateLiquidatePositionResult { order_id: 7003 })
+        }
+
+        async fn cancel_order(
+            &self,
+            request: TradovateCancelOrderRequest,
+        ) -> Result<TradovateCancelOrderResult, TradovateError> {
+            self.cancel_orders
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request.clone());
+            Ok(TradovateCancelOrderResult {
+                order_id: request.order_id,
+            })
         }
     }
 
@@ -1627,6 +1713,82 @@ mod tests {
                 reason: "operator pause".to_owned(),
             }]
         );
+        assert!(execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison")
+            .is_empty());
+        assert!(execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison")
+            .is_empty());
+        assert!(execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_and_execute_cancels_working_orders_for_loaded_symbol() {
+        let execution_api = FakeExecutionApi::default();
+        let mut manager = sample_session_manager().await;
+
+        let mut state = state_context();
+        state.working_orders = vec![BrokerOrderUpdate {
+            broker_order_id: "8102".to_owned(),
+            account_id: Some("101".to_owned()),
+            symbol: "GCM2026".to_owned(),
+            side: Some(TradeSide::Buy),
+            quantity: Some(1),
+            order_type: Some(EntryOrderType::Limit),
+            status: tv_bot_core_types::BrokerOrderStatus::Working,
+            filled_quantity: 0,
+            average_fill_price: None,
+            updated_at: Utc::now(),
+        }];
+
+        let report = plan_and_execute_tradovate(
+            &ExecutionRequest {
+                strategy: sample_strategy(
+                    ReversalMode::FlattenFirst,
+                    false,
+                    1,
+                    BrokerPreference::BrokerPreferred,
+                    BrokerPreference::BrokerPreferred,
+                    BrokerPreference::BotAllowed,
+                ),
+                instrument: instrument_context(),
+                state,
+                intent: ExecutionIntent::CancelWorkingOrders {
+                    reason: "cancel stale working order".to_owned(),
+                },
+            },
+            &mut manager,
+            &execution_api,
+        )
+        .await
+        .expect("working-order cancellation should dispatch successfully");
+
+        assert_eq!(
+            report.results,
+            vec![ExecutionDispatchResult::OrderCancelled {
+                order_id: 8102,
+                symbol: "GCM2026".to_owned(),
+                reason: "cancel stale working order".to_owned(),
+            }]
+        );
+
+        let cancel_orders = execution_api
+            .cancel_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(cancel_orders.len(), 1);
+        assert_eq!(cancel_orders[0].context.account_id, 101);
+        assert_eq!(cancel_orders[0].order_id, 8102);
+        drop(cancel_orders);
+
         assert!(execution_api
             .place_orders
             .lock()

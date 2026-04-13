@@ -295,6 +295,13 @@ pub enum RuntimeLifecycleCommand {
         contract_id: Option<i64>,
         reason: Option<String>,
     },
+    ClosePosition {
+        contract_id: Option<i64>,
+        reason: Option<String>,
+    },
+    CancelWorkingOrders {
+        reason: Option<String>,
+    },
     Flatten {
         contract_id: i64,
         reason: String,
@@ -508,6 +515,8 @@ fn status_code_for_execution_planning_error(error: &ExecutionEngineError) -> Htt
         | ExecutionEngineError::MissingProtectiveReferencePrice
         | ExecutionEngineError::MissingOpenPosition { .. }
         | ExecutionEngineError::MissingContractId { .. }
+        | ExecutionEngineError::MissingWorkingOrders { .. }
+        | ExecutionEngineError::InvalidWorkingOrderId { .. }
         | ExecutionEngineError::UnsupportedEntryOrderType { .. }
         | ExecutionEngineError::ScaleInDisabled
         | ExecutionEngineError::ScaleInMaxLegsReached

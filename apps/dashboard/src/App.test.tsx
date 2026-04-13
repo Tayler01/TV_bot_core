@@ -257,9 +257,74 @@ function installFetchMock(snapshotOverrides?: {
       total_position_records: 2,
       total_pnl_snapshot_records: 2,
       total_trade_summary_records: 1,
-      working_order_ids: ["entry-1"],
+      active_run_ids: ["run-1"],
+      orders: {
+        "8102": {
+          broker_order_id: "8102",
+          strategy_id: "gold-breakout",
+          run_id: "run-1",
+          account_id: "paper-primary-id",
+          symbol: "GCM2026",
+          side: "buy",
+          order_type: "limit",
+          quantity: 1,
+          filled_quantity: 0,
+          average_fill_price: null,
+          status: "working",
+          provider: "tradovate",
+          submitted_at: "2026-04-12T20:10:55Z",
+          updated_at: "2026-04-12T20:11:03Z",
+        },
+      },
+      working_order_ids: ["8102"],
+      fills: {
+        "fill-1": {
+          fill_id: "fill-1",
+          broker_order_id: "8102",
+          strategy_id: "gold-breakout",
+          run_id: "run-1",
+          account_id: "paper-primary-id",
+          symbol: "GCM2026",
+          side: "buy",
+          quantity: 1,
+          price: "2410.50",
+          fee: "1.25",
+          commission: "0.75",
+          occurred_at: "2026-04-12T20:11:03Z",
+        },
+      },
       open_position_symbols: ["GCM2026"],
       open_trade_ids: ["trade-1"],
+      latest_order: {
+        broker_order_id: "8102",
+        strategy_id: "gold-breakout",
+        run_id: "run-1",
+        account_id: "paper-primary-id",
+        symbol: "GCM2026",
+        side: "buy",
+        order_type: "limit",
+        quantity: 1,
+        filled_quantity: 0,
+        average_fill_price: null,
+        status: "working",
+        provider: "tradovate",
+        submitted_at: "2026-04-12T20:10:55Z",
+        updated_at: "2026-04-12T20:11:03Z",
+      },
+      latest_fill: {
+        fill_id: "fill-1",
+        broker_order_id: "8102",
+        strategy_id: "gold-breakout",
+        run_id: "run-1",
+        account_id: "paper-primary-id",
+        symbol: "GCM2026",
+        side: "buy",
+        quantity: 1,
+        price: "2410.50",
+        fee: "1.25",
+        commission: "0.75",
+        occurred_at: "2026-04-12T20:11:03Z",
+      },
       latest_position: {
         record_id: "position-1",
         strategy_id: "gold-breakout",
@@ -598,6 +663,35 @@ function installFetchMock(snapshotOverrides?: {
             },
             200,
           );
+        case "close_position":
+          history.projection.open_position_symbols = [];
+          status.shutdown_review.open_position_count = 0;
+          status.reconnect_review.open_position_count = 0;
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message: "close position command dispatched",
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
+        case "cancel_working_orders":
+          history.projection.working_order_ids = [];
+          (
+            history.projection.orders["8102"] as { status: string }
+          ).status = "cancelled";
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message: "working-order cancellation dispatched",
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
         case "flatten":
           return jsonResponse(
             {
@@ -655,6 +749,10 @@ describe("App", () => {
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
     expect(await screen.findByText("Validation passed")).toBeInTheDocument();
     expect(await screen.findByText("Grouped pre-arm checks")).toBeInTheDocument();
+    expect(await screen.findByText("Open working orders")).toBeInTheDocument();
+    expect(await screen.findByText("Recent fills")).toBeInTheDocument();
+    expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
+    expect(await screen.findByText(/Fill fill-1 \| order 8102/)).toBeInTheDocument();
     expect(
       await screen.findByText(
         "Protective brackets available and operator overrides are clear.",
@@ -834,23 +932,20 @@ describe("App", () => {
     });
   });
 
-  it("requires confirmation before posting a flatten command", async () => {
+  it("requires confirmation before posting close position", async () => {
     installWebSocketMock();
     const { fetchSpy } = installFetchMock();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     render(<App />);
 
-    fireEvent.change(await screen.findByLabelText("Active contract id"), {
-      target: { value: "4444" },
+    fireEvent.change(await screen.findByLabelText("Close position reason"), {
+      target: { value: "dashboard safety close" },
     });
-    fireEvent.change(await screen.findByLabelText("Flatten reason"), {
-      target: { value: "dashboard safety flatten" },
-    });
-    fireEvent.click(await screen.findByRole("button", { name: "Flatten position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Close current position" }));
 
     expect(confirmSpy).toHaveBeenCalledWith(
-      "Flatten contract 4444 now? Existing broker-managed exposure will be liquidated.",
+      "Close the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot.",
     );
 
     await waitFor(() => {
@@ -869,22 +964,19 @@ describe("App", () => {
     });
   });
 
-  it("posts flatten with the dashboard source once confirmation is accepted", async () => {
+  it("posts close position with the dashboard source once confirmation is accepted", async () => {
     installWebSocketMock();
     const { fetchSpy } = installFetchMock();
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
     render(<App />);
 
-    fireEvent.change(await screen.findByLabelText("Active contract id"), {
-      target: { value: "4444" },
+    fireEvent.change(await screen.findByLabelText("Close position reason"), {
+      target: { value: "dashboard safety close" },
     });
-    fireEvent.change(await screen.findByLabelText("Flatten reason"), {
-      target: { value: "dashboard safety flatten" },
-    });
-    fireEvent.click(await screen.findByRole("button", { name: "Flatten position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Close current position" }));
 
-    expect(await screen.findByText("flatten command dispatched")).toBeInTheDocument();
+    expect(await screen.findByText("close position command dispatched")).toBeInTheDocument();
 
     const runtimeCommandCall = fetchSpy.mock.calls.find((call) => {
       const target = call[0];
@@ -900,9 +992,43 @@ describe("App", () => {
     expect(JSON.parse(String(runtimeCommandCall?.[1]?.body))).toEqual({
       source: "dashboard",
       command: {
-        kind: "flatten",
-        contract_id: 4444,
-        reason: "dashboard safety flatten",
+        kind: "close_position",
+        contract_id: null,
+        reason: "dashboard safety close",
+      },
+    });
+  });
+
+  it("posts cancel working orders once confirmation is accepted", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Cancel working orders reason"), {
+      target: { value: "dashboard cancel stale orders" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel working orders" }));
+
+    expect(await screen.findByText("working-order cancellation dispatched")).toBeInTheDocument();
+
+    const runtimeCommandCall = fetchSpy.mock.calls.find((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/runtime/commands");
+    });
+
+    expect(JSON.parse(String(runtimeCommandCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "cancel_working_orders",
+        reason: "dashboard cancel stale orders",
       },
     });
   });

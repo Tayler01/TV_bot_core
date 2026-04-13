@@ -642,13 +642,13 @@ mod tests {
     use secrecy::SecretString;
     use tv_bot_broker_tradovate::{
         TradovateAccessToken, TradovateAccount, TradovateAccountApi, TradovateAccountListRequest,
-        TradovateAuthApi, TradovateAuthRequest, TradovateCredentials, TradovateError,
-        TradovateExecutionApi, TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
-        TradovateOrderType, TradovatePlaceOrderRequest, TradovatePlaceOrderResult,
-        TradovatePlaceOsoRequest, TradovatePlaceOsoResult, TradovateRoutingPreferences,
-        TradovateSessionConfig, TradovateSessionManager, TradovateSyncApi,
-        TradovateSyncConnectRequest, TradovateSyncEvent, TradovateSyncSnapshot,
-        TradovateTimeInForce, TradovateUserSyncRequest,
+        TradovateAuthApi, TradovateAuthRequest, TradovateCancelOrderRequest,
+        TradovateCancelOrderResult, TradovateCredentials, TradovateError, TradovateExecutionApi,
+        TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult, TradovateOrderType,
+        TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
+        TradovatePlaceOsoResult, TradovateRoutingPreferences, TradovateSessionConfig,
+        TradovateSessionManager, TradovateSyncApi, TradovateSyncConnectRequest, TradovateSyncEvent,
+        TradovateSyncSnapshot, TradovateTimeInForce, TradovateUserSyncRequest,
     };
     use tv_bot_core_types::{
         ActionSource, BreakEvenRule, BrokerEnvironment, BrokerOrderUpdate, BrokerPreference,
@@ -770,6 +770,7 @@ mod tests {
         place_orders: Arc<Mutex<Vec<TradovatePlaceOrderRequest>>>,
         place_osos: Arc<Mutex<Vec<TradovatePlaceOsoRequest>>>,
         liquidations: Arc<Mutex<Vec<TradovateLiquidatePositionRequest>>>,
+        cancel_orders: Arc<Mutex<Vec<TradovateCancelOrderRequest>>>,
     }
 
     #[async_trait]
@@ -809,6 +810,19 @@ mod tests {
                 .expect("execution mutex should not poison")
                 .push(request);
             Ok(TradovateLiquidatePositionResult { order_id: 7105 })
+        }
+
+        async fn cancel_order(
+            &self,
+            request: TradovateCancelOrderRequest,
+        ) -> Result<TradovateCancelOrderResult, TradovateError> {
+            self.cancel_orders
+                .lock()
+                .expect("execution mutex should not poison")
+                .push(request.clone());
+            Ok(TradovateCancelOrderResult {
+                order_id: request.order_id,
+            })
         }
     }
 

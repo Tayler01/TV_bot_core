@@ -10,13 +10,14 @@ use secrecy::SecretString;
 use tv_bot_broker_tradovate::{
     Clock, TradovateAccessToken, TradovateAccount, TradovateAccountApi,
     TradovateAccountListRequest, TradovateAuthApi, TradovateAuthRequest, TradovateBracketOrder,
-    TradovateCredentials, TradovateError, TradovateExecutionApi, TradovateLiquidatePositionRequest,
-    TradovateLiquidatePositionResult, TradovateOrderPlacement, TradovateOrderType,
-    TradovateOsoOrderPlacement, TradovatePlaceOrderRequest, TradovatePlaceOrderResult,
-    TradovatePlaceOsoRequest, TradovatePlaceOsoResult, TradovateReconnectDecision,
-    TradovateRenewAccessTokenRequest, TradovateRoutingPreferences, TradovateSessionConfig,
-    TradovateSessionManager, TradovateSyncApi, TradovateSyncConnectRequest, TradovateSyncEvent,
-    TradovateSyncSnapshot, TradovateTimeInForce, TradovateUserSyncRequest,
+    TradovateCancelOrderRequest, TradovateCancelOrderResult, TradovateCredentials, TradovateError,
+    TradovateExecutionApi, TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult,
+    TradovateOrderPlacement, TradovateOrderType, TradovateOsoOrderPlacement,
+    TradovatePlaceOrderRequest, TradovatePlaceOrderResult, TradovatePlaceOsoRequest,
+    TradovatePlaceOsoResult, TradovateReconnectDecision, TradovateRenewAccessTokenRequest,
+    TradovateRoutingPreferences, TradovateSessionConfig, TradovateSessionManager, TradovateSyncApi,
+    TradovateSyncConnectRequest, TradovateSyncEvent, TradovateSyncSnapshot, TradovateTimeInForce,
+    TradovateUserSyncRequest,
 };
 use tv_bot_core_types::{
     BrokerAccountRouting, BrokerAccountSnapshot, BrokerConnectionState, BrokerEnvironment,
@@ -193,6 +194,7 @@ struct FakeExecutionState {
     place_orders: Vec<TradovatePlaceOrderRequest>,
     place_osos: Vec<TradovatePlaceOsoRequest>,
     liquidations: Vec<TradovateLiquidatePositionRequest>,
+    cancel_orders: Vec<TradovateCancelOrderRequest>,
 }
 
 impl FakeSyncApi {
@@ -277,6 +279,20 @@ impl TradovateExecutionApi for FakeExecutionApi {
             .liquidations
             .push(request);
         Ok(TradovateLiquidatePositionResult { order_id: 9301 })
+    }
+
+    async fn cancel_order(
+        &self,
+        request: TradovateCancelOrderRequest,
+    ) -> Result<TradovateCancelOrderResult, TradovateError> {
+        self.state
+            .lock()
+            .expect("execution mutex should not poison")
+            .cancel_orders
+            .push(request.clone());
+        Ok(TradovateCancelOrderResult {
+            order_id: request.order_id,
+        })
     }
 }
 

@@ -15,11 +15,11 @@ use tv_bot_core_types::{
 };
 
 pub use execution::{
-    TradovateBracketOrder, TradovateExecutionApi, TradovateExecutionContext,
-    TradovateLiquidatePositionRequest, TradovateLiquidatePositionResult, TradovateOrderPlacement,
-    TradovateOrderType, TradovateOsoOrderPlacement, TradovatePlaceOrderRequest,
-    TradovatePlaceOrderResult, TradovatePlaceOsoRequest, TradovatePlaceOsoResult,
-    TradovateTimeInForce,
+    TradovateBracketOrder, TradovateCancelOrderRequest, TradovateCancelOrderResult,
+    TradovateExecutionApi, TradovateExecutionContext, TradovateLiquidatePositionRequest,
+    TradovateLiquidatePositionResult, TradovateOrderPlacement, TradovateOrderType,
+    TradovateOsoOrderPlacement, TradovatePlaceOrderRequest, TradovatePlaceOrderResult,
+    TradovatePlaceOsoRequest, TradovatePlaceOsoResult, TradovateTimeInForce,
 };
 pub use live::{TradovateLiveClient, TradovateLiveClientConfig};
 
@@ -807,6 +807,30 @@ where
             contract_id,
             order_id = result.order_id,
             "Tradovate liquidation requested"
+        );
+        Ok(result)
+    }
+
+    pub async fn cancel_order<E>(
+        &mut self,
+        execution_api: &E,
+        order_id: i64,
+    ) -> Result<TradovateCancelOrderResult, TradovateError>
+    where
+        E: TradovateExecutionApi,
+    {
+        self.renew_access_token_if_needed().await?;
+        let result = execution_api
+            .cancel_order(TradovateCancelOrderRequest {
+                context: self.execution_context()?,
+                order_id,
+                is_automated: false,
+            })
+            .await?;
+
+        info!(
+            order_id = result.order_id,
+            "Tradovate order cancellation requested"
         );
         Ok(result)
     }
