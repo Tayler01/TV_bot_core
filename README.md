@@ -5,8 +5,8 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness now project live broker and market-data state plus shared storage/journal policy status, and the CLI can drive load/warmup/mode/arm/flatten/status/readiness flows, but the dashboard and end-to-end manual operator flows are still incomplete.
-- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, and queryable history surfaces through the host and CLI, but dashboard-facing operational views, packaging, and runbooks are not complete.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health, while final dashboard polish and release acceptance are still incomplete.
+- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows, but final regression sweeps, packaging, and runbooks are not complete.
 
 The current implementation status review lives in `docs/architecture/current_status.md`.
 
@@ -23,7 +23,7 @@ The current implementation status review lives in `docs/architecture/current_sta
 ```text
 apps/
   cli/         Local operator CLI
-  dashboard/   Reserved for the React dashboard
+  dashboard/   React operator dashboard
   runtime/     Runtime host
 crates/
   broker_tradovate/
@@ -81,13 +81,15 @@ tests/
 - Runtime host lifecycle/state handling in `apps/runtime`
 - Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
 - Runtime-host system-health and latency projection through `/health`, `/status`, and WebSocket events in `apps/runtime`
+- Dashboard operator surfaces for lifecycle control, strategy upload/validation, settings, manual entry, close/cancel, journal/history, event streaming, and health in `apps/dashboard`
+- Host-level paper acceptance coverage for repeated manual entries, operator/degraded no-new-entry safety gates, scale-in, flatten, and startup/reconnect review decisions in `apps/runtime`
 - CLI launch, lifecycle, reconnect-review, shutdown-review, and history commands in `apps/cli`
 
 ## Still Required For V1
 
-- Dashboard implementation
-- Postgres-first persistence with safe SQLite fallback behavior
-- Paper-mode acceptance campaigns and remaining safety-critical integration coverage
+- Final dashboard control-center polish and operator ergonomics
+- Final broader paper-mode regression/release sweep and remaining safety-critical integration coverage
+- Cross-platform packaging, operational runbooks, and release hardening
 
 ## Local Development
 
@@ -99,7 +101,7 @@ tests/
 cargo test -j 1
 ```
 
-This workspace lives under Windows + OneDrive in the current setup, so a retry with serial tests may be needed if Windows briefly file-locks generated test executables.
+This workspace is now the primary local checkout, but Windows may still briefly file-lock generated test executables. If that happens, retrying targeted serial tests is usually enough.
 
 ## Key Docs
 

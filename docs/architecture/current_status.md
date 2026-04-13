@@ -10,10 +10,10 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 3 foundations are substantially in place.
 - Phase 4 foundations are substantially in place.
 - Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented and the dashboard now partially wired for operator overview, lifecycle control, explicit no-new-entry gating, host-backed runtime settings editing, strategy-library upload/validation, event streaming, reconnect/shutdown safety actions, manual entry, persisted journal visibility, close/cancel plus open-order/fill and trade-ledger views, and deeper PnL, latency, and host-health drill-downs, while the remaining dashboard polish is still incomplete.
-- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for paper startup and reconnect review gating across position-only, working-orders-only, and mixed-exposure scenarios plus `close_position`, `leave_broker_protected`, and `reattach_bot_management`, as well as signal-time shutdown blocking.
+- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for paper startup and reconnect review gating across position-only, working-orders-only, and mixed-exposure scenarios plus `close_position`, `leave_broker_protected`, and `reattach_bot_management`, as well as signal-time shutdown blocking and a broader repeated paper-session regression sweep for operator entry/gating behavior through the runtime host.
 - Phase 7 is mostly open.
 
-V1 is not release-ready yet because the dashboard and the remaining full end-to-end paper-trading acceptance campaign are still unfinished.
+V1 is not release-ready yet because final dashboard polish, broader release hardening, and the last paper-trading regression/release sweeps are still unfinished.
 
 ## Implemented Through The Current Pass
 
@@ -42,11 +42,12 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 - Reconnect/open-position recovery review flow through the runtime host and CLI, including explicit leave-broker-protected or reattach acknowledgement and close-position dispatch through the existing audited flatten path
 - Targeted acceptance coverage for execution-engine no-new-entry blocking, paper-account scale-in dispatch, startup/reconnect review detection that blocks paper arming/new entry across position-only, working-orders-only, and mixed-exposure scenarios until operator resolution, the paper startup/reconnect review decision trio through the runtime host, and signal-time shutdown review blocking
 - Dashboard overview and control-center slices in `apps/dashboard`, including host-backed lifecycle commands, explicit dashboard-driven no-new-entry gating, config/env-backed runtime settings editing through `/settings`, strategy-library upload/browsing and strict strategy validation through `/strategies`, `/strategies/upload`, and `/strategies/validate`, a local `/events` operator feed, dashboard-driven reconnect/shutdown review actions, manual entry, close-position/cancel-working-order controls, richer `/history` plus `/journal` trade/order/fill/operator projections, projected PnL trend and trade-ledger views, and deeper latency/health audit drill-downs
+- Broader host-level paper regression coverage proving repeated paper manual-entry dispatch, operator entry gating, degraded-feed no-new-entry blocking, and recovery back to healthy repeated testing through the same runtime-host path
 
 ## Must Finish Before Advancing Deeper Into Phase 5 And Phase 6
 
-1. Finish the remaining full end-to-end paper-mode acceptance campaign from `V1_ACCEPTANCE_CRITERIA.md`, especially the operator and dashboard-visible flows that still need host-surface validation together rather than crate-level targeting.
-2. Build out the remaining dashboard operator workflows on top of the now-real host surfaces for status, readiness, commands, events, history, and health.
+1. Finish the final broader paper-mode regression/release sweep from `V1_ACCEPTANCE_CRITERIA.md`, especially any remaining operator-visible flows that still need one-pass validation together rather than isolated targeting.
+2. Build out the remaining dashboard operator workflow polish on top of the now-real host surfaces for status, readiness, commands, events, history, and health.
 3. Expand the last dashboard-facing operational views and deeper operator drill-downs on top of the now-sampled health and metrics pipeline.
 
 ## Remaining Work By Phase
@@ -65,8 +66,8 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 
 - Cross-platform packaging
 - Hardening pass
-- Remaining paper-trading hardening and regression sweeps across the broader acceptance matrix
-- Paper-trading test campaigns
+- Remaining paper-trading hardening and final regression sweeps across the broader acceptance matrix
+- Paper-trading test campaigns and final release verification passes
 - Operational docs and runbooks
 
 ## Acceptance Gaps Still Open
@@ -79,5 +80,5 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.
 - Metrics acceptance is substantially met for V1 host and CLI surfaces: runtime-collected trade-path latency, persisted health snapshots, sampled CPU/memory runtime-resource telemetry, dashboard event streaming, and open-order/fill, trade-ledger, journal, PnL, and latency/health operator views are now surfaced, while final dashboard polish is still incomplete.
-- Full paper-trading acceptance is not met yet.
+- Full paper-trading acceptance is substantially met at the host/operator layer, but the final broader regression/release sweep is not complete yet.
 - Final release gate items for the dashboard and full paper-mode acceptance are not met yet.

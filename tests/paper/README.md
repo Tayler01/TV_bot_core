@@ -1,9 +1,15 @@
 # Paper Tests
 
-Reserve this directory for Tradovate paper/demo execution-path coverage, including:
+Paper-mode acceptance is currently exercised primarily through the kernel-backed host tests in `apps/runtime/src/host.rs` so the same audited control path is covered as the operator UI and CLI.
 
-- broker-side stop and take-profit placement
-- scaling behavior
-- flatten handling
-- degraded data no-new-entry behavior
-- restart and reconnect position detection
+Current host-level coverage includes:
+
+- manual paper entry with broker-side stop-loss and take-profit brackets
+- repeated paper manual-entry regression coverage through the same runtime host path
+- paper scale-in dispatch when the loaded strategy allows adding size
+- flatten, close-position, and cancel-working-order flows
+- operator no-new-entry gating and degraded-feed no-new-entry blocking
+- startup and reconnect review detection across position-only, working-orders-only, and mixed-exposure scenarios
+- startup and reconnect operator decisions for `close_position`, `leave_broker_protected`, and `reattach_bot_management`
+
+This directory remains the place for any broader black-box paper/demo campaigns that should live outside the runtime-host crate-level acceptance suite.

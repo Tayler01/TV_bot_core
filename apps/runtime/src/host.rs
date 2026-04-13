@@ -7085,6 +7085,641 @@ selection:
     }
 
     #[tokio::test]
+    async fn paper_operator_session_supports_repeated_entries_and_safety_gates_through_runtime_host(
+    ) {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "paper session regression set mode request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "paper session regression mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+            (
+                "paper session regression arm request",
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_ready = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression ready status request",
+        )
+        .await;
+        assert_eq!(status_ready.status(), StatusCode::OK);
+        let status_ready_body = status_ready
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_ready: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_ready_body).expect("status json should parse");
+        assert_eq!(status_ready.mode, RuntimeMode::Paper);
+        assert_eq!(status_ready.arm_state, ArmState::Armed);
+        assert_eq!(
+            status_ready.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_ready.operator_new_entries_enabled);
+        assert_eq!(
+            status_ready
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let first_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("first paper regression entry".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression first entry request",
+        )
+        .await;
+        assert_eq!(first_entry_response.status(), StatusCode::OK);
+        let first_entry_body = first_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let first_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&first_entry_body).expect("response json should parse");
+        assert_eq!(first_entry.status_code, HttpStatusCode::Ok);
+        assert_eq!(first_entry.message, "manual entry command dispatched");
+        assert_eq!(first_entry.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            first_entry.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        let first_command_result = first_entry
+            .command_result
+            .expect("first manual entry should return a command result");
+        assert_eq!(
+            first_command_result.status,
+            ControlApiCommandStatus::Executed
+        );
+        assert_eq!(
+            first_command_result.risk_status,
+            RiskDecisionStatus::Accepted
+        );
+        assert!(first_command_result.dispatch_performed);
+
+        let history_after_first = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression history after first entry request",
+        )
+        .await;
+        assert_eq!(history_after_first.status(), StatusCode::OK);
+        let history_after_first_body = history_after_first
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_first: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_first_body).expect("history json should parse");
+        assert!(
+            history_after_first.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+        assert!(history_after_first.projection.latest_order.is_some());
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let first_oso = &place_osos[0];
+        assert_eq!(first_oso.context.account_id, 101);
+        assert_eq!(first_oso.context.account_spec, "paper-primary");
+        assert_eq!(first_oso.order.symbol, "GCM2026");
+        assert_eq!(first_oso.order.quantity, 1);
+        assert_eq!(
+            first_oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(first_oso.order.brackets.len(), 2);
+        drop(place_osos);
+
+        let disable_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                            enabled: false,
+                            reason: Some(
+                                "pause fresh paper entries while validating the session".to_owned(),
+                            ),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression disable new entries request",
+        )
+        .await;
+        assert_eq!(disable_response.status(), StatusCode::OK);
+        let disable_body = disable_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let disable_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&disable_body).expect("response json should parse");
+        assert_eq!(disable_response.status_code, HttpStatusCode::Ok);
+        assert!(!disable_response.status.operator_new_entries_enabled);
+
+        let blocked_by_gate_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_620, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("blocked by paper operator gate".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression blocked-by-gate entry request",
+        )
+        .await;
+        assert_eq!(blocked_by_gate_response.status(), StatusCode::CONFLICT);
+        let blocked_by_gate_body = blocked_by_gate_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_by_gate: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_by_gate_body).expect("response json should parse");
+        assert_eq!(blocked_by_gate.status_code, HttpStatusCode::Conflict);
+        assert!(blocked_by_gate.message.contains("new entries are blocked"));
+        assert!(blocked_by_gate.command_result.is_none());
+        assert!(!blocked_by_gate.status.operator_new_entries_enabled);
+
+        let history_after_gate_block = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression history after gate block request",
+        )
+        .await;
+        assert_eq!(history_after_gate_block.status(), StatusCode::OK);
+        let history_after_gate_block_body = history_after_gate_block
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_gate_block: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_gate_block_body)
+                .expect("history json should parse");
+        assert_eq!(
+            history_after_gate_block.projection.total_order_records,
+            history_after_first.projection.total_order_records
+        );
+
+        let enable_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                            enabled: true,
+                            reason: Some("resume regression session entries".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression enable new entries request",
+        )
+        .await;
+        assert_eq!(enable_response.status(), StatusCode::OK);
+        let enable_body = enable_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let enable_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&enable_body).expect("response json should parse");
+        assert_eq!(enable_response.status_code, HttpStatusCode::Ok);
+        assert!(enable_response.status.operator_new_entries_enabled);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Degraded),
+            Some("market data is degraded; new entries must remain blocked".to_owned()),
+        )
+        .await;
+
+        let status_degraded = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression degraded status request",
+        )
+        .await;
+        assert_eq!(status_degraded.status(), StatusCode::OK);
+        let status_degraded_body = status_degraded
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_degraded: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_degraded_body).expect("status json should parse");
+        assert_eq!(status_degraded.mode, RuntimeMode::Paper);
+        assert_eq!(status_degraded.arm_state, ArmState::Armed);
+        assert!(status_degraded.operator_new_entries_enabled);
+        assert_eq!(
+            status_degraded.market_data_detail.as_deref(),
+            Some("market data is degraded; new entries must remain blocked")
+        );
+        assert_eq!(
+            status_degraded
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Degraded)
+        );
+
+        let blocked_by_health_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_730, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("blocked by degraded market data".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression blocked-by-health entry request",
+        )
+        .await;
+        assert_eq!(blocked_by_health_response.status(), StatusCode::CONFLICT);
+        let blocked_by_health_body = blocked_by_health_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_by_health: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_by_health_body).expect("response json should parse");
+        assert_eq!(blocked_by_health.status_code, HttpStatusCode::Conflict);
+        assert!(blocked_by_health
+            .message
+            .contains("new entries are blocked"));
+        assert!(blocked_by_health.command_result.is_none());
+        assert!(blocked_by_health.status.operator_new_entries_enabled);
+        assert_eq!(
+            blocked_by_health.status.market_data_detail.as_deref(),
+            Some("market data is degraded; new entries must remain blocked")
+        );
+
+        let history_after_health_block = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression history after health block request",
+        )
+        .await;
+        assert_eq!(history_after_health_block.status(), StatusCode::OK);
+        let history_after_health_block_body = history_after_health_block
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_health_block: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_health_block_body)
+                .expect("history json should parse");
+        assert_eq!(
+            history_after_health_block.projection.total_order_records,
+            history_after_first.projection.total_order_records
+        );
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        let second_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_840, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("paper regression entry after health restore".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper session regression second entry request",
+        )
+        .await;
+        assert_eq!(second_entry_response.status(), StatusCode::OK);
+        let second_entry_body = second_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let second_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&second_entry_body).expect("response json should parse");
+        assert_eq!(second_entry.status_code, HttpStatusCode::Ok);
+        assert_eq!(second_entry.message, "manual entry command dispatched");
+        let second_command_result = second_entry
+            .command_result
+            .expect("second manual entry should return a command result");
+        assert_eq!(
+            second_command_result.status,
+            ControlApiCommandStatus::Executed
+        );
+        assert_eq!(
+            second_command_result.risk_status,
+            RiskDecisionStatus::Accepted
+        );
+        assert!(second_command_result.dispatch_performed);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 2);
+        let second_oso = &place_osos[1];
+        assert_eq!(second_oso.context.account_id, 101);
+        assert_eq!(second_oso.context.account_spec, "paper-primary");
+        assert_eq!(second_oso.order.symbol, "GCM2026");
+        assert_eq!(second_oso.order.quantity, 1);
+        assert_eq!(second_oso.order.brackets.len(), 2);
+        drop(place_osos);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after_second = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression history after second entry request",
+        )
+        .await;
+        assert_eq!(history_after_second.status(), StatusCode::OK);
+        let history_after_second_body = history_after_second
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_second: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_second_body).expect("history json should parse");
+        assert!(
+            history_after_second.projection.total_order_records
+                > history_after_first.projection.total_order_records
+        );
+        assert!(history_after_second.projection.latest_order.is_some());
+
+        let final_status = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper session regression final status request",
+        )
+        .await;
+        assert_eq!(final_status.status(), StatusCode::OK);
+        let final_status_body = final_status
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let final_status: RuntimeStatusSnapshot =
+            serde_json::from_slice(&final_status_body).expect("status json should parse");
+        assert_eq!(final_status.mode, RuntimeMode::Paper);
+        assert_eq!(final_status.arm_state, ArmState::Armed);
+        assert!(final_status.operator_new_entries_enabled);
+        assert_eq!(
+            final_status
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let dispatch_succeeded = journal_records
+            .iter()
+            .filter(|record| record.action == "dispatch_succeeded")
+            .count();
+        let dispatch_failed = journal_records
+            .iter()
+            .filter(|record| record.action == "dispatch_failed")
+            .count();
+        let gate_updates = journal_records
+            .iter()
+            .filter(|record| record.action == "new_entries_gate_updated")
+            .collect::<Vec<_>>();
+        assert_eq!(dispatch_succeeded, 2);
+        assert_eq!(dispatch_failed, 2);
+        assert_eq!(gate_updates.len(), 2);
+        assert_eq!(gate_updates[0].payload["enabled"].as_bool(), Some(false));
+        assert_eq!(
+            gate_updates[0].payload["reason"].as_str(),
+            Some("pause fresh paper entries while validating the session")
+        );
+        assert_eq!(gate_updates[1].payload["enabled"].as_bool(), Some(true));
+        assert!(journal_records.iter().any(|record| {
+            record.action == "dispatch_failed"
+                && record.payload["error"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("new entries are blocked"))
+        }));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
     async fn journal_route_returns_recent_persisted_records() {
         let history = test_history();
         let latency_collector = test_latency_collector();
