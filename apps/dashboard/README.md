@@ -54,4 +54,4 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 
 ## Follow-up Note
 
-Reconnect hardening now includes paper reconnect `close_position` and `reattach_bot_management` coverage through the real runtime host, but the broader paper-mode acceptance sweep still remains before calling the dashboard and paper campaign complete.
+Reconnect hardening now includes paper reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, but the broader paper-mode acceptance sweep still remains before calling the dashboard and paper campaign complete.

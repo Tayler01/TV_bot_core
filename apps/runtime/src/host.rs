@@ -6672,6 +6672,247 @@ selection:
     }
 
     #[tokio::test]
+    async fn paper_reconnect_review_after_disconnect_can_leave_broker_protected_through_runtime_host(
+    ) {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_reconnect_review_required().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state);
+
+        let set_mode_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::SetMode {
+                            mode: RuntimeMode::Paper,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "set mode paper request",
+        )
+        .await;
+        assert_eq!(set_mode_response.status(), StatusCode::OK);
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect leave status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(
+            status_before.reconnect_review.reason.as_deref(),
+            Some("existing broker-side position or working orders detected after reconnect")
+        );
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 1);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect leave history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::LeaveBrokerProtected,
+                            contract_id: None,
+                            reason: Some(
+                                "leave paper protections in place after reconnect".to_owned(),
+                            ),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper reconnect leave protected request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "reconnect review resolved with leave_broker_protected"
+        );
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            lifecycle_response.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(!lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            Some(RuntimeReconnectDecision::LeaveBrokerProtected)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::Synchronized)
+        );
+        assert_eq!(
+            lifecycle_response
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(1)
+        );
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect leave history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_position_records
+                >= history_before.projection.total_position_records
+        );
+        assert!(history_after.projection.total_position_records > 0);
+        assert_eq!(
+            history_after
+                .projection
+                .latest_position
+                .as_ref()
+                .map(|record| record.symbol.as_str()),
+            Some("GCM2026")
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let reconnect_resolution = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_resolved")
+            .expect("reconnect resolution should be journaled");
+        assert_eq!(reconnect_resolution.category, "broker");
+        assert_eq!(reconnect_resolution.source, ActionSource::Dashboard);
+        assert_eq!(
+            reconnect_resolution.payload["decision"].as_str(),
+            Some("leave_broker_protected")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["reason"].as_str(),
+            Some("leave paper protections in place after reconnect")
+        );
+        assert_eq!(
+            reconnect_resolution.payload["open_position_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            reconnect_resolution.payload["working_order_count"].as_u64(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
     async fn paper_reconnect_review_close_position_dispatches_flatten_through_runtime_host() {
         let history = test_history();
         let latency_collector = test_latency_collector();
