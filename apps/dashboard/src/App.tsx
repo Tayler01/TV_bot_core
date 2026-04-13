@@ -29,9 +29,11 @@ import {
 } from "./lib/format";
 import type {
   ControlApiEvent,
+  DecimalValue,
   EventJournalRecord,
   FillRecord,
   OrderRecord,
+  PnlSnapshotRecord,
   ReadinessCheckStatus,
   RuntimeLifecycleCommand,
   RuntimeLifecycleResponse,
@@ -42,6 +44,7 @@ import type {
   RuntimeStrategyCatalogEntry,
   RuntimeStrategyLibraryResponse,
   RuntimeStrategyValidationResponse,
+  TradePathLatencyRecord,
   TradeSummaryRecord,
 } from "./types/controlApi";
 
@@ -116,6 +119,48 @@ interface EventFeedViewModel {
   recentEvents: EventFeedItem[];
   lastEventAt: string | null;
   error: string | null;
+}
+
+interface TradePerformanceViewModel {
+  closedCount: number;
+  openCount: number;
+  winRate: number | null;
+  averageNet: number | null;
+  averageHoldMinutes: number | null;
+  largestWin: number | null;
+  largestLoss: number | null;
+  floatingNet: number | null;
+}
+
+interface PnlTrendPoint {
+  id: string;
+  label: string;
+  note: string;
+  value: number;
+  magnitudePercent: number;
+  tone: BannerTone;
+}
+
+interface JournalCategoryCount {
+  category: string;
+  count: number;
+}
+
+interface JournalSummaryViewModel {
+  infoCount: number;
+  warningCount: number;
+  errorCount: number;
+  dashboardCount: number;
+  systemCount: number;
+  cliCount: number;
+  categories: JournalCategoryCount[];
+}
+
+interface LatencyStageViewModel {
+  key: string;
+  label: string;
+  value: number | null;
+  barPercent: number;
 }
 
 const INITIAL_VIEW_MODEL: ViewModel = {
@@ -338,6 +383,66 @@ function compactJson(value: unknown): string {
   }
 }
 
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "No payload";
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "Payload unavailable";
+  }
+}
+
+function decimalToNumber(value: DecimalValue | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatPercentage(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "Unavailable";
+  }
+
+  return `${value.toFixed(1)}%`;
+}
+
+function minutesBetween(startAt: string | null | undefined, endAt: string | null | undefined): number | null {
+  if (!startAt || !endAt) {
+    return null;
+  }
+
+  const start = new Date(startAt).getTime();
+  const end = new Date(endAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return null;
+  }
+
+  return (end - start) / 60_000;
+}
+
+function formatDurationMinutes(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "Unavailable";
+  }
+
+  if (value < 60) {
+    return `${value.toFixed(value >= 10 ? 0 : 1)} min`;
+  }
+
+  const hours = value / 60;
+  return `${hours.toFixed(hours >= 10 ? 0 : 1)} hr`;
+}
+
 function eventHeadline(event: ControlApiEvent): string {
   switch (event.kind) {
     case "command_result":
@@ -479,6 +584,12 @@ function workingOrdersForProjection(snapshot: DashboardSnapshot): OrderRecord[] 
     .sort((left, right) => compareDescendingDate(left.updated_at, right.updated_at));
 }
 
+function allTradeSummariesForProjection(snapshot: DashboardSnapshot): TradeSummaryRecord[] {
+  return Object.values(snapshot.history.projection.trade_summaries).sort((left, right) =>
+    compareDescendingDate(left.closed_at ?? left.opened_at, right.closed_at ?? right.opened_at),
+  );
+}
+
 function recentFillsForProjection(snapshot: DashboardSnapshot): FillRecord[] {
   return Object.values(snapshot.history.projection.fills)
     .sort((left, right) => compareDescendingDate(left.occurred_at, right.occurred_at))
@@ -486,18 +597,192 @@ function recentFillsForProjection(snapshot: DashboardSnapshot): FillRecord[] {
 }
 
 function recentTradeSummariesForProjection(snapshot: DashboardSnapshot): TradeSummaryRecord[] {
-  return Object.values(snapshot.history.projection.trade_summaries)
-    .sort((left, right) =>
-      compareDescendingDate(
-        left.closed_at ?? left.opened_at,
-        right.closed_at ?? right.opened_at,
-      ),
-    )
-    .slice(0, MAX_RECENT_TRADES);
+  return allTradeSummariesForProjection(snapshot).slice(0, MAX_RECENT_TRADES);
 }
 
 function recentJournalRecords(snapshot: DashboardSnapshot): EventJournalRecord[] {
   return snapshot.journal.records.slice(0, MAX_RECENT_JOURNAL_RECORDS);
+}
+
+function tradeTone(trade: TradeSummaryRecord): BannerTone {
+  if (trade.status === "cancelled") {
+    return "warning";
+  }
+
+  if (trade.status === "open") {
+    return "info";
+  }
+
+  const netPnl = decimalToNumber(trade.net_pnl);
+  if (netPnl === null || netPnl === 0) {
+    return "info";
+  }
+
+  return netPnl > 0 ? "healthy" : "danger";
+}
+
+function tradePerformanceForProjection(snapshot: DashboardSnapshot): TradePerformanceViewModel {
+  const trades = allTradeSummariesForProjection(snapshot);
+  const closedTrades = trades.filter((trade) => trade.status === "closed");
+  const winningTrades = closedTrades.filter((trade) => (decimalToNumber(trade.net_pnl) ?? 0) > 0);
+  const losingTrades = closedTrades.filter((trade) => (decimalToNumber(trade.net_pnl) ?? 0) < 0);
+  const averageNet =
+    closedTrades.length > 0
+      ? closedTrades.reduce((total, trade) => total + (decimalToNumber(trade.net_pnl) ?? 0), 0) /
+        closedTrades.length
+      : null;
+  const holdingDurations = closedTrades
+    .map((trade) => minutesBetween(trade.opened_at, trade.closed_at))
+    .filter((value): value is number => value !== null);
+  const averageHoldMinutes =
+    holdingDurations.length > 0
+      ? holdingDurations.reduce((total, value) => total + value, 0) / holdingDurations.length
+      : null;
+
+  return {
+    closedCount: closedTrades.length,
+    openCount: trades.filter((trade) => trade.status === "open").length,
+    winRate:
+      closedTrades.length > 0 ? (winningTrades.length / closedTrades.length) * 100 : null,
+    averageNet,
+    averageHoldMinutes,
+    largestWin: winningTrades.length
+      ? Math.max(...winningTrades.map((trade) => decimalToNumber(trade.net_pnl) ?? 0))
+      : null,
+    largestLoss: losingTrades.length
+      ? Math.min(...losingTrades.map((trade) => decimalToNumber(trade.net_pnl) ?? 0))
+      : null,
+    floatingNet: decimalToNumber(snapshot.history.projection.latest_pnl_snapshot?.net_pnl),
+  };
+}
+
+function pnlTrendPointsForProjection(snapshot: DashboardSnapshot): PnlTrendPoint[] {
+  const closedTrades = Object.values(snapshot.history.projection.trade_summaries)
+    .filter((trade) => trade.status === "closed")
+    .sort(
+      (left, right) =>
+        new Date(left.closed_at ?? left.opened_at).getTime() -
+        new Date(right.closed_at ?? right.opened_at).getTime(),
+    );
+
+  let cumulativeNet = 0;
+  const rawPoints = closedTrades.map((trade, index) => {
+    cumulativeNet += decimalToNumber(trade.net_pnl) ?? 0;
+
+    return {
+      id: trade.trade_id,
+      label: `T${index + 1}`,
+      note: `${trade.symbol} ${formatSignedCurrency(trade.net_pnl)}`,
+      value: cumulativeNet,
+    };
+  });
+
+  const latestPnlSnapshot = snapshot.history.projection.latest_pnl_snapshot;
+  if (latestPnlSnapshot) {
+    rawPoints.push({
+      id: latestPnlSnapshot.snapshot_id,
+      label: "Now",
+      note: `Snapshot ${formatDateTime(latestPnlSnapshot.captured_at)}`,
+      value: decimalToNumber(latestPnlSnapshot.net_pnl) ?? cumulativeNet,
+    });
+  }
+
+  const trimmedPoints = rawPoints.slice(-6);
+  const maxMagnitude = trimmedPoints.reduce(
+    (largest, point) => Math.max(largest, Math.abs(point.value)),
+    0,
+  );
+
+  return trimmedPoints.map((point) => ({
+    ...point,
+    magnitudePercent:
+      maxMagnitude === 0 ? 20 : Math.max(20, Math.round((Math.abs(point.value) / maxMagnitude) * 100)),
+    tone: point.value > 0 ? "healthy" : point.value < 0 ? "danger" : "info",
+  }));
+}
+
+function journalRecordTone(record: EventJournalRecord): BannerTone {
+  if (record.severity === "error") {
+    return "danger";
+  }
+
+  if (record.severity === "warning") {
+    return "warning";
+  }
+
+  return "info";
+}
+
+function summarizeJournalRecords(records: EventJournalRecord[]): JournalSummaryViewModel {
+  const counts = {
+    infoCount: 0,
+    warningCount: 0,
+    errorCount: 0,
+    dashboardCount: 0,
+    systemCount: 0,
+    cliCount: 0,
+  };
+  const categories = new Map<string, number>();
+
+  for (const record of records) {
+    if (record.severity === "error") {
+      counts.errorCount += 1;
+    } else if (record.severity === "warning") {
+      counts.warningCount += 1;
+    } else {
+      counts.infoCount += 1;
+    }
+
+    if (record.source === "dashboard") {
+      counts.dashboardCount += 1;
+    } else if (record.source === "system") {
+      counts.systemCount += 1;
+    } else {
+      counts.cliCount += 1;
+    }
+
+    categories.set(record.category, (categories.get(record.category) ?? 0) + 1);
+  }
+
+  return {
+    ...counts,
+    categories: [...categories.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 4)
+      .map(([category, count]) => ({ category, count })),
+  };
+}
+
+function latestPnlSnapshot(snapshot: DashboardSnapshot): PnlSnapshotRecord | null {
+  return snapshot.history.projection.latest_pnl_snapshot;
+}
+
+function latencyStages(record: TradePathLatencyRecord | null | undefined): LatencyStageViewModel[] {
+  const stages = [
+    { key: "signal", label: "Signal", value: record?.latency.signal_latency_ms ?? null },
+    { key: "decision", label: "Decision", value: record?.latency.decision_latency_ms ?? null },
+    { key: "order-send", label: "Order send", value: record?.latency.order_send_latency_ms ?? null },
+    { key: "broker-ack", label: "Broker ack", value: record?.latency.broker_ack_latency_ms ?? null },
+    { key: "fill", label: "Fill", value: record?.latency.fill_latency_ms ?? null },
+    { key: "sync-update", label: "Sync update", value: record?.latency.sync_update_latency_ms ?? null },
+    {
+      key: "end-to-end",
+      label: "End to end",
+      value: record?.latency.end_to_end_fill_latency_ms ?? null,
+    },
+  ];
+  const maxValue = stages.reduce(
+    (largest, stage) => Math.max(largest, stage.value ?? 0),
+    0,
+  );
+
+  return stages.map((stage) => ({
+    ...stage,
+    barPercent:
+      stage.value === null || maxValue === 0
+        ? 0
+        : Math.max(12, Math.round((stage.value / maxValue) * 100)),
+  }));
 }
 
 function isPositiveNumberInput(value: string): boolean {
@@ -1041,6 +1326,26 @@ function App() {
   const recentFills = snapshot ? recentFillsForProjection(snapshot) : [];
   const recentTrades = snapshot ? recentTradeSummariesForProjection(snapshot) : [];
   const journalRecords = snapshot ? recentJournalRecords(snapshot) : [];
+  const tradePerformance = snapshot ? tradePerformanceForProjection(snapshot) : null;
+  const pnlTrend = snapshot ? pnlTrendPointsForProjection(snapshot) : [];
+  const journalSummary = summarizeJournalRecords(journalRecords);
+  const latencyBreakdown = snapshot ? latencyStages(snapshot.health.latest_trade_latency) : [];
+  const slowestLatencyStage = latencyBreakdown.reduce<LatencyStageViewModel | null>(
+    (slowest, stage) => {
+      if (stage.value === null) {
+        return slowest;
+      }
+
+      if (!slowest || (slowest.value ?? -1) < stage.value) {
+        return stage;
+      }
+
+      return slowest;
+    },
+    null,
+  );
+  const projectedPnlSnapshot = snapshot ? latestPnlSnapshot(snapshot) : null;
+  const feedStatuses = snapshot?.status.market_data_status?.session.market_data.feed_statuses ?? [];
   const canManualEntry =
     snapshot != null &&
     snapshot.status.strategy_loaded === true &&
@@ -1886,6 +2191,20 @@ function App() {
                 label="Journal"
                 value={`${snapshot.status.journal_status.backend} | ${snapshot.status.journal_status.detail}`}
               />
+              <Definition
+                label="Warmup"
+                value={
+                  snapshot.status.market_data_status
+                    ? `${formatMode(snapshot.status.market_data_status.session.market_data.warmup.status)} | trade ready ${
+                        snapshot.status.market_data_status.trade_ready ? "yes" : "no"
+                      }`
+                    : "Unavailable"
+                }
+              />
+              <Definition
+                label="Dispatch"
+                value={snapshot.status.command_dispatch_detail}
+              />
             </dl>
             <div className="subgrid">
               <MiniMetric
@@ -1908,6 +2227,106 @@ function App() {
                 label="Queue lag"
                 value={formatLatency(snapshot.health.system_health?.queue_lag_ms)}
               />
+              <MiniMetric
+                label="Reconnects"
+                value={formatInteger(snapshot.health.system_health?.reconnect_count)}
+              />
+              <MiniMetric
+                label="Broker heartbeat"
+                value={formatDateTime(snapshot.status.broker_status?.last_heartbeat_at)}
+              />
+              <MiniMetric
+                label="Feed heartbeat"
+                value={formatDateTime(
+                  snapshot.status.market_data_status?.session.market_data.last_heartbeat_at,
+                )}
+              />
+              <MiniMetric
+                label="Last sync"
+                value={formatDateTime(snapshot.status.broker_status?.last_sync_at)}
+              />
+            </div>
+            <div className="subgrid subgrid--wide">
+              <section className="review-card">
+                <p className="control-card__title">Connectivity clocks</p>
+                <dl className="definition-list">
+                  <Definition
+                    label="Broker auth"
+                    value={formatDateTime(snapshot.status.broker_status?.last_authenticated_at)}
+                  />
+                  <Definition
+                    label="Broker heartbeat"
+                    value={formatDateTime(snapshot.status.broker_status?.last_heartbeat_at)}
+                  />
+                  <Definition
+                    label="Broker sync"
+                    value={formatDateTime(snapshot.status.broker_status?.last_sync_at)}
+                  />
+                  <Definition
+                    label="Feed heartbeat"
+                    value={formatDateTime(
+                      snapshot.status.market_data_status?.session.market_data.last_heartbeat_at,
+                    )}
+                  />
+                  <Definition
+                    label="Broker disconnect"
+                    value={
+                      snapshot.status.broker_status?.last_disconnect_reason ?? "No disconnect reason"
+                    }
+                  />
+                  <Definition
+                    label="Feed disconnect"
+                    value={
+                      snapshot.status.market_data_status?.session.market_data.last_disconnect_reason ??
+                      "No disconnect reason"
+                    }
+                  />
+                </dl>
+              </section>
+              <section className="review-card">
+                <p className="control-card__title">Feed and storage detail</p>
+                <dl className="definition-list">
+                  <Definition
+                    label="Replay"
+                    value={
+                      snapshot.status.market_data_status?.replay_caught_up ? "Caught up" : "Behind"
+                    }
+                  />
+                  <Definition
+                    label="Warmup mode"
+                    value={snapshot.status.market_data_status?.warmup_mode ?? "Unavailable"}
+                  />
+                  <Definition
+                    label="Primary DB"
+                    value={snapshot.status.storage_status.primary_configured ? "Configured" : "Missing"}
+                  />
+                  <Definition
+                    label="Fallback"
+                    value={
+                      snapshot.status.storage_status.fallback_activated
+                        ? "SQLite fallback active"
+                        : "Primary backend active"
+                    }
+                  />
+                </dl>
+                {feedStatuses.length ? (
+                  <ul className="event-list event-list--compact">
+                    {feedStatuses.map((feed) => (
+                      <li key={`${feed.instrument_symbol}-${feed.feed}`} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{`${feed.instrument_symbol} | ${feed.feed}`}</strong>
+                          <Pill label={formatMode(feed.state)} tone="info" />
+                        </div>
+                        <p>{`${feed.detail} | last update ${formatDateTime(feed.last_event_at)}`}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel__footnote">
+                    No feed-level status records are projected through the runtime host yet.
+                  </p>
+                )}
+              </section>
             </div>
           </Panel>
 
@@ -1956,6 +2375,24 @@ function App() {
                 value={formatDateTime(snapshot.history.projection.last_activity_at)}
               />
             </div>
+            <div className="metric-row">
+              <Metric
+                label="Win rate"
+                value={formatPercentage(tradePerformance?.winRate)}
+              />
+              <Metric
+                label="Avg net/trade"
+                value={formatSignedCurrency(tradePerformance?.averageNet)}
+              />
+              <Metric
+                label="Avg hold"
+                value={formatDurationMinutes(tradePerformance?.averageHoldMinutes)}
+              />
+              <Metric
+                label="Floating net"
+                value={formatSignedCurrency(tradePerformance?.floatingNet)}
+              />
+            </div>
             <dl className="definition-list">
               <Definition
                 label="Latest position"
@@ -1982,6 +2419,51 @@ function App() {
                 }
               />
             </dl>
+            <section className="review-card review-card--wide">
+              <p className="control-card__title">P&L trend</p>
+              {pnlTrend.length ? (
+                <div className="pnl-trend">
+                  {pnlTrend.map((point) => (
+                    <article key={point.id} className="pnl-trend__point">
+                      <span className="pnl-trend__label">{point.label}</span>
+                      <div className="pnl-trend__bar-wrap">
+                        <span
+                          className={`pnl-trend__bar pnl-trend__bar--${point.tone}`}
+                          style={{ height: `${point.magnitudePercent}%` }}
+                        />
+                      </div>
+                      <strong>{formatSignedCurrency(point.value)}</strong>
+                      <span className="pnl-trend__note">{point.note}</span>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="panel__footnote">
+                  The runtime host has not projected enough closed-trade history to draw a P&L trend yet.
+                </p>
+              )}
+              <div className="subgrid">
+                <MiniMetric
+                  label="Largest win"
+                  value={formatSignedCurrency(tradePerformance?.largestWin)}
+                />
+                <MiniMetric
+                  label="Largest loss"
+                  value={formatSignedCurrency(tradePerformance?.largestLoss)}
+                />
+                <MiniMetric
+                  label="Tracked closed trades"
+                  value={formatInteger(tradePerformance?.closedCount)}
+                />
+                <MiniMetric
+                  label="Tracked open trades"
+                  value={formatInteger(tradePerformance?.openCount)}
+                />
+              </div>
+              <p className="control-card__note">
+                This trend is derived from the projected trade summaries and the latest persisted PnL snapshot that come through the local `/history` endpoint.
+              </p>
+            </section>
             <div className="subgrid">
               <section className="review-card">
                 <p className="control-card__title">Open working orders</p>
@@ -2024,26 +2506,50 @@ function App() {
                 )}
               </section>
               <section className="review-card">
-                <p className="control-card__title">Recent trades</p>
+                <p className="control-card__title">Trade ledger</p>
                 {recentTrades.length ? (
                   <ul className="event-list">
                     {recentTrades.map((trade) => (
                       <li key={trade.trade_id} className="event-list__item">
                         <div className="event-list__header">
                           <strong>{`${trade.symbol} | ${formatMode(trade.side)} ${formatInteger(trade.quantity)}`}</strong>
-                          <Pill label={formatMode(trade.status)} tone="info" />
+                          <Pill label={formatMode(trade.status)} tone={tradeTone(trade)} />
                         </div>
+                        <p className="event-list__meta">
+                          {`Trade ${trade.trade_id} | opened ${formatDateTime(trade.opened_at)}${
+                            trade.closed_at ? ` | closed ${formatDateTime(trade.closed_at)}` : ""
+                          } | hold ${formatDurationMinutes(
+                            minutesBetween(trade.opened_at, trade.closed_at),
+                          )}`}
+                        </p>
                         <p>
-                          {`Trade ${trade.trade_id} | entry ${formatDecimal(trade.average_entry_price)}${trade.average_exit_price ? ` | exit ${formatDecimal(trade.average_exit_price)}` : ""} | net ${formatSignedCurrency(trade.net_pnl)} | ${formatDateTime(trade.closed_at ?? trade.opened_at)}`}
+                          {`Entry ${formatDecimal(trade.average_entry_price)}${
+                            trade.average_exit_price
+                              ? ` | exit ${formatDecimal(trade.average_exit_price)}`
+                              : ""
+                          } | gross ${formatSignedCurrency(trade.gross_pnl)} | net ${formatSignedCurrency(
+                            trade.net_pnl,
+                          )} | fees ${formatCurrency(trade.fees)} | commissions ${formatCurrency(
+                            trade.commissions,
+                          )} | slippage ${formatCurrency(trade.slippage)}`}
                         </p>
                       </li>
                     ))}
                   </ul>
                 ) : (
-                  <p className="panel__footnote">No trade summaries are projected yet.</p>
+                  <p className="panel__footnote">
+                    No trade summaries are projected yet.
+                  </p>
                 )}
               </section>
             </div>
+            {projectedPnlSnapshot ? (
+              <p className="panel__footnote">
+                Latest floating snapshot: {formatSignedCurrency(projectedPnlSnapshot.net_pnl)} net,{" "}
+                {formatSignedCurrency(projectedPnlSnapshot.unrealized_pnl)} unrealized, captured{" "}
+                {formatDateTime(projectedPnlSnapshot.captured_at)}.
+              </p>
+            ) : null}
           </Panel>
 
           <Panel eyebrow="Latency" title="Latest trade-path timing">
@@ -2082,7 +2588,87 @@ function App() {
                 label="Action"
                 value={snapshot.health.latest_trade_latency?.action_id ?? "Unavailable"}
               />
+              <Definition
+                label="Slowest stage"
+                value={
+                  slowestLatencyStage
+                    ? `${slowestLatencyStage.label} | ${formatLatency(slowestLatencyStage.value)}`
+                    : "No latency record yet"
+                }
+              />
             </dl>
+            <div className="subgrid subgrid--wide">
+              <section className="review-card">
+                <p className="control-card__title">Latency stage breakdown</p>
+                {latencyBreakdown.some((stage) => stage.value !== null) ? (
+                  <ul className="latency-list">
+                    {latencyBreakdown.map((stage) => (
+                      <li key={stage.key} className="latency-list__item">
+                        <div className="latency-list__header">
+                          <strong>{stage.label}</strong>
+                          <span>{formatLatency(stage.value)}</span>
+                        </div>
+                        <div className="latency-list__track">
+                          <span
+                            className="latency-list__bar"
+                            style={{ width: `${stage.barPercent}%` }}
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel__footnote">
+                    The runtime has not published a trade-path latency record yet.
+                  </p>
+                )}
+              </section>
+              <section className="review-card">
+                <p className="control-card__title">Latency and host correlation</p>
+                <div className="subgrid">
+                  <MiniMetric
+                    label="Signal"
+                    value={formatLatency(snapshot.health.latest_trade_latency?.latency.signal_latency_ms)}
+                  />
+                  <MiniMetric
+                    label="Decision"
+                    value={formatLatency(snapshot.health.latest_trade_latency?.latency.decision_latency_ms)}
+                  />
+                  <MiniMetric
+                    label="Order send"
+                    value={formatLatency(snapshot.health.latest_trade_latency?.latency.order_send_latency_ms)}
+                  />
+                  <MiniMetric
+                    label="Fill"
+                    value={formatLatency(snapshot.health.latest_trade_latency?.latency.fill_latency_ms)}
+                  />
+                </div>
+                <dl className="definition-list">
+                  <Definition
+                    label="DB write latency"
+                    value={formatLatency(snapshot.health.system_health?.db_write_latency_ms)}
+                  />
+                  <Definition
+                    label="Queue lag"
+                    value={formatLatency(snapshot.health.system_health?.queue_lag_ms)}
+                  />
+                  <Definition
+                    label="Reconnect count"
+                    value={formatInteger(snapshot.health.system_health?.reconnect_count)}
+                  />
+                  <Definition
+                    label="Latest record"
+                    value={
+                      snapshot.health.latest_trade_latency
+                        ? `${snapshot.health.latest_trade_latency.action_id} at ${formatDateTime(
+                            snapshot.health.latest_trade_latency.recorded_at,
+                          )}`
+                        : "No trade-path record yet"
+                    }
+                  />
+                </dl>
+              </section>
+            </div>
           </Panel>
 
           <Panel eyebrow="Safety" title="Reconnect, shutdown, and operator guardrails">
@@ -2227,16 +2813,37 @@ function App() {
               </section>
             ) : null}
             <p className="panel__footnote">
-              Follow-up after this dashboard safety slice: circle back to reconnect hardening for
-              the broader operator-resolution campaign and final paper-mode recovery polish.
+              Reconnect hardening now covers startup and reconnect review decisions through the real
+              runtime host. The remaining safety work is the broader paper-mode regression sweep and
+              final operator polish.
             </p>
           </Panel>
 
           <Panel
             eyebrow="Journal"
-            title="Recent persisted operator journal"
+            title="Persisted operator journal and audit trail"
             detail={`${formatInteger(snapshot.journal.total_records)} total record(s)`}
           >
+            <div className="metric-row">
+              <Metric label="Info" value={formatInteger(journalSummary.infoCount)} />
+              <Metric label="Warnings" value={formatInteger(journalSummary.warningCount)} />
+              <Metric label="Errors" value={formatInteger(journalSummary.errorCount)} />
+              <Metric
+                label="Dashboard actions"
+                value={formatInteger(journalSummary.dashboardCount)}
+              />
+            </div>
+            {journalSummary.categories.length ? (
+              <div className="pill-row">
+                {journalSummary.categories.map((entry) => (
+                  <Pill
+                    key={entry.category}
+                    label={`${entry.category} ${formatInteger(entry.count)}`}
+                    tone="info"
+                  />
+                ))}
+              </div>
+            ) : null}
             {journalRecords.length ? (
               <ul className="event-list">
                 {journalRecords.map((record) => (
@@ -2245,16 +2852,13 @@ function App() {
                       <strong>{`${record.category}:${record.action}`}</strong>
                       <Pill
                         label={formatDateTime(record.occurred_at)}
-                        tone={
-                          record.severity === "error"
-                            ? "danger"
-                            : record.severity === "warning"
-                              ? "warning"
-                              : "info"
-                        }
+                        tone={journalRecordTone(record)}
                       />
                     </div>
-                    <p>{compactJson(record.payload)}</p>
+                    <p className="event-list__meta">
+                      {`Source ${formatMode(record.source)} | Severity ${formatMode(record.severity)}`}
+                    </p>
+                    <pre className="payload-block">{prettyJson(record.payload)}</pre>
                   </li>
                 ))}
               </ul>

@@ -27,8 +27,10 @@ The current dashboard now covers:
 - local `/events` WebSocket operator feed for journal, command, readiness, history, and health updates
 - account routing
 - grouped readiness checks
-- broker, feed, storage, and host health
-- history, PnL, recent trade summaries, persisted journal records, working-order, fill, and latest latency summaries
+- broker, feed, storage, and host health with connectivity clocks and feed/storage detail
+- history and PnL drill-downs including a projected PnL trend, richer trade ledger, working-order/fill views, and floating snapshot context
+- persisted journal audit-trail drill-downs with severity/category summaries and formatted payloads
+- latency detail views including per-stage trade-path timing and host-correlation context
 
 ## Local Development
 

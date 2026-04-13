@@ -941,10 +941,14 @@ describe("App", () => {
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
     expect(await screen.findByText("Validation passed")).toBeInTheDocument();
     expect(await screen.findByText("Grouped pre-arm checks")).toBeInTheDocument();
+    expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
+    expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
+    expect(await screen.findByText("P&L trend")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
     expect(await screen.findByText("Recent fills")).toBeInTheDocument();
-    expect(await screen.findByText("Recent trades")).toBeInTheDocument();
-    expect(await screen.findByText("Recent persisted operator journal")).toBeInTheDocument();
+    expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
+    expect(await screen.findByText("Latency stage breakdown")).toBeInTheDocument();
+    expect(await screen.findByText("Persisted operator journal and audit trail")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
     expect(await screen.findByText(/Fill fill-1 \| order 8102/)).toBeInTheDocument();
     expect(await screen.findByText(/Trade trade-1/)).toBeInTheDocument();
@@ -955,6 +959,7 @@ describe("App", () => {
       ),
     ).toBeInTheDocument();
     expect(await screen.findByText("+$97.00")).toBeInTheDocument();
+    expect(await screen.findByText("100.0%")).toBeInTheDocument();
   });
 
   it("surfaces reconnect and shutdown review warnings when they are active", async () => {
@@ -1000,7 +1005,7 @@ describe("App", () => {
     expect(await screen.findAllByText("runtime:shutdown_blocked")).toHaveLength(2);
     expect(
       await screen.findAllByText('{"reason":"shutdown blocked pending explicit review"}'),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it("submits reconnect and shutdown review actions through runtime lifecycle commands", async () => {
