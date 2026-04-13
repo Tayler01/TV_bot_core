@@ -3630,7 +3630,8 @@ mod tests {
         manager
     }
 
-    async fn sample_session_manager_with_reconnect_review_required(
+    async fn sample_session_manager_with_reconnect_review_required_for_snapshot(
+        reconnect_snapshot: TradovateSyncSnapshot,
     ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
         let auth_api = TestAuthApi {
             token: Arc::new(StdMutex::new(Some(sample_token()))),
@@ -3646,7 +3647,7 @@ mod tests {
         let sync_api = TestSyncApi {
             snapshots: Arc::new(StdMutex::new(VecDeque::from([
                 sync_snapshot_without_open_exposure(),
-                sync_snapshot_with_open_position(),
+                reconnect_snapshot,
             ]))),
             events: Arc::new(StdMutex::new(VecDeque::from([
                 TradovateSyncEvent::Disconnected {
@@ -3709,6 +3710,22 @@ mod tests {
             .expect("reconnect sync should connect");
 
         manager
+    }
+
+    async fn sample_session_manager_with_reconnect_review_required(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        sample_session_manager_with_reconnect_review_required_for_snapshot(
+            sync_snapshot_with_open_position(),
+        )
+        .await
+    }
+
+    async fn sample_session_manager_with_contract_reconnect_review_required(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        sample_session_manager_with_reconnect_review_required_for_snapshot(
+            sync_snapshot_with_contract_position(),
+        )
+        .await
     }
 
     fn test_history() -> RuntimeHistoryRecorder {
@@ -6652,6 +6669,246 @@ selection:
             reconnect_resolution.payload["working_order_count"].as_u64(),
             Some(1)
         );
+    }
+
+    #[tokio::test]
+    async fn paper_reconnect_review_close_position_dispatches_flatten_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager_with_contract_reconnect_review_required().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state);
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        for command in [
+            RuntimeLifecycleCommand::LoadStrategy {
+                path: strategy_path.clone(),
+            },
+            RuntimeLifecycleCommand::SetMode {
+                mode: RuntimeMode::Paper,
+            },
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper reconnect close setup request",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect close status request",
+        )
+        .await;
+        assert_eq!(status_before.status(), StatusCode::OK);
+        let status_before_body = status_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_body).expect("status json should parse");
+        assert_eq!(status_before.mode, RuntimeMode::Paper);
+        assert_eq!(
+            status_before.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(status_before.reconnect_review.required);
+        assert_eq!(status_before.reconnect_review.last_decision, None);
+        assert_eq!(status_before.reconnect_review.open_position_count, 1);
+        assert_eq!(status_before.reconnect_review.working_order_count, 1);
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::ReviewRequired)
+        );
+        assert_eq!(
+            status_before
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.reconnect_count),
+            Some(1)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect close history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                            decision: RuntimeReconnectDecision::ClosePosition,
+                            contract_id: None,
+                            reason: Some("close paper position after reconnect".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper reconnect close request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "reconnect close command dispatched"
+        );
+        assert_eq!(lifecycle_response.status.mode, RuntimeMode::Paper);
+        assert_eq!(
+            lifecycle_response.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(lifecycle_response.status.reconnect_review.required);
+        assert_eq!(
+            lifecycle_response.status.reconnect_review.last_decision,
+            None
+        );
+        let command_result = lifecycle_response
+            .command_result
+            .expect("reconnect close should return a command result");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(liquidations.len(), 1);
+        let liquidation = &liquidations[0];
+        assert_eq!(liquidation.context.account_id, 101);
+        assert_eq!(liquidation.context.account_spec, "paper-primary");
+        assert_eq!(liquidation.contract_id, 4444);
+        drop(liquidations);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper reconnect close history after request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+        assert!(history_after.projection.latest_order.is_some());
+
+        let journal_records = journal.list().expect("journal should list records");
+        let journal_actions = journal_records
+            .iter()
+            .map(|record| record.action.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            journal_actions,
+            vec![
+                "reconnect_review_close_requested".to_owned(),
+                "intent_received".to_owned(),
+                "decision".to_owned(),
+                "dispatch_succeeded".to_owned(),
+            ]
+        );
+        let reconnect_close = journal_records
+            .iter()
+            .find(|record| record.action == "reconnect_review_close_requested")
+            .expect("reconnect close request should be journaled");
+        assert_eq!(reconnect_close.category, "broker");
+        assert_eq!(reconnect_close.source, ActionSource::Dashboard);
+        assert_eq!(
+            reconnect_close.payload["reason"].as_str(),
+            Some("close paper position after reconnect")
+        );
+        assert_eq!(reconnect_close.payload["contract_id"].as_i64(), Some(4444));
+
+        let _ = fs::remove_file(strategy_path);
     }
 
     #[tokio::test]

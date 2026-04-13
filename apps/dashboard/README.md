@@ -54,4 +54,4 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 
 ## Follow-up Note
 
-After this richer operator-surface slice, circle back to reconnect hardening and the broader reconnect-review/operator-resolution pass before calling the dashboard and paper campaign complete.
+Reconnect hardening now includes paper reconnect `close_position` and `reattach_bot_management` coverage through the real runtime host, but the broader paper-mode acceptance sweep still remains before calling the dashboard and paper campaign complete.

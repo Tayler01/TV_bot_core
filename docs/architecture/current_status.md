@@ -10,7 +10,7 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 3 foundations are substantially in place.
 - Phase 4 foundations are substantially in place.
 - Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented and the dashboard now partially wired for operator overview, lifecycle control, strategy-library upload/validation, event streaming, reconnect/shutdown safety actions, manual entry, persisted journal visibility, and close/cancel plus open-order/fill and recent-trade views, while the remaining dashboard polish is still incomplete.
-- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for reconnect-close and signal-time shutdown blocking.
+- Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for paper reconnect `close_position` and `reattach_bot_management` plus signal-time shutdown blocking.
 - Phase 7 is mostly open.
 
 V1 is not release-ready yet because the dashboard and the remaining full end-to-end paper-trading acceptance campaign are still unfinished.
@@ -40,7 +40,7 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 - Safety-critical HTTP mapping for execution-planning failures so blocked/manual entry paths return operator-facing conflicts or precondition responses instead of internal-server-error responses
 - Shutdown-with-open-position safety flow through the runtime host, including signal-time blocking, explicit flatten-first or leave-broker-protected decisions, and status projection of pending shutdown review state
 - Reconnect/open-position recovery review flow through the runtime host and CLI, including explicit leave-broker-protected or reattach acknowledgement and close-position dispatch through the existing audited flatten path
-- Targeted acceptance coverage for execution-engine no-new-entry blocking, paper-account scale-in dispatch, reconnect-review close-position flatten dispatch, and signal-time shutdown review blocking
+- Targeted acceptance coverage for execution-engine no-new-entry blocking, paper-account scale-in dispatch, paper reconnect-review `close_position` and `reattach_bot_management` flows through the runtime host, and signal-time shutdown review blocking
 - Dashboard overview and control-center slices in `apps/dashboard`, including host-backed lifecycle commands, strategy-library upload/browsing and strict strategy validation through `/strategies`, `/strategies/upload`, and `/strategies/validate`, a local `/events` operator feed, dashboard-driven reconnect/shutdown review actions, manual entry, close-position/cancel-working-order controls, and richer `/history` plus `/journal` trade/order/fill/operator projections
 
 ## Must Finish Before Advancing Deeper Into Phase 5 And Phase 6
@@ -65,7 +65,7 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 
 - Cross-platform packaging
 - Hardening pass
-- Circle back to reconnect hardening after the first dashboard slice, especially the broader paper reconnect/operator-resolution campaign beyond the current host-level acceptance coverage
+- Final reconnect hardening sweep inside the remaining paper-trading campaign, especially the paper `leave_broker_protected` operator path and broader restart/reconnect regression coverage beyond the current host-level acceptance set
 - Paper-trading test campaigns
 - Operational docs and runbooks
 
@@ -74,7 +74,7 @@ V1 is not release-ready yet because the dashboard and the remaining full end-to-
 - Strategy-system acceptance is substantially met for V1 built-in rule/runtime behavior, and host-backed strategy library upload, validation, and load workflows are now exposed to the dashboard.
 - Runtime-host acceptance is substantially met at the transport layer, and broker plus market-data plus active storage/journal backend state are now surfaced through status/readiness while the richer trading-history projection is available through `/history` and the CLI.
 - Runtime-host observability acceptance is substantially met for persisted latency/health snapshots, host `/health` and `/status` projection, and operator-facing conflict/precondition mapping of safety-blocked execution paths.
-- Restart/reconnect and shutdown-with-open-position acceptance are now substantially met at the host and execution layers, including explicit close-position review routing and signal-time shutdown blocking coverage.
+- Restart/reconnect and shutdown-with-open-position acceptance are now substantially met at the host and execution layers, including explicit paper reconnect `close_position` and `reattach_bot_management` routing plus signal-time shutdown blocking coverage.
 - Dashboard acceptance is not met yet, but the local overview, lifecycle controls, strategy-library upload/validation surface, event feed, reconnect/shutdown safety controls, manual entry, persisted journal visibility, and close/cancel plus open-order/fill and recent-trade surfaces are now wired through the host.
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.
