@@ -6,6 +6,7 @@ mod websocket;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tv_bot_broker_tradovate::{
@@ -13,8 +14,9 @@ use tv_bot_broker_tradovate::{
     TradovateSessionManager, TradovateSyncApi,
 };
 use tv_bot_core_types::{
-    ActionSource, ArmReadinessReport, ArmState, BrokerStatusSnapshot, InstrumentMapping,
-    RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord, WarmupStatus,
+    ActionSource, ArmReadinessReport, ArmState, BrokerStatusSnapshot, EventJournalRecord,
+    InstrumentMapping, RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot,
+    TradePathLatencyRecord, TradeSide, WarmupStatus,
 };
 use tv_bot_execution_engine::{ExecutionDispatchError, ExecutionEngineError};
 use tv_bot_journal::EventJournal;
@@ -170,6 +172,13 @@ pub struct RuntimeHistorySnapshot {
     pub projection: ProjectedTradingHistoryState,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeJournalSnapshot {
+    pub total_records: usize,
+    pub records: Vec<EventJournalRecord>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeStrategyIssueSeverity {
@@ -297,6 +306,14 @@ pub enum RuntimeLifecycleCommand {
     },
     ClosePosition {
         contract_id: Option<i64>,
+        reason: Option<String>,
+    },
+    ManualEntry {
+        side: TradeSide,
+        quantity: u32,
+        tick_size: Decimal,
+        entry_reference_price: Decimal,
+        tick_value_usd: Option<Decimal>,
         reason: Option<String>,
     },
     CancelWorkingOrders {

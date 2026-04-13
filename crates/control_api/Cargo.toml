@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+rust_decimal.workspace = true
 serde.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
@@ -21,6 +22,5 @@ tv-bot-runtime-kernel = { path = "../runtime_kernel" }
 tv-bot-state-store = { path = "../state_store" }
 
 [dev-dependencies]
-rust_decimal.workspace = true
 serde_json.workspace = true
 tv-bot-risk-engine = { path = "../risk_engine" }

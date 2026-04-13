@@ -13,9 +13,9 @@ use tv_bot_control_api::{
     RuntimeStorageStatus,
 };
 use tv_bot_core_types::{
-    BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerStatusSnapshot,
-    ExecutionIntent, InstrumentMapping, ReadinessCheckStatus, RuntimeMode, SystemHealthSnapshot,
-    TradePathLatencyRecord, WarmupStatus,
+    BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerPreference,
+    BrokerStatusSnapshot, ExecutionIntent, InstrumentMapping, ReadinessCheckStatus, RuntimeMode,
+    SystemHealthSnapshot, TradePathLatencyRecord, TradeSide, WarmupStatus,
 };
 use tv_bot_execution_engine::{
     ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,
@@ -314,6 +314,7 @@ impl RuntimeOperatorState {
             RuntimeLifecycleCommand::ClosePosition { .. } => {
                 Ok("close position prepared".to_owned())
             }
+            RuntimeLifecycleCommand::ManualEntry { .. } => Ok("manual entry prepared".to_owned()),
             RuntimeLifecycleCommand::CancelWorkingOrders { .. } => {
                 Ok("working-order cancellation prepared".to_owned())
             }
@@ -335,6 +336,101 @@ impl RuntimeOperatorState {
             resolved_contract_id,
             reason.unwrap_or_else(|| "manual close position".to_owned()),
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_manual_entry_request(
+        &self,
+        context: &RuntimeStatusContext,
+        source: ManualCommandSource,
+        side: TradeSide,
+        quantity: u32,
+        tick_size: Decimal,
+        entry_reference_price: Decimal,
+        tick_value_usd: Option<Decimal>,
+        reason: Option<String>,
+    ) -> Result<HttpCommandRequest, RuntimeOperatorError> {
+        if quantity == 0 {
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "manual entry quantity must be greater than zero".to_owned(),
+            ));
+        }
+
+        if tick_size <= Decimal::ZERO {
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "manual entry tick size must be greater than zero".to_owned(),
+            ));
+        }
+
+        if entry_reference_price <= Decimal::ZERO {
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "manual entry reference price must be greater than zero".to_owned(),
+            ));
+        }
+
+        if tick_value_usd.is_some_and(|value| value <= Decimal::ZERO) {
+            return Err(RuntimeOperatorError::InvalidRequest(
+                "manual entry tick value must be greater than zero when provided".to_owned(),
+            ));
+        }
+
+        let strategy = self.loaded_strategy()?;
+        let tradovate_symbol = self.loaded_market_symbol(context)?;
+        let current_position = self.active_position_for_symbol(context, &tradovate_symbol, None);
+        let active_contract_id = current_position.as_ref().and_then(position_contract_id);
+
+        Ok(HttpCommandRequest {
+            command: ControlApiCommand::ManualIntent {
+                source,
+                request: RuntimeExecutionRequest {
+                    mode: self.runtime.current_mode(),
+                    action_source: source.into(),
+                    execution: ExecutionRequest {
+                        strategy: strategy.compiled.clone(),
+                        instrument: ExecutionInstrumentContext {
+                            tradovate_symbol: tradovate_symbol.clone(),
+                            tick_size,
+                            entry_reference_price: Some(entry_reference_price),
+                            active_contract_id,
+                        },
+                        state: ExecutionStateContext {
+                            // Sanitization re-applies runtime submission and broker snapshot
+                            // guards before dispatch, but the entry builder starts from the
+                            // loaded market context so the request stays strategy-agnostic.
+                            runtime_can_submit_orders: true,
+                            new_entries_allowed: true,
+                            current_position: current_position.clone(),
+                            working_orders: self
+                                .working_orders_for_symbol(context, &tradovate_symbol),
+                        },
+                        intent: ExecutionIntent::Enter {
+                            side,
+                            order_type: strategy.compiled.entry_rules.entry_order_type,
+                            quantity,
+                            protective_brackets_expected: self
+                                .manual_entry_uses_broker_side_protection(&strategy.compiled),
+                            reason: reason.unwrap_or_else(|| "dashboard manual entry".to_owned()),
+                        },
+                    },
+                    risk_instrument: RiskInstrumentContext { tick_value_usd },
+                    risk_state: RiskStateContext {
+                        current_position: current_position.clone(),
+                        unrealized_pnl: current_position
+                            .as_ref()
+                            .and_then(|position| position.unrealized_pnl),
+                        hard_override_active: self.runtime.hard_override_active(),
+                        ..RiskStateContext {
+                            trades_today: 0,
+                            consecutive_losses: 0,
+                            current_position: None,
+                            unrealized_pnl: None,
+                            broker_support: BrokerProtectionSupport::default(),
+                            hard_override_active: false,
+                        }
+                    },
+                },
+            },
+        })
     }
 
     pub fn build_cancel_working_orders_request(
@@ -561,6 +657,7 @@ impl RuntimeOperatorState {
                 request.risk_state.unrealized_pnl = current_position
                     .as_ref()
                     .and_then(|position| position.unrealized_pnl);
+                request.risk_state.broker_support = self.broker_protection_support(context);
             }
         }
 
@@ -646,6 +743,44 @@ impl RuntimeOperatorState {
         }
 
         Ok(strategy.compiled.market.market.clone())
+    }
+
+    fn broker_protection_support(&self, context: &RuntimeStatusContext) -> BrokerProtectionSupport {
+        // The local operator only knows how to drive Tradovate in V1. Until broker
+        // status exposes structured capability flags, infer the supported broker-side
+        // protections from the active provider so risk decisions can stay aligned with
+        // the real execution path.
+        let tradovate_active = context
+            .broker_status
+            .as_ref()
+            .is_some_and(|status| status.provider.eq_ignore_ascii_case("tradovate"));
+
+        if tradovate_active {
+            BrokerProtectionSupport {
+                stop_loss: true,
+                take_profit: true,
+                trailing_stop: true,
+                daily_loss_limit: true,
+            }
+        } else {
+            BrokerProtectionSupport::default()
+        }
+    }
+
+    fn manual_entry_uses_broker_side_protection(
+        &self,
+        strategy: &tv_bot_core_types::CompiledStrategy,
+    ) -> bool {
+        let stop_configured = strategy.trade_management.initial_stop_ticks > 0;
+        let take_profit_configured = strategy.trade_management.take_profit_ticks > 0;
+
+        let broker_prefers_stop =
+            strategy.execution.broker_preferences.stop_loss != BrokerPreference::BotAllowed;
+        let broker_prefers_take_profit =
+            strategy.execution.broker_preferences.take_profit != BrokerPreference::BotAllowed;
+
+        (stop_configured && broker_prefers_stop)
+            || (take_profit_configured && broker_prefers_take_profit)
     }
 
     fn risk_summary(&self) -> String {
@@ -866,7 +1001,8 @@ fn position_contract_id(position: &BrokerPositionSnapshot) -> Option<i64> {
 }
 
 fn compile_loaded_strategy(path: PathBuf, compilation: StrategyCompilation) -> LoadedStrategyState {
-    let resolver = FrontMonthResolver::with_system_clock(StaticContractChainProvider::new());
+    let resolver =
+        FrontMonthResolver::with_system_clock(StaticContractChainProvider::with_builtin_chains());
     let (instrument_mapping, instrument_resolution_error) =
         match resolver.resolve_for_strategy(&compilation.compiled) {
             Ok(mapping) => (Some(mapping), None),
@@ -1604,6 +1740,79 @@ mod tests {
     }
 
     #[test]
+    fn manual_entry_request_uses_loaded_strategy_market_context() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+
+        let tradovate_symbol = operator
+            .loaded_strategy
+            .as_ref()
+            .map(|strategy| {
+                strategy
+                    .instrument_mapping
+                    .as_ref()
+                    .map(|mapping| mapping.tradovate_symbol.clone())
+                    .unwrap_or_else(|| strategy.compiled.market.market.clone())
+            })
+            .expect("strategy should be loaded");
+        let mut context = sample_context();
+        context.working_orders = vec![sample_working_order(&tradovate_symbol)];
+
+        let request = operator
+            .build_manual_entry_request(
+                &context,
+                ManualCommandSource::Dashboard,
+                TradeSide::Buy,
+                2,
+                Decimal::new(10, 1),
+                Decimal::new(238_510, 2),
+                Some(Decimal::new(10, 0)),
+                Some("dashboard momentum entry".to_owned()),
+            )
+            .expect("manual entry request should build");
+
+        match request.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert_eq!(request.execution.instrument.tradovate_symbol, "GCM2026");
+                assert_eq!(request.execution.instrument.tick_size, Decimal::new(10, 1));
+                assert_eq!(
+                    request.execution.instrument.entry_reference_price,
+                    Some(Decimal::new(238_510, 2))
+                );
+                assert_eq!(request.execution.state.working_orders.len(), 1);
+                assert_eq!(
+                    request.risk_instrument.tick_value_usd,
+                    Some(Decimal::new(10, 0))
+                );
+
+                assert_eq!(
+                    request.execution.intent,
+                    ExecutionIntent::Enter {
+                        side: TradeSide::Buy,
+                        order_type: EntryOrderType::Market,
+                        quantity: 2,
+                        protective_brackets_expected: true,
+                        reason: "dashboard momentum entry".to_owned(),
+                    }
+                );
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
     fn cancel_working_orders_request_uses_loaded_market_working_orders() {
         let strategy_path = temp_strategy_path();
         write_strategy_file(&strategy_path);
@@ -1857,7 +2066,7 @@ mod tests {
         assert!(
             journal_actions.starts_with(&["intent_received".to_owned(), "decision".to_owned(),])
         );
-        assert!(journal_actions
+        assert!(!journal_actions
             .iter()
             .any(|action| action == "hard_override_used"));
         assert!(journal_actions

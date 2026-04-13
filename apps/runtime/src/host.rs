@@ -37,7 +37,7 @@ use tv_bot_config::AppConfig;
 use tv_bot_control_api::{
     ControlApiCommand, ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest,
     HttpCommandResponse, HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
-    RuntimeCommandDispatcher, RuntimeHistorySnapshot, RuntimeJournalStatus,
+    RuntimeCommandDispatcher, RuntimeHistorySnapshot, RuntimeJournalSnapshot, RuntimeJournalStatus,
     RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
     RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
     RuntimeReconnectReviewStatus, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
@@ -81,6 +81,7 @@ const MARKET_DATA_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const HISTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_REVIEW_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const JOURNAL_ROUTE_LIMIT: usize = 50;
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -141,6 +142,7 @@ struct ShutdownReviewState {
 trait RuntimeDispatcherHandle: RuntimeCommandDispatcher {
     fn dispatch_snapshot(&self) -> RuntimeBrokerSnapshot;
     fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError>;
+    fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError>;
     fn acknowledge_reconnect_review(
         &mut self,
         decision: RuntimeReconnectDecision,
@@ -178,6 +180,10 @@ impl BoxedDispatcher {
 
     fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError> {
         self.inner.append_journal_record(record)
+    }
+
+    fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError> {
+        self.inner.list_journal_records()
     }
 
     fn acknowledge_reconnect_review(
@@ -299,6 +305,10 @@ impl RuntimeDispatcherHandle for LiveRuntimeDispatcher {
 
     fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError> {
         self.journal().append(record)
+    }
+
+    fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError> {
+        self.journal().list()
     }
 
     fn acknowledge_reconnect_review(
@@ -568,6 +578,10 @@ impl RuntimeDispatcherHandle for UnavailableRuntimeCommandDispatcher {
         Ok(())
     }
 
+    fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError> {
+        Ok(Vec::new())
+    }
+
     fn acknowledge_reconnect_review(
         &mut self,
         _decision: RuntimeReconnectDecision,
@@ -790,6 +804,7 @@ pub fn build_http_router(state: RuntimeHostState) -> Router {
         .route("/status", get(status_handler))
         .route("/readiness", get(readiness_handler))
         .route("/history", get(history_handler))
+        .route("/journal", get(journal_handler))
         .route("/strategies", get(strategy_library_handler))
         .route("/strategies/validate", post(strategy_validation_handler))
         .route("/runtime/commands", post(runtime_command_handler))
@@ -1019,6 +1034,44 @@ async fn history_handler(State(state): State<RuntimeHostState>) -> Response {
     }
 }
 
+async fn journal_handler(State(state): State<RuntimeHostState>) -> Response {
+    let records_result = {
+        let handler = state.http_handler.lock().await;
+        handler.dispatcher().list_journal_records()
+    };
+
+    match records_result {
+        Ok(records) => {
+            let total_records = records.len();
+            let records = records
+                .into_iter()
+                .rev()
+                .take(JOURNAL_ROUTE_LIMIT)
+                .collect::<Vec<_>>();
+
+            Json(RuntimeJournalSnapshot {
+                total_records,
+                records,
+            })
+            .into_response()
+        }
+        Err(error) => {
+            let _ = state.health_supervisor.note_error();
+            error!(?error, "runtime host journal handler failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(HttpCommandResponse {
+                    status_code: HttpStatusCode::InternalServerError,
+                    body: tv_bot_control_api::HttpResponseBody::Error {
+                        message: error.to_string(),
+                    },
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn strategy_library_handler(State(state): State<RuntimeHostState>) -> Response {
     let roots = state.strategy_library_roots.clone();
 
@@ -1115,6 +1168,26 @@ async fn runtime_command_handler(
             reason,
         } => {
             close_position_runtime_command_handler(state, request.source, contract_id, reason).await
+        }
+        RuntimeLifecycleCommand::ManualEntry {
+            side,
+            quantity,
+            tick_size,
+            entry_reference_price,
+            tick_value_usd,
+            reason,
+        } => {
+            manual_entry_runtime_command_handler(
+                state,
+                request.source,
+                side,
+                quantity,
+                tick_size,
+                entry_reference_price,
+                tick_value_usd,
+                reason,
+            )
+            .await
         }
         RuntimeLifecycleCommand::CancelWorkingOrders { reason } => {
             cancel_working_orders_runtime_command_handler(state, request.source, reason).await
@@ -1271,6 +1344,43 @@ async fn close_position_runtime_command_handler(
         &state,
         request,
         "close position command dispatched".to_owned(),
+    )
+    .await
+}
+
+async fn manual_entry_runtime_command_handler(
+    state: RuntimeHostState,
+    source: tv_bot_control_api::ManualCommandSource,
+    side: tv_bot_core_types::TradeSide,
+    quantity: u32,
+    tick_size: rust_decimal::Decimal,
+    entry_reference_price: rust_decimal::Decimal,
+    tick_value_usd: Option<rust_decimal::Decimal>,
+    reason: Option<String>,
+) -> Response {
+    let context = status_context(&state, true).await;
+    let request_result = {
+        let operator = state.operator_state.lock().await;
+        operator.build_manual_entry_request(
+            &context,
+            source,
+            side,
+            quantity,
+            tick_size,
+            entry_reference_price,
+            tick_value_usd,
+            reason,
+        )
+    };
+    let request = match request_result {
+        Ok(request) => request,
+        Err(error) => return runtime_lifecycle_error_response(&state, error).await,
+    };
+
+    dispatch_lifecycle_execution_request(
+        &state,
+        request,
+        "manual entry command dispatched".to_owned(),
     )
     .await
 }
@@ -1566,6 +1676,16 @@ async fn dispatch_lifecycle_execution_request(
     request: HttpCommandRequest,
     success_message: String,
 ) -> Response {
+    let context = status_context(state, true).await;
+    let request = {
+        let operator = state.operator_state.lock().await;
+        operator.sanitize_command_request(&context, request)
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return runtime_lifecycle_error_response(state, error).await,
+    };
+
     let (status_code, command_result, error_message) =
         match execute_lifecycle_execution_request(state, request).await {
             Ok(result) => result,
@@ -2607,6 +2727,7 @@ async fn sync_history_for_lifecycle_command(
         | RuntimeLifecycleCommand::ResolveReconnectReview { .. }
         | RuntimeLifecycleCommand::Shutdown { .. }
         | RuntimeLifecycleCommand::ClosePosition { .. }
+        | RuntimeLifecycleCommand::ManualEntry { .. }
         | RuntimeLifecycleCommand::CancelWorkingOrders { .. }
         | RuntimeLifecycleCommand::Flatten { .. } => None,
     };
@@ -2750,6 +2871,7 @@ mod tests {
     use tv_bot_config::{AppConfig, MapEnvironment};
     use tv_bot_control_api::{
         ControlApiCommandResult, ControlApiCommandStatus, ManualCommandSource,
+        RuntimeJournalSnapshot,
     };
     use tv_bot_core_types::{
         ActionSource, ArmState, BreakEvenRule, BrokerOrderUpdate, BrokerPositionSnapshot,
@@ -2988,6 +3110,10 @@ mod tests {
             Ok(())
         }
 
+        fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError> {
+            Ok(Vec::new())
+        }
+
         fn acknowledge_reconnect_review(
             &mut self,
             decision: RuntimeReconnectDecision,
@@ -3029,6 +3155,10 @@ mod tests {
 
         fn append_journal_record(&self, record: EventJournalRecord) -> Result<(), JournalError> {
             self.inner.journal().append(record)
+        }
+
+        fn list_journal_records(&self) -> Result<Vec<EventJournalRecord>, JournalError> {
+            self.inner.journal().list()
         }
 
         fn acknowledge_reconnect_review(
@@ -3115,6 +3245,58 @@ mod tests {
             mismatch_reason: None,
             detail: "synced clean".to_owned(),
         }
+    }
+
+    async fn sample_session_manager(
+    ) -> TradovateSessionManager<TestAuthApi, TestAccountApi, TestSyncApi> {
+        let auth_api = TestAuthApi {
+            token: Arc::new(StdMutex::new(Some(sample_token()))),
+        };
+        let account_api = TestAccountApi {
+            accounts: Arc::new(vec![TradovateAccount {
+                account_id: 101,
+                account_name: "paper-primary".to_owned(),
+                nickname: None,
+                active: true,
+            }]),
+        };
+        let sync_api = TestSyncApi {
+            snapshots: Arc::new(StdMutex::new(VecDeque::from([
+                sync_snapshot_without_open_exposure(),
+            ]))),
+            events: Arc::new(StdMutex::new(VecDeque::new())),
+        };
+
+        let mut manager = TradovateSessionManager::with_system_clock(
+            TradovateSessionConfig::new(
+                tv_bot_core_types::BrokerEnvironment::Demo,
+                "https://demo.tradovateapi.com/v1",
+                "wss://demo.tradovateapi.com/v1/websocket",
+            )
+            .expect("config should be valid"),
+            sample_credentials(),
+            TradovateRoutingPreferences {
+                paper_account_name: Some("paper-primary".to_owned()),
+                live_account_name: None,
+            },
+            auth_api,
+            account_api,
+            sync_api,
+        )
+        .expect("manager should build");
+
+        manager.authenticate().await.expect("auth should succeed");
+        manager
+            .select_account_for_mode(&RuntimeMode::Paper)
+            .await
+            .expect("paper account should select");
+        manager
+            .connect_user_sync()
+            .await
+            .expect("sync should connect");
+        manager.acknowledge_reconnect_review(TradovateReconnectDecision::LeaveBrokerProtected);
+
+        manager
     }
 
     async fn sample_session_manager_with_open_position(
@@ -4685,7 +4867,7 @@ selection:
         let health_supervisor = test_health_supervisor();
         let execution_api = TestExecutionApi::default();
         let journal = InMemoryJournal::new();
-        let state = build_kernel_backed_state(
+        let mut state = build_kernel_backed_state(
             execution_api,
             journal,
             history.clone(),
@@ -4693,6 +4875,10 @@ selection:
             health_supervisor.clone(),
         )
         .await;
+        state.storage_status.fallback_activated = true;
+        state.storage_status.allow_runtime_fallback = true;
+        state.storage_status.detail =
+            "primary Postgres persistence is unavailable; SQLite fallback is active".to_owned();
         let app = build_http_router(state.clone());
         let strategy_path = temp_strategy_path();
         write_strategy_file(&strategy_path);
@@ -5327,6 +5513,254 @@ selection:
         );
 
         let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn manual_entry_command_dispatches_broker_side_brackets_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+            (
+                "arm runtime request",
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("manual paper entry".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "manual entry runtime command request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let lifecycle_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&body).expect("response json should parse");
+
+        assert_eq!(lifecycle_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            lifecycle_response.message,
+            "manual entry command dispatched"
+        );
+        let command_result = lifecycle_response
+            .command_result
+            .expect("manual entry should return a command result");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let oso = &place_osos[0];
+        assert_eq!(oso.context.account_id, 101);
+        assert_eq!(oso.context.account_spec, "paper-primary");
+        assert_eq!(oso.order.symbol, "GCM2026");
+        assert_eq!(oso.order.quantity, 1);
+        assert_eq!(
+            oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(oso.order.brackets.len(), 2);
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("stop_loss") && bracket.stop_price.is_some()
+        }));
+        assert!(oso.order.brackets.iter().any(|bracket| {
+            bracket.text.as_deref() == Some("take_profit") && bracket.limit_price.is_some()
+        }));
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let journal_actions = journal
+            .list()
+            .expect("journal should list records")
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>();
+        assert!(journal_actions.contains(&"intent_received".to_owned()));
+        assert!(journal_actions.contains(&"decision".to_owned()));
+        assert!(journal_actions.contains(&"dispatch_succeeded".to_owned()));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn journal_route_returns_recent_persisted_records() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+
+        for (event_id, action, occurred_at) in [
+            ("evt-1", "intent_received", "2026-04-12T20:10:00Z"),
+            ("evt-2", "decision", "2026-04-12T20:10:01Z"),
+            ("evt-3", "dispatch_succeeded", "2026-04-12T20:10:02Z"),
+        ] {
+            journal
+                .append(EventJournalRecord {
+                    event_id: event_id.to_owned(),
+                    category: "execution".to_owned(),
+                    action: action.to_owned(),
+                    source: ActionSource::Dashboard,
+                    severity: tv_bot_core_types::EventSeverity::Info,
+                    occurred_at: DateTime::parse_from_rfc3339(occurred_at)
+                        .expect("timestamp should parse")
+                        .with_timezone(&Utc),
+                    payload: serde_json::json!({
+                        "event_id": event_id,
+                    }),
+                })
+                .expect("journal append should succeed");
+        }
+
+        let app = build_http_router(build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api,
+            journal,
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/journal")
+                .body(Body::empty())
+                .expect("request should build"),
+            "journal route request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let journal_snapshot: RuntimeJournalSnapshot =
+            serde_json::from_slice(&body).expect("journal json should parse");
+
+        assert_eq!(journal_snapshot.total_records, 3);
+        assert_eq!(journal_snapshot.records.len(), 3);
+        assert_eq!(journal_snapshot.records[0].event_id, "evt-3");
+        assert_eq!(journal_snapshot.records[1].event_id, "evt-2");
+        assert_eq!(journal_snapshot.records[2].event_id, "evt-1");
     }
 
     #[tokio::test]

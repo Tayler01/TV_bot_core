@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use thiserror::Error;
 use tv_bot_core_types::{
     CompiledStrategy, ContractMode, ContractMonth, DatabentoInstrument, DatabentoSymbology,
@@ -400,6 +400,10 @@ impl StaticContractChainProvider {
         Self::default()
     }
 
+    pub fn with_builtin_chains() -> Self {
+        Self::with_reference_date(Utc::now().date_naive())
+    }
+
     pub fn insert_chain(
         &mut self,
         market_family: &str,
@@ -408,6 +412,76 @@ impl StaticContractChainProvider {
         self.chains
             .insert(normalize_market_key(market_family), chain)
     }
+
+    fn with_reference_date(reference_date: NaiveDate) -> Self {
+        let mut provider = Self::new();
+        let year = reference_date.year();
+
+        provider.insert_chain(
+            "gold",
+            build_contract_chain("GC", &[2, 4, 6, 8, 10, 12], year, 2, 28),
+        );
+        provider.insert_chain(
+            "silver",
+            build_contract_chain("SI", &[3, 5, 7, 9, 12], year, 2, 26),
+        );
+        provider.insert_chain(
+            "crude_oil",
+            build_contract_chain("CL", &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], year, 2, 20),
+        );
+        provider.insert_chain(
+            "es",
+            build_contract_chain("ES", &[3, 6, 9, 12], year, 2, 15),
+        );
+        provider.insert_chain(
+            "nq",
+            build_contract_chain("NQ", &[3, 6, 9, 12], year, 2, 15),
+        );
+        provider.insert_chain(
+            "ym",
+            build_contract_chain("YM", &[3, 6, 9, 12], year, 2, 15),
+        );
+        provider.insert_chain(
+            "rty",
+            build_contract_chain("RTY", &[3, 6, 9, 12], year, 2, 15),
+        );
+
+        provider
+    }
+}
+
+fn build_contract_chain(
+    symbol_root: &str,
+    cycle_months: &[u8],
+    start_year: i32,
+    years_ahead: i32,
+    rollover_day: u32,
+) -> Vec<ContractListing> {
+    let mut chain = Vec::new();
+
+    for year in start_year..=(start_year + years_ahead) {
+        for &month in cycle_months {
+            let contract_month = ContractMonth { year, month };
+            let symbol = format_contract_symbol(symbol_root, &contract_month);
+            chain.push(
+                ContractListing::new(contract_month, symbol.clone(), symbol)
+                    .with_first_notice_date(previous_month_date(year, month, rollover_day)),
+            );
+        }
+    }
+
+    chain
+}
+
+fn previous_month_date(year: i32, month: u8, day: u32) -> NaiveDate {
+    let (cutoff_year, cutoff_month) = if month == 1 {
+        (year - 1, 12)
+    } else {
+        (year, u32::from(month - 1))
+    };
+
+    NaiveDate::from_ymd_opt(cutoff_year, cutoff_month, day)
+        .expect("built-in contract cutoff dates should be valid")
 }
 
 impl ContractChainProvider for StaticContractChainProvider {
@@ -620,6 +694,23 @@ mod tests {
                 preferred_chart_timeframe: None,
             },
         }
+    }
+
+    #[test]
+    fn builtin_contract_chains_resolve_gold_for_current_runtime_window() {
+        let resolver = FrontMonthResolver::new(
+            StaticContractChainProvider::with_reference_date(
+                NaiveDate::from_ymd_opt(2026, 4, 10).expect("valid date"),
+            ),
+            fixed_clock(),
+        );
+
+        let mapping = resolver
+            .resolve_for_strategy(&compiled_strategy("gold"))
+            .expect("built-in chains should resolve gold");
+
+        assert_eq!(mapping.tradovate_symbol, "GCM2026");
+        assert_eq!(mapping.resolved_contract.canonical_symbol, "GCM2026");
     }
 
     #[test]

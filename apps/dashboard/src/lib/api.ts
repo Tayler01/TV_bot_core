@@ -2,6 +2,7 @@ import type {
   ControlApiEvent,
   RuntimeHistorySnapshot,
   RuntimeHostHealthResponse,
+  RuntimeJournalSnapshot,
   RuntimeLifecycleCommand,
   RuntimeLifecycleRequest,
   RuntimeLifecycleResponse,
@@ -16,6 +17,7 @@ export interface DashboardSnapshot {
   status: RuntimeStatusSnapshot;
   readiness: RuntimeReadinessSnapshot;
   history: RuntimeHistorySnapshot;
+  journal: RuntimeJournalSnapshot;
   health: RuntimeHostHealthResponse;
   fetchedAt: string;
 }
@@ -88,10 +90,11 @@ async function parseLifecycleResponse(response: Response): Promise<RuntimeLifecy
 export async function loadDashboardSnapshot(
   signal?: AbortSignal,
 ): Promise<DashboardSnapshot> {
-  const [status, readiness, history, health] = await Promise.all([
+  const [status, readiness, history, journal, health] = await Promise.all([
     fetchJson<RuntimeStatusSnapshot>("/status", signal),
     fetchJson<RuntimeReadinessSnapshot>("/readiness", signal),
     fetchJson<RuntimeHistorySnapshot>("/history", signal),
+    fetchJson<RuntimeJournalSnapshot>("/journal", signal),
     fetchJson<RuntimeHostHealthResponse>("/health", signal),
   ]);
 
@@ -99,6 +102,7 @@ export async function loadDashboardSnapshot(
     status,
     readiness,
     history,
+    journal,
     health,
     fetchedAt: new Date().toISOString(),
   };

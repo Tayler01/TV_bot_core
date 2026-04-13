@@ -27,6 +27,7 @@ import {
 } from "./lib/format";
 import type {
   ControlApiEvent,
+  EventJournalRecord,
   FillRecord,
   OrderRecord,
   ReadinessCheckStatus,
@@ -39,11 +40,14 @@ import type {
   RuntimeStrategyCatalogEntry,
   RuntimeStrategyLibraryResponse,
   RuntimeStrategyValidationResponse,
+  TradeSummaryRecord,
 } from "./types/controlApi";
 
 const REFRESH_INTERVAL_MS = 5_000;
 const EVENTS_RECONNECT_DELAY_MS = 1_500;
 const MAX_RECENT_EVENTS = 12;
+const MAX_RECENT_TRADES = 6;
+const MAX_RECENT_JOURNAL_RECORDS = 12;
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type BannerTone = "healthy" | "warning" | "danger" | "info";
@@ -421,6 +425,21 @@ function mergeEventIntoSnapshot(
           projection: event.projection,
         },
       };
+    case "journal_record": {
+      const records = [
+        event.record,
+        ...snapshot.journal.records.filter((record) => record.event_id !== event.record.event_id),
+      ].slice(0, Math.max(snapshot.journal.records.length, MAX_RECENT_JOURNAL_RECORDS));
+
+      return {
+        ...snapshot,
+        fetchedAt: new Date().toISOString(),
+        journal: {
+          total_records: Math.max(snapshot.journal.total_records, records.length),
+          records,
+        },
+      };
+    }
     default:
       return snapshot;
   }
@@ -441,6 +460,26 @@ function recentFillsForProjection(snapshot: DashboardSnapshot): FillRecord[] {
   return Object.values(snapshot.history.projection.fills)
     .sort((left, right) => compareDescendingDate(left.occurred_at, right.occurred_at))
     .slice(0, 6);
+}
+
+function recentTradeSummariesForProjection(snapshot: DashboardSnapshot): TradeSummaryRecord[] {
+  return Object.values(snapshot.history.projection.trade_summaries)
+    .sort((left, right) =>
+      compareDescendingDate(
+        left.closed_at ?? left.opened_at,
+        right.closed_at ?? right.opened_at,
+      ),
+    )
+    .slice(0, MAX_RECENT_TRADES);
+}
+
+function recentJournalRecords(snapshot: DashboardSnapshot): EventJournalRecord[] {
+  return snapshot.journal.records.slice(0, MAX_RECENT_JOURNAL_RECORDS);
+}
+
+function isPositiveNumberInput(value: string): boolean {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0;
 }
 
 function Panel({
@@ -520,6 +559,12 @@ function App() {
   const [closePositionReason, setClosePositionReason] = useState(
     "dashboard close position request",
   );
+  const [manualEntrySide, setManualEntrySide] = useState<"buy" | "sell">("buy");
+  const [manualEntryQuantity, setManualEntryQuantity] = useState("1");
+  const [manualEntryTickSize, setManualEntryTickSize] = useState("0.1");
+  const [manualEntryReferencePrice, setManualEntryReferencePrice] = useState("");
+  const [manualEntryTickValueUsd, setManualEntryTickValueUsd] = useState("");
+  const [manualEntryReason, setManualEntryReason] = useState("dashboard manual entry");
   const [cancelWorkingOrdersReason, setCancelWorkingOrdersReason] = useState(
     "dashboard cancel working orders request",
   );
@@ -916,6 +961,20 @@ function App() {
   const pauseButtonLabel = snapshot?.status.mode === "paused" ? "Resume runtime" : "Pause runtime";
   const openWorkingOrders = snapshot ? workingOrdersForProjection(snapshot) : [];
   const recentFills = snapshot ? recentFillsForProjection(snapshot) : [];
+  const recentTrades = snapshot ? recentTradeSummariesForProjection(snapshot) : [];
+  const journalRecords = snapshot ? recentJournalRecords(snapshot) : [];
+  const canManualEntry =
+    snapshot != null &&
+    snapshot.status.strategy_loaded === true &&
+    snapshot.status.command_dispatch_ready === true &&
+    snapshot.status.arm_state === "armed" &&
+    (snapshot.status.mode === "paper" || snapshot.status.mode === "live") &&
+    manualEntryReason.trim().length > 0 &&
+    isPositiveNumberInput(manualEntryQuantity) &&
+    isPositiveNumberInput(manualEntryTickSize) &&
+    isPositiveNumberInput(manualEntryReferencePrice) &&
+    (manualEntryTickValueUsd.trim().length === 0 ||
+      isPositiveNumberInput(manualEntryTickValueUsd));
   const canClosePosition =
     (snapshot?.history.projection.open_position_symbols.length ?? 0) > 0 &&
     closePositionReason.trim().length > 0 &&
@@ -1345,6 +1404,128 @@ function App() {
                 <p className="control-card__title">Operator actions</p>
                 <div className="control-grid">
                   <section className="control-card control-card--wide">
+                    <p className="control-card__title">Manual entry</p>
+                    <form
+                      className="flatten-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!canManualEntry) {
+                          return;
+                        }
+
+                        void (async () => {
+                          const result = await executeLifecycleCommand(
+                            {
+                              kind: "manual_entry",
+                              side: manualEntrySide,
+                              quantity: Number.parseInt(manualEntryQuantity, 10),
+                              tick_size: manualEntryTickSize.trim(),
+                              entry_reference_price: manualEntryReferencePrice.trim(),
+                              tick_value_usd: manualEntryTickValueUsd.trim() || null,
+                              reason: manualEntryReason.trim(),
+                            },
+                            {
+                              pendingLabel: `Submitting manual ${manualEntrySide} entry`,
+                              confirmMessage:
+                                "Submit a manual entry through the loaded strategy and runtime safety path now?",
+                            },
+                          );
+
+                          if (result?.httpStatus === 200) {
+                            setManualEntryReason("dashboard manual entry");
+                          }
+                        })();
+                      }}
+                    >
+                      <div className="control-grid">
+                        <label className="field">
+                          <span>Side</span>
+                          <select
+                            aria-label="Manual entry side"
+                            value={manualEntrySide}
+                            onChange={(event) => {
+                              setManualEntrySide(event.target.value as "buy" | "sell");
+                            }}
+                          >
+                            <option value="buy">Buy</option>
+                            <option value="sell">Sell</option>
+                          </select>
+                        </label>
+                        <label className="field">
+                          <span>Quantity</span>
+                          <input
+                            aria-label="Manual entry quantity"
+                            inputMode="numeric"
+                            value={manualEntryQuantity}
+                            onChange={(event) => {
+                              setManualEntryQuantity(event.target.value);
+                            }}
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Tick size</span>
+                          <input
+                            aria-label="Manual entry tick size"
+                            inputMode="decimal"
+                            placeholder="0.25"
+                            value={manualEntryTickSize}
+                            onChange={(event) => {
+                              setManualEntryTickSize(event.target.value);
+                            }}
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Reference price</span>
+                          <input
+                            aria-label="Manual entry reference price"
+                            inputMode="decimal"
+                            placeholder="2410.50"
+                            value={manualEntryReferencePrice}
+                            onChange={(event) => {
+                              setManualEntryReferencePrice(event.target.value);
+                            }}
+                          />
+                        </label>
+                        <label className="field">
+                          <span>Tick value USD</span>
+                          <input
+                            aria-label="Manual entry tick value"
+                            inputMode="decimal"
+                            placeholder="Optional for risk-based sizing"
+                            value={manualEntryTickValueUsd}
+                            onChange={(event) => {
+                              setManualEntryTickValueUsd(event.target.value);
+                            }}
+                          />
+                        </label>
+                      </div>
+                      <label className="field field--wide">
+                        <span>Reason</span>
+                        <input
+                          aria-label="Manual entry reason"
+                          placeholder="dashboard manual entry"
+                          value={manualEntryReason}
+                          onChange={(event) => {
+                            setManualEntryReason(event.target.value);
+                          }}
+                        />
+                      </label>
+                      <button
+                        className="command-button"
+                        type="submit"
+                        disabled={pendingAction !== null || !canManualEntry}
+                      >
+                        Submit manual entry
+                      </button>
+                    </form>
+                    <p className="control-card__note">
+                      Manual entry reuses the loaded strategy for order type, reversal, and
+                      broker-protection handling. Reference price and tick inputs keep the
+                      execution path explicit and strategy-agnostic.
+                    </p>
+                  </section>
+
+                  <section className="control-card control-card--wide">
                     <p className="control-card__title">Close current position</p>
                     <form
                       className="flatten-form"
@@ -1448,7 +1629,8 @@ function App() {
                   </section>
                 </div>
                 <p className="control-card__note">
-                  Both actions stay inside the local runtime host. Close resolves the active
+                  All three actions stay inside the local runtime host. Manual entry uses the
+                  loaded strategy and synchronized market contract, close resolves the active
                   contract automatically when there is a single live position, and cancel routes
                   only the current market&apos;s working orders through the audited backend path.
                 </p>
@@ -1680,6 +1862,14 @@ function App() {
                     : "No PnL snapshot"
                 }
               />
+              <Definition
+                label="Latest trade"
+                value={
+                  snapshot.history.projection.latest_trade_summary
+                    ? `${snapshot.history.projection.latest_trade_summary.symbol} | ${formatMode(snapshot.history.projection.latest_trade_summary.status)} | ${formatSignedCurrency(snapshot.history.projection.latest_trade_summary.net_pnl)}`
+                    : "No trade summary"
+                }
+              />
             </dl>
             <div className="subgrid">
               <section className="review-card">
@@ -1720,6 +1910,26 @@ function App() {
                   </ul>
                 ) : (
                   <p className="panel__footnote">No broker fills have been recorded yet.</p>
+                )}
+              </section>
+              <section className="review-card">
+                <p className="control-card__title">Recent trades</p>
+                {recentTrades.length ? (
+                  <ul className="event-list">
+                    {recentTrades.map((trade) => (
+                      <li key={trade.trade_id} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{`${trade.symbol} | ${formatMode(trade.side)} ${formatInteger(trade.quantity)}`}</strong>
+                          <Pill label={formatMode(trade.status)} tone="info" />
+                        </div>
+                        <p>
+                          {`Trade ${trade.trade_id} | entry ${formatDecimal(trade.average_entry_price)}${trade.average_exit_price ? ` | exit ${formatDecimal(trade.average_exit_price)}` : ""} | net ${formatSignedCurrency(trade.net_pnl)} | ${formatDateTime(trade.closed_at ?? trade.opened_at)}`}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel__footnote">No trade summaries are projected yet.</p>
                 )}
               </section>
             </div>
@@ -1909,6 +2119,39 @@ function App() {
               Follow-up after this dashboard safety slice: circle back to reconnect hardening for
               the broader operator-resolution campaign and final paper-mode recovery polish.
             </p>
+          </Panel>
+
+          <Panel
+            eyebrow="Journal"
+            title="Recent persisted operator journal"
+            detail={`${formatInteger(snapshot.journal.total_records)} total record(s)`}
+          >
+            {journalRecords.length ? (
+              <ul className="event-list">
+                {journalRecords.map((record) => (
+                  <li key={record.event_id} className="event-list__item">
+                    <div className="event-list__header">
+                      <strong>{`${record.category}:${record.action}`}</strong>
+                      <Pill
+                        label={formatDateTime(record.occurred_at)}
+                        tone={
+                          record.severity === "error"
+                            ? "danger"
+                            : record.severity === "warning"
+                              ? "warning"
+                              : "info"
+                        }
+                      />
+                    </div>
+                    <p>{compactJson(record.payload)}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="panel__footnote">
+                No persisted journal records are available through the local runtime host yet.
+              </p>
+            )}
           </Panel>
 
           <Panel

@@ -271,6 +271,28 @@ export interface FillRecord {
   occurred_at: string;
 }
 
+export type TradeSummaryStatus = "open" | "closed" | "cancelled";
+
+export interface TradeSummaryRecord {
+  trade_id: string;
+  strategy_id: string | null;
+  run_id: string | null;
+  account_id: string | null;
+  symbol: string;
+  side: "buy" | "sell";
+  status: TradeSummaryStatus;
+  quantity: number;
+  average_entry_price: DecimalValue;
+  average_exit_price: DecimalValue | null;
+  opened_at: string;
+  closed_at: string | null;
+  gross_pnl: DecimalValue;
+  net_pnl: DecimalValue;
+  fees: DecimalValue;
+  commissions: DecimalValue;
+  slippage: DecimalValue;
+}
+
 export interface PnlSnapshotRecord {
   snapshot_id: string;
   strategy_id: string | null;
@@ -298,12 +320,14 @@ export interface ProjectedTradingHistoryState {
   orders: Record<string, OrderRecord>;
   working_order_ids: string[];
   fills: Record<string, FillRecord>;
+  trade_summaries: Record<string, TradeSummaryRecord>;
   open_position_symbols: string[];
   open_trade_ids: string[];
   latest_order: OrderRecord | null;
   latest_fill: FillRecord | null;
   latest_position: PositionRecord | null;
   latest_pnl_snapshot: PnlSnapshotRecord | null;
+  latest_trade_summary: TradeSummaryRecord | null;
   closed_trade_count: number;
   cancelled_trade_count: number;
   closed_trade_gross_pnl: DecimalValue;
@@ -318,6 +342,11 @@ export interface ProjectedTradingHistoryState {
 
 export interface RuntimeHistorySnapshot {
   projection: ProjectedTradingHistoryState;
+}
+
+export interface RuntimeJournalSnapshot {
+  total_records: number;
+  records: EventJournalRecord[];
 }
 
 export type RuntimeStrategyIssueSeverity = "error" | "warning";
@@ -426,6 +455,15 @@ export type RuntimeLifecycleCommand =
   | {
       kind: "close_position";
       contract_id: number | null;
+      reason: string | null;
+    }
+  | {
+      kind: "manual_entry";
+      side: "buy" | "sell";
+      quantity: number;
+      tick_size: DecimalValue;
+      entry_reference_price: DecimalValue;
+      tick_value_usd: DecimalValue | null;
       reason: string | null;
     }
   | {

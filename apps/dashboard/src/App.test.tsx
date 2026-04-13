@@ -249,7 +249,7 @@ function installFetchMock(snapshotOverrides?: {
     },
   };
 
-  const history = {
+  const history: any = {
     projection: {
       total_strategy_run_records: 1,
       total_order_records: 4,
@@ -291,6 +291,27 @@ function installFetchMock(snapshotOverrides?: {
           fee: "1.25",
           commission: "0.75",
           occurred_at: "2026-04-12T20:11:03Z",
+        },
+      },
+      trade_summaries: {
+        "trade-1": {
+          trade_id: "trade-1",
+          strategy_id: "gold-breakout",
+          run_id: "run-1",
+          account_id: "paper-primary-id",
+          symbol: "GCM2026",
+          side: "buy",
+          status: "closed",
+          quantity: 1,
+          average_entry_price: "2406.00",
+          average_exit_price: "2418.50",
+          opened_at: "2026-04-12T19:58:00Z",
+          closed_at: "2026-04-12T20:03:00Z",
+          gross_pnl: "125.00",
+          net_pnl: "118.00",
+          fees: "3.00",
+          commissions: "2.00",
+          slippage: "2.00",
         },
       },
       open_position_symbols: ["GCM2026"],
@@ -353,6 +374,25 @@ function installFetchMock(snapshotOverrides?: {
         unrealized_pnl: "48.60",
         captured_at: "2026-04-12T20:11:03Z",
       },
+      latest_trade_summary: {
+        trade_id: "trade-1",
+        strategy_id: "gold-breakout",
+        run_id: "run-1",
+        account_id: "paper-primary-id",
+        symbol: "GCM2026",
+        side: "buy",
+        status: "closed",
+        quantity: 1,
+        average_entry_price: "2406.00",
+        average_exit_price: "2418.50",
+        opened_at: "2026-04-12T19:58:00Z",
+        closed_at: "2026-04-12T20:03:00Z",
+        gross_pnl: "125.00",
+        net_pnl: "118.00",
+        fees: "3.00",
+        commissions: "2.00",
+        slippage: "2.00",
+      },
       closed_trade_count: 3,
       cancelled_trade_count: 0,
       closed_trade_gross_pnl: "110.00",
@@ -364,6 +404,47 @@ function installFetchMock(snapshotOverrides?: {
       recorded_fill_commissions: "4.00",
       last_activity_at: "2026-04-12T20:11:03Z",
     },
+  };
+
+  const journal: any = {
+    total_records: 3,
+    records: [
+      {
+        event_id: "evt-3",
+        category: "execution",
+        action: "dispatch_succeeded",
+        source: "dashboard",
+        severity: "info",
+        occurred_at: "2026-04-12T20:11:04Z",
+        payload: {
+          broker_order_id: "8102",
+          symbol: "GCM2026",
+        },
+      },
+      {
+        event_id: "evt-2",
+        category: "risk",
+        action: "decision",
+        source: "system",
+        severity: "info",
+        occurred_at: "2026-04-12T20:11:03Z",
+        payload: {
+          status: "accepted",
+          reason: "risk checks passed",
+        },
+      },
+      {
+        event_id: "evt-1",
+        category: "execution",
+        action: "intent_received",
+        source: "dashboard",
+        severity: "info",
+        occurred_at: "2026-04-12T20:11:02Z",
+        payload: {
+          kind: "manual_entry",
+        },
+      },
+    ],
   };
 
   const health = {
@@ -469,6 +550,10 @@ function installFetchMock(snapshotOverrides?: {
       return jsonResponse(history);
     }
 
+    if (endpoint.endsWith("/journal")) {
+      return jsonResponse(journal);
+    }
+
     if (endpoint.endsWith("/health")) {
       return jsonResponse(health);
     }
@@ -497,6 +582,11 @@ function installFetchMock(snapshotOverrides?: {
           reason?: string;
           path?: string;
           decision?: string;
+          side?: "buy" | "sell";
+          quantity?: number;
+          tick_size?: string;
+          entry_reference_price?: string;
+          tick_value_usd?: string | null;
         };
       };
 
@@ -677,6 +767,54 @@ function installFetchMock(snapshotOverrides?: {
             },
             200,
           );
+        case "manual_entry": {
+          history.projection.total_order_records += 1;
+          history.projection.orders["8110"] = {
+            broker_order_id: "8110",
+            strategy_id: "gold-breakout",
+            run_id: "run-1",
+            account_id: "paper-primary-id",
+            symbol: "GCM2026",
+            side: request.command.side ?? "buy",
+            order_type: "market",
+            quantity: request.command.quantity ?? 1,
+            filled_quantity: 0,
+            average_fill_price: null,
+            status: "working",
+            provider: "tradovate",
+            submitted_at: "2026-04-12T20:12:00Z",
+            updated_at: "2026-04-12T20:12:00Z",
+          };
+          history.projection.working_order_ids = ["8110", ...history.projection.working_order_ids];
+          history.projection.latest_order = history.projection.orders["8110"];
+          journal.total_records += 1;
+          journal.records = [
+            {
+              event_id: "evt-4",
+              category: "execution",
+              action: "dispatch_succeeded",
+              source: "dashboard",
+              severity: "info",
+              occurred_at: "2026-04-12T20:12:00Z",
+              payload: {
+                kind: "manual_entry",
+                symbol: "GCM2026",
+                broker_order_id: "8110",
+              },
+            },
+            ...journal.records,
+          ];
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message: "manual entry command dispatched",
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
+        }
         case "cancel_working_orders":
           history.projection.working_order_ids = [];
           (
@@ -751,8 +889,12 @@ describe("App", () => {
     expect(await screen.findByText("Grouped pre-arm checks")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
     expect(await screen.findByText("Recent fills")).toBeInTheDocument();
+    expect(await screen.findByText("Recent trades")).toBeInTheDocument();
+    expect(await screen.findByText("Recent persisted operator journal")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
     expect(await screen.findByText(/Fill fill-1 \| order 8102/)).toBeInTheDocument();
+    expect(await screen.findByText(/Trade trade-1/)).toBeInTheDocument();
+    expect(await screen.findByText("execution:dispatch_succeeded")).toBeInTheDocument();
     expect(
       await screen.findByText(
         "Protective brackets available and operator overrides are clear.",
@@ -801,10 +943,10 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findByText("runtime:shutdown_blocked")).toBeInTheDocument();
+    expect(await screen.findAllByText("runtime:shutdown_blocked")).toHaveLength(2);
     expect(
-      await screen.findByText('{"reason":"shutdown blocked pending explicit review"}'),
-    ).toBeInTheDocument();
+      await screen.findAllByText('{"reason":"shutdown blocked pending explicit review"}'),
+    ).toHaveLength(2);
   });
 
   it("submits reconnect and shutdown review actions through runtime lifecycle commands", async () => {
@@ -1029,6 +1171,60 @@ describe("App", () => {
       command: {
         kind: "cancel_working_orders",
         reason: "dashboard cancel stale orders",
+      },
+    });
+  });
+
+  it("posts manual entry through the runtime lifecycle endpoint once confirmation is accepted", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Manual entry side"), {
+      target: { value: "sell" },
+    });
+    fireEvent.change(await screen.findByLabelText("Manual entry quantity"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(await screen.findByLabelText("Manual entry tick size"), {
+      target: { value: "0.1" },
+    });
+    fireEvent.change(await screen.findByLabelText("Manual entry reference price"), {
+      target: { value: "2412.25" },
+    });
+    fireEvent.change(await screen.findByLabelText("Manual entry tick value"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(await screen.findByLabelText("Manual entry reason"), {
+      target: { value: "dashboard breakout probe" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Submit manual entry" }));
+
+    expect(await screen.findByText("manual entry command dispatched")).toBeInTheDocument();
+
+    const runtimeCommandCall = fetchSpy.mock.calls.find((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/runtime/commands");
+    });
+
+    expect(JSON.parse(String(runtimeCommandCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "manual_entry",
+        side: "sell",
+        quantity: 2,
+        tick_size: "0.1",
+        entry_reference_price: "2412.25",
+        tick_value_usd: "10",
+        reason: "dashboard breakout probe",
       },
     });
   });
