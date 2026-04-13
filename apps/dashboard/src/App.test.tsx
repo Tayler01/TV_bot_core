@@ -2,6 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
+import type {
+  LoadedStrategySummary,
+  RuntimeStrategyValidationResponse,
+} from "./types/controlApi";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -71,6 +75,15 @@ function installFetchMock(snapshotOverrides?: {
 }) {
   const reconnectRequired = snapshotOverrides?.reconnectRequired ?? false;
   const shutdownBlocked = snapshotOverrides?.shutdownBlocked ?? false;
+  const currentStrategy: LoadedStrategySummary = {
+    path: "strategies/sample.md",
+    title: "Sample",
+    strategy_id: "gold-breakout",
+    name: "Gold Breakout",
+    version: "1.0.0",
+    market_family: "metals",
+    warning_count: 0,
+  };
 
   const status = {
     mode: "paper",
@@ -78,15 +91,7 @@ function installFetchMock(snapshotOverrides?: {
     warmup_status: "ready",
     strategy_loaded: true,
     hard_override_active: false,
-    current_strategy: {
-      path: "strategies/sample.md",
-      title: "Sample",
-      strategy_id: "gold-breakout",
-      name: "Gold Breakout",
-      version: "1.0.0",
-      market_family: "metals",
-      warning_count: 0,
-    },
+    current_strategy: currentStrategy,
     broker_status: {
       provider: "tradovate",
       environment: "demo",
@@ -454,7 +459,7 @@ function installFetchMock(snapshotOverrides?: {
   };
 
   const strategyLibrary = {
-    scanned_roots: ["strategies/examples"],
+    scanned_roots: ["strategies/uploads", "strategies/examples"],
     strategies: [
       {
         path: "strategies/sample.md",
@@ -482,8 +487,14 @@ function installFetchMock(snapshotOverrides?: {
       },
     ],
   };
+  let uploadedStrategyPath: string | null = null;
+  let uploadedStrategyValidation: RuntimeStrategyValidationResponse | null = null;
 
   function validationForPath(path: string) {
+    if (uploadedStrategyPath && path === uploadedStrategyPath && uploadedStrategyValidation) {
+      return uploadedStrategyValidation;
+    }
+
     if (path === "strategies/broken.md") {
       return {
         path,
@@ -560,6 +571,49 @@ function installFetchMock(snapshotOverrides?: {
 
     if (endpoint.endsWith("/strategies")) {
       return jsonResponse(strategyLibrary);
+    }
+
+    if (endpoint.endsWith("/strategies/upload")) {
+      const request = JSON.parse(String(init?.body ?? "{}")) as {
+        source: string;
+        filename: string;
+        markdown: string;
+      };
+      uploadedStrategyPath = `strategies/uploads/${request.filename}`;
+      uploadedStrategyValidation = {
+        path: uploadedStrategyPath,
+        display_path: uploadedStrategyPath,
+        valid: true,
+        title: "Uploaded Breakout",
+        summary: {
+          path: uploadedStrategyPath,
+          title: "Uploaded Breakout",
+          strategy_id: "uploaded-breakout",
+          name: "Uploaded Breakout",
+          version: "1.0.0",
+          market_family: "metals",
+          warning_count: 0,
+        },
+        warnings: [],
+        errors: [],
+      };
+      strategyLibrary.strategies = [
+        {
+          path: uploadedStrategyPath,
+          display_path: uploadedStrategyPath,
+          valid: true,
+          title: "Uploaded Breakout",
+          strategy_id: "uploaded-breakout",
+          name: "Uploaded Breakout",
+          version: "1.0.0",
+          market_family: "metals",
+          warning_count: 0,
+          error_count: 0,
+        },
+        ...strategyLibrary.strategies,
+      ];
+
+      return jsonResponse(uploadedStrategyValidation);
     }
 
     if (endpoint.endsWith("/strategies/validate")) {
@@ -1040,6 +1094,59 @@ describe("App", () => {
         kind: "load_strategy",
         path: "strategies/sample.md",
       },
+    });
+  });
+
+  it("uploads a local strategy file through the host, refreshes the library, and selects it", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+
+    render(<App />);
+
+    const uploadInput = (await screen.findByLabelText("Upload strategy file")) as HTMLInputElement;
+    const uploadFile = new File(
+      [
+        "# Uploaded Breakout\n\n## Metadata\n```yaml\nschema_version: 1\nstrategy_id: uploaded-breakout\nname: Uploaded Breakout\nversion: 1.0.0\nauthor: tests\ndescription: uploaded strategy\n```\n",
+      ],
+      "uploaded-breakout.md",
+      { type: "text/markdown" },
+    );
+
+    fireEvent.change(uploadInput, {
+      target: {
+        files: [uploadFile],
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Upload to library" }));
+
+    expect(
+      await screen.findByText(
+        "Saved uploaded strategy to strategies/uploads/uploaded-breakout.md and validated it through the runtime host.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByDisplayValue("Uploaded Breakout"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("strategies/uploads/uploaded-breakout.md"),
+    ).toBeInTheDocument();
+
+    const uploadCall = fetchSpy.mock.calls.find((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/strategies/upload");
+    });
+
+    expect(JSON.parse(String(uploadCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      filename: "uploaded-breakout.md",
+      markdown:
+        "# Uploaded Breakout\n\n## Metadata\n```yaml\nschema_version: 1\nstrategy_id: uploaded-breakout\nname: Uploaded Breakout\nversion: 1.0.0\nauthor: tests\ndescription: uploaded strategy\n```\n",
     });
   });
 

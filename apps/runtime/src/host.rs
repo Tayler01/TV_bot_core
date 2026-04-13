@@ -43,8 +43,9 @@ use tv_bot_control_api::{
     RuntimeReconnectReviewStatus, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
     RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, RuntimeStrategyCatalogEntry,
     RuntimeStrategyIssue, RuntimeStrategyIssueSeverity, RuntimeStrategyLibraryResponse,
-    RuntimeStrategyValidationRequest, RuntimeStrategyValidationResponse, WebSocketEventHub,
-    WebSocketEventHubError, WebSocketEventStreamError,
+    RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
+    RuntimeStrategyValidationResponse, WebSocketEventHub, WebSocketEventHubError,
+    WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
     ActionSource, BrokerStatusSnapshot, EventJournalRecord, EventSeverity, RuntimeMode,
@@ -806,6 +807,7 @@ pub fn build_http_router(state: RuntimeHostState) -> Router {
         .route("/history", get(history_handler))
         .route("/journal", get(journal_handler))
         .route("/strategies", get(strategy_library_handler))
+        .route("/strategies/upload", post(strategy_upload_handler))
         .route("/strategies/validate", post(strategy_validation_handler))
         .route("/runtime/commands", post(runtime_command_handler))
         .route("/commands", post(command_handler))
@@ -914,6 +916,10 @@ fn discover_strategy_library_roots(config: &AppConfig) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut seen = BTreeSet::new();
 
+    if let Some(upload_root) = discover_strategy_upload_root() {
+        push_strategy_library_root_candidate(&upload_root, &mut roots, &mut seen);
+    }
+
     if let Some(path) = config.runtime.default_strategy_path.as_ref() {
         if let Some(parent) = path.parent() {
             push_strategy_library_root(parent, &mut roots, &mut seen);
@@ -925,6 +931,24 @@ fn discover_strategy_library_roots(config: &AppConfig) -> Vec<PathBuf> {
     }
 
     roots
+}
+
+fn discover_strategy_upload_root() -> Option<PathBuf> {
+    let current_dir = std::env::current_dir().ok()?;
+    let mut cursor = current_dir.clone();
+
+    loop {
+        let strategies_root = cursor.join("strategies");
+        if strategies_root.is_dir() {
+            return Some(strategies_root.join("uploads"));
+        }
+
+        if !cursor.pop() {
+            break;
+        }
+    }
+
+    Some(current_dir.join("strategies").join("uploads"))
 }
 
 fn discover_examples_root() -> Option<PathBuf> {
@@ -942,6 +966,19 @@ fn discover_examples_root() -> Option<PathBuf> {
     }
 
     None
+}
+
+fn push_strategy_library_root_candidate(
+    candidate: &Path,
+    roots: &mut Vec<PathBuf>,
+    seen: &mut BTreeSet<PathBuf>,
+) {
+    let normalized = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.to_path_buf());
+    if seen.insert(normalized.clone()) {
+        roots.push(normalized);
+    }
 }
 
 fn push_strategy_library_root(
@@ -1081,6 +1118,60 @@ async fn strategy_library_handler(State(state): State<RuntimeHostState>) -> Resp
         Err(error) => runtime_host_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("strategy library scan task failed: {error}"),
+        ),
+    }
+}
+
+async fn strategy_upload_handler(
+    State(state): State<RuntimeHostState>,
+    Json(request): Json<RuntimeStrategyUploadRequest>,
+) -> Response {
+    let upload_root = match state.strategy_library_roots.first().cloned() {
+        Some(root) => root,
+        None => {
+            return json_message_response(
+                StatusCode::CONFLICT,
+                "no writable strategy library root is available for uploads".to_owned(),
+            );
+        }
+    };
+    let source = request.source.into();
+    let requested_filename = request.filename.clone();
+
+    match tokio::task::spawn_blocking(move || {
+        store_uploaded_strategy(upload_root, request.filename, request.markdown)
+    })
+    .await
+    {
+        Ok(Ok(response)) => {
+            let severity = if response.valid {
+                EventSeverity::Info
+            } else {
+                EventSeverity::Warning
+            };
+
+            journal_host_event(
+                &state,
+                "strategy",
+                "upload_saved",
+                source,
+                severity,
+                json!({
+                    "path": response.display_path,
+                    "valid": response.valid,
+                    "warning_count": response.warnings.len(),
+                    "error_count": response.errors.len(),
+                    "filename": requested_filename,
+                }),
+            )
+            .await;
+
+            Json(response).into_response()
+        }
+        Ok(Err(error)) => json_message_response(error.status_code(), error.message()),
+        Err(error) => runtime_host_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("strategy upload task failed: {error}"),
         ),
     }
 }
@@ -2415,6 +2506,16 @@ fn scan_strategy_library(roots: Vec<PathBuf>) -> Result<RuntimeStrategyLibraryRe
 }
 
 fn collect_strategy_paths(root: &Path, strategy_paths: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !root.exists() {
+        return Ok(());
+    }
+    if !root.is_dir() {
+        return Err(format!(
+            "strategy library root `{}` is not a directory",
+            root.display()
+        ));
+    }
+
     for entry in fs::read_dir(root).map_err(|source| {
         format!(
             "failed to read strategy library root `{}`: {source}",
@@ -2445,6 +2546,120 @@ fn collect_strategy_paths(root: &Path, strategy_paths: &mut Vec<PathBuf>) -> Res
     Ok(())
 }
 
+#[derive(Debug)]
+enum StrategyUploadError {
+    InvalidRequest(String),
+    Io(String),
+}
+
+impl StrategyUploadError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::InvalidRequest(_) => StatusCode::CONFLICT,
+            Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    fn message(self) -> String {
+        match self {
+            Self::InvalidRequest(message) | Self::Io(message) => message,
+        }
+    }
+}
+
+fn store_uploaded_strategy(
+    upload_root: PathBuf,
+    filename: String,
+    markdown: String,
+) -> Result<RuntimeStrategyValidationResponse, StrategyUploadError> {
+    if markdown.trim().is_empty() {
+        return Err(StrategyUploadError::InvalidRequest(
+            "uploaded strategy markdown cannot be empty".to_owned(),
+        ));
+    }
+
+    let sanitized_filename = sanitize_strategy_upload_filename(&filename)?;
+    fs::create_dir_all(&upload_root).map_err(|source| {
+        StrategyUploadError::Io(format!(
+            "failed to prepare strategy upload root `{}`: {source}",
+            upload_root.display()
+        ))
+    })?;
+
+    let path = allocate_strategy_upload_path(&upload_root, &sanitized_filename);
+    fs::write(&path, &markdown).map_err(|source| {
+        StrategyUploadError::Io(format!(
+            "failed to write uploaded strategy file `{}`: {source}",
+            path.display()
+        ))
+    })?;
+
+    Ok(validate_strategy_markdown(path, markdown))
+}
+
+fn sanitize_strategy_upload_filename(filename: &str) -> Result<String, StrategyUploadError> {
+    let basename = Path::new(filename.trim())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            StrategyUploadError::InvalidRequest(
+                "uploaded strategy filename must be a non-empty UTF-8 name".to_owned(),
+            )
+        })?;
+
+    let mut sanitized = basename
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || character == '.'
+                || character == '-'
+                || character == '_'
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('.')
+        .to_owned();
+
+    if sanitized.is_empty() {
+        sanitized = "uploaded_strategy".to_owned();
+    }
+
+    if !sanitized.to_ascii_lowercase().ends_with(".md") {
+        sanitized.push_str(".md");
+    }
+
+    Ok(sanitized)
+}
+
+fn allocate_strategy_upload_path(upload_root: &Path, filename: &str) -> PathBuf {
+    let filename_path = Path::new(filename);
+    let stem = filename_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("uploaded_strategy");
+    let extension = filename_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("md");
+
+    let mut candidate = upload_root.join(filename);
+    let mut suffix = 1;
+    while candidate.exists() {
+        candidate = upload_root.join(format!("{stem}-{suffix}.{extension}"));
+        suffix += 1;
+    }
+
+    candidate
+}
+
 fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResponse, String> {
     let markdown = fs::read_to_string(&path).map_err(|source| {
         format!(
@@ -2452,6 +2667,14 @@ fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResp
             path.display()
         )
     })?;
+
+    Ok(validate_strategy_markdown(path, markdown))
+}
+
+fn validate_strategy_markdown(
+    path: PathBuf,
+    markdown: String,
+) -> RuntimeStrategyValidationResponse {
     let display_path = display_strategy_path(&path);
     let markdown_title = extract_markdown_title(&markdown);
 
@@ -2467,7 +2690,7 @@ fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResp
                 warning_count: compilation.warnings.len(),
             };
 
-            Ok(RuntimeStrategyValidationResponse {
+            RuntimeStrategyValidationResponse {
                 path,
                 display_path,
                 valid: true,
@@ -2479,9 +2702,9 @@ fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResp
                     .map(control_api_strategy_issue)
                     .collect(),
                 errors: Vec::new(),
-            })
+            }
         }
-        Err(error) => Ok(RuntimeStrategyValidationResponse {
+        Err(error) => RuntimeStrategyValidationResponse {
             path,
             display_path,
             valid: false,
@@ -2497,7 +2720,7 @@ fn validate_strategy_path(path: PathBuf) -> Result<RuntimeStrategyValidationResp
                 .into_iter()
                 .map(control_api_strategy_issue)
                 .collect(),
-        }),
+        },
     }
 }
 
@@ -2531,6 +2754,10 @@ fn runtime_host_error_response(status: StatusCode, message: String) -> Response 
         }),
     )
         .into_response()
+}
+
+fn json_message_response(status: StatusCode, message: String) -> Response {
+    (status, Json(json!({ "message": message }))).into_response()
 }
 
 async fn runtime_lifecycle_success_response(
@@ -4435,6 +4662,117 @@ selection:
         );
 
         let _ = fs::remove_file(validation.path);
+    }
+
+    #[tokio::test]
+    async fn strategy_upload_route_saves_markdown_returns_validation_and_updates_library() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let strategy_root = temp_strategy_library_root();
+        let mut state = build_kernel_backed_state(
+            execution_api,
+            journal.clone(),
+            history,
+            latency_collector,
+            health_supervisor,
+        )
+        .await;
+        state.strategy_library_roots = vec![strategy_root.clone()];
+        let app = build_http_router(state);
+        let markdown = include_str!("../../../strategies/examples/gc_momentum_fade_v1.md");
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/strategies/upload")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeStrategyUploadRequest {
+                        source: ManualCommandSource::Dashboard,
+                        filename: "gc uploaded.md".to_owned(),
+                        markdown: markdown.to_owned(),
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "strategy upload request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let upload_validation: RuntimeStrategyValidationResponse =
+            serde_json::from_slice(&body).expect("upload json should parse");
+
+        assert!(upload_validation.valid);
+        assert_eq!(
+            upload_validation
+                .summary
+                .as_ref()
+                .map(|summary| summary.strategy_id.as_str()),
+            Some("gc_momentum_fade_v1")
+        );
+        assert_eq!(
+            upload_validation
+                .path
+                .parent()
+                .expect("uploaded file should have parent"),
+            strategy_root.as_path()
+        );
+        assert!(upload_validation.path.exists());
+        assert_eq!(
+            fs::read_to_string(&upload_validation.path).expect("uploaded strategy should read"),
+            markdown
+        );
+
+        let library_response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/strategies")
+                .body(Body::empty())
+                .expect("request should build"),
+            "strategy library request after upload",
+        )
+        .await;
+
+        assert_eq!(library_response.status(), StatusCode::OK);
+        let library_body = library_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let library: RuntimeStrategyLibraryResponse =
+            serde_json::from_slice(&library_body).expect("library json should parse");
+        assert_eq!(library.scanned_roots, vec![strategy_root.clone()]);
+        assert!(library
+            .strategies
+            .iter()
+            .any(|entry| entry.path == upload_validation.path && entry.valid));
+
+        let journal_records = journal.list().expect("journal should list records");
+        let upload_record = journal_records
+            .iter()
+            .find(|record| record.action == "upload_saved")
+            .expect("upload should be journaled");
+        assert_eq!(upload_record.category, "strategy");
+        assert_eq!(upload_record.source, ActionSource::Dashboard);
+        assert_eq!(upload_record.payload["valid"].as_bool(), Some(true));
+        assert_eq!(
+            upload_record.payload["path"].as_str(),
+            Some(upload_validation.display_path.as_str())
+        );
+
+        let _ = fs::remove_dir_all(strategy_root);
     }
 
     #[tokio::test]

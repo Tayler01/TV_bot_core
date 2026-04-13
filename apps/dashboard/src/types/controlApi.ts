@@ -382,6 +382,12 @@ export interface RuntimeStrategyValidationRequest {
   path: string;
 }
 
+export interface RuntimeStrategyUploadRequest {
+  source: ManualCommandSource;
+  filename: string;
+  markdown: string;
+}
+
 export interface RuntimeStrategyValidationResponse {
   path: string;
   display_path: string;

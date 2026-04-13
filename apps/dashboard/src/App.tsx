@@ -2,6 +2,7 @@ import {
   startTransition,
   useEffect,
   useEffectEvent,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -12,6 +13,7 @@ import {
   loadStrategyLibrary,
   parseControlApiEvent,
   sendLifecycleCommand,
+  uploadStrategyMarkdown,
   validateStrategyPath,
   type DashboardSnapshot,
   type LifecycleCommandResult,
@@ -48,6 +50,27 @@ const EVENTS_RECONNECT_DELAY_MS = 1_500;
 const MAX_RECENT_EVENTS = 12;
 const MAX_RECENT_TRADES = 6;
 const MAX_RECENT_JOURNAL_RECORDS = 12;
+
+async function readStrategyUploadFile(file: File): Promise<string> {
+  if (typeof file.text === "function") {
+    return await file.text();
+  }
+
+  if (typeof FileReader !== "undefined") {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        resolve(typeof reader.result === "string" ? reader.result : "");
+      };
+      reader.onerror = () => {
+        reject(reader.error ?? new Error("Dashboard failed to read the selected strategy file."));
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  return String(file);
+}
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type BannerTone = "healthy" | "warning" | "danger" | "info";
@@ -549,6 +572,7 @@ function Definition({ label, value }: { label: string; value: string }) {
 }
 
 function App() {
+  const strategyUploadInputRef = useRef<HTMLInputElement | null>(null);
   const [viewModel, setViewModel] = useState<ViewModel>(INITIAL_VIEW_MODEL);
   const [strategyViewModel, setStrategyViewModel] = useState<StrategySummaryViewModel>(
     INITIAL_STRATEGY_VIEW_MODEL,
@@ -572,6 +596,7 @@ function App() {
     "dashboard reconnect review resolution",
   );
   const [shutdownReason, setShutdownReason] = useState("dashboard shutdown review decision");
+  const [selectedStrategyUploadFile, setSelectedStrategyUploadFile] = useState<File | null>(null);
 
   const refreshSnapshot = useEffectEvent(async (signal?: AbortSignal) => {
     const attemptedAt = new Date().toISOString();
@@ -797,6 +822,59 @@ function App() {
     },
   );
 
+  const uploadSelectedStrategyFile = useEffectEvent(async () => {
+    if (!selectedStrategyUploadFile) {
+      return;
+    }
+
+    setPendingAction("Uploading strategy into the local runtime library");
+    setCommandFeedback(null);
+
+    try {
+      const markdown = await readStrategyUploadFile(selectedStrategyUploadFile);
+      const validation = await uploadStrategyMarkdown(
+        selectedStrategyUploadFile.name,
+        markdown,
+      );
+
+      await refreshStrategyLibrary();
+      setStrategyViewModel((current) => ({
+        ...current,
+        selectedPath: validation.path,
+        validation,
+        validationError: null,
+        validationState: "ready",
+      }));
+      setSelectedStrategyUploadFile(null);
+      if (strategyUploadInputRef.current) {
+        strategyUploadInputRef.current.value = "";
+      }
+
+      setCommandFeedback({
+        tone: validation.valid
+          ? validation.warnings.length > 0
+            ? "warning"
+            : "healthy"
+          : "warning",
+        message: validation.valid
+          ? `Saved uploaded strategy to ${validation.display_path} and validated it through the runtime host.`
+          : `Saved uploaded strategy to ${validation.display_path}, but validation found ${validation.errors.length} error(s).`,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Dashboard failed to upload the selected strategy file.";
+
+      setCommandFeedback({
+        tone: "danger",
+        message,
+      });
+    } finally {
+      setPendingAction(null);
+    }
+  });
+
   useEffect(() => {
     const controller = new AbortController();
     void refreshSnapshot(controller.signal);
@@ -987,6 +1065,8 @@ function App() {
     strategyViewModel.selectedPath.length > 0 &&
     strategyViewModel.validation?.valid === true &&
     pendingAction === null;
+  const canUploadSelectedStrategyFile =
+    selectedStrategyUploadFile !== null && pendingAction === null;
   const reviewActionsDisabled = reviewButtonDisabled(pendingAction, snapshot);
   const reconnectCloseDisabled =
     reviewActionsDisabled || snapshot?.status.reconnect_review.required !== true;
@@ -1041,14 +1121,14 @@ function App() {
 
       {commandFeedback ? (
         <section className={`banner banner--${commandFeedback.tone}`} role="status">
-          <strong>Runtime command result.</strong>
+          <strong>Operator action result.</strong>
           <span>{commandFeedback.message}</span>
         </section>
       ) : null}
 
       {pendingAction ? (
         <section className="banner banner--info" role="status">
-          <strong>Command in progress.</strong>
+          <strong>Action in progress.</strong>
           <span>{pendingAction}</span>
         </section>
       ) : null}
@@ -1148,7 +1228,30 @@ function App() {
                       )}
                     </select>
                   </label>
+                  <label className="field field--wide">
+                    <span>Upload strategy file</span>
+                    <input
+                      ref={strategyUploadInputRef}
+                      aria-label="Upload strategy file"
+                      type="file"
+                      accept=".md,text/markdown"
+                      disabled={pendingAction !== null}
+                      onChange={(event) => {
+                        setSelectedStrategyUploadFile(event.target.files?.[0] ?? null);
+                      }}
+                    />
+                  </label>
                   <div className="action-row">
+                    <button
+                      className="command-button"
+                      type="button"
+                      disabled={!canUploadSelectedStrategyFile}
+                      onClick={() => {
+                        void uploadSelectedStrategyFile();
+                      }}
+                    >
+                      Upload to library
+                    </button>
                     <button
                       className="command-button"
                       type="button"
@@ -1271,6 +1374,14 @@ function App() {
                         : "Not loaded"
                     }
                   />
+                  <Definition
+                    label="Upload ready"
+                    value={
+                      selectedStrategyUploadFile
+                        ? selectedStrategyUploadFile.name
+                        : "Choose a local Markdown strategy file"
+                    }
+                  />
                 </dl>
                 {strategyViewModel.libraryError ? (
                   <p className="control-card__note">{strategyViewModel.libraryError}</p>
@@ -1297,9 +1408,9 @@ function App() {
                   </ul>
                 ) : null}
                 <p className="control-card__note">
-                  The dashboard now browses and validates strategy Markdown only through the local
-                  runtime host, then loads the selected path through the existing audited lifecycle
-                  command path.
+                  The dashboard now uploads, browses, validates, and loads strategy Markdown only
+                  through the local runtime host, keeping file writes and validation inside the
+                  backend-owned strategy library workflow.
                 </p>
               </section>
 

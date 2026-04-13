@@ -8,6 +8,7 @@ import type {
   RuntimeLifecycleResponse,
   RuntimeReadinessSnapshot,
   RuntimeStrategyLibraryResponse,
+  RuntimeStrategyUploadRequest,
   RuntimeStrategyValidationRequest,
   RuntimeStrategyValidationResponse,
   RuntimeStatusSnapshot,
@@ -160,6 +161,34 @@ export async function validateStrategyPath(
 
   if (!response.ok) {
     throw new ControlApiError("/strategies/validate", response.status, await readBody(response));
+  }
+
+  return (await response.json()) as RuntimeStrategyValidationResponse;
+}
+
+export async function uploadStrategyMarkdown(
+  filename: string,
+  markdown: string,
+  signal?: AbortSignal,
+): Promise<RuntimeStrategyValidationResponse> {
+  const request: RuntimeStrategyUploadRequest = {
+    source: "dashboard",
+    filename,
+    markdown,
+  };
+
+  const response = await fetch(`${CONTROL_API_BASE_URL}/strategies/upload`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new ControlApiError("/strategies/upload", response.status, await readBody(response));
   }
 
   return (await response.json()) as RuntimeStrategyValidationResponse;

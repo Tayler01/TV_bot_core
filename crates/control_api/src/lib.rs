@@ -227,6 +227,14 @@ pub struct RuntimeStrategyValidationRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RuntimeStrategyUploadRequest {
+    pub source: ManualCommandSource,
+    pub filename: String,
+    pub markdown: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeStrategyValidationResponse {
     pub path: PathBuf,
     pub display_path: String,
