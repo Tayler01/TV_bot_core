@@ -1309,12 +1309,42 @@ async fn lifecycle_state_command_handler(
         }
     };
 
+    journal_lifecycle_state_command(&state, &history_command, source).await;
+
     if let Err(error) = sync_history_for_lifecycle_command(&state, &history_command, source).await {
         let _ = state.health_supervisor.note_error();
         warn!(?error, "failed to persist lifecycle history");
     }
 
     runtime_lifecycle_success_response(&state, HttpStatusCode::Ok, message, None).await
+}
+
+async fn journal_lifecycle_state_command(
+    state: &RuntimeHostState,
+    command: &RuntimeLifecycleCommand,
+    source: tv_bot_control_api::ManualCommandSource,
+) {
+    match command {
+        RuntimeLifecycleCommand::SetNewEntriesEnabled { enabled, reason } => {
+            journal_host_event(
+                state,
+                "operator",
+                "new_entries_gate_updated",
+                source.into(),
+                if *enabled {
+                    EventSeverity::Info
+                } else {
+                    EventSeverity::Warning
+                },
+                json!({
+                    "enabled": enabled,
+                    "reason": reason,
+                }),
+            )
+            .await;
+        }
+        _ => {}
+    }
 }
 
 async fn load_strategy_runtime_command_handler(
@@ -2951,6 +2981,7 @@ async fn sync_history_for_lifecycle_command(
         RuntimeLifecycleCommand::LoadStrategy { .. }
         | RuntimeLifecycleCommand::StartWarmup
         | RuntimeLifecycleCommand::MarkWarmupReady
+        | RuntimeLifecycleCommand::SetNewEntriesEnabled { .. }
         | RuntimeLifecycleCommand::ResolveReconnectReview { .. }
         | RuntimeLifecycleCommand::Shutdown { .. }
         | RuntimeLifecycleCommand::ClosePosition { .. }
@@ -6138,6 +6169,405 @@ selection:
         assert!(journal_actions.contains(&"intent_received".to_owned()));
         assert!(journal_actions.contains(&"decision".to_owned()));
         assert!(journal_actions.contains(&"dispatch_succeeded".to_owned()));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
+    async fn operator_new_entry_gate_blocks_and_reenables_paper_manual_entry_through_runtime_host()
+    {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "load strategy for new-entry gate request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "set mode paper for new-entry gate request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "mark warmup ready for new-entry gate request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+            (
+                "arm runtime for new-entry gate request",
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "new-entry gate history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let disable_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                            enabled: false,
+                            reason: Some(
+                                "let the current runner finish without adding size".to_owned(),
+                            ),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "disable new entries request",
+        )
+        .await;
+        assert_eq!(disable_response.status(), StatusCode::OK);
+        let disable_body = disable_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let disable_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&disable_body).expect("response json should parse");
+        assert_eq!(disable_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(
+            disable_response.message,
+            "new entries disabled: let the current runner finish without adding size"
+        );
+        assert!(!disable_response.status.operator_new_entries_enabled);
+        assert_eq!(
+            disable_response
+                .status
+                .operator_new_entries_reason
+                .as_deref(),
+            Some("let the current runner finish without adding size")
+        );
+        assert!(disable_response
+            .readiness
+            .report
+            .checks
+            .iter()
+            .any(|check| {
+                check.name == "operator_entry_gate"
+                    && check.status == tv_bot_core_types::ReadinessCheckStatus::Warning
+                    && check
+                        .message
+                        .contains("new entries are disabled by operator control")
+            }));
+
+        let blocked_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("blocked by dashboard gate".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "blocked manual entry request",
+        )
+        .await;
+
+        assert_eq!(blocked_entry_response.status(), StatusCode::CONFLICT);
+        let blocked_entry_body = blocked_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_entry_body).expect("response json should parse");
+        assert_eq!(blocked_entry.status_code, HttpStatusCode::Conflict);
+        assert!(blocked_entry.message.contains("new entries are blocked"));
+        assert!(blocked_entry.command_result.is_none());
+        assert!(!blocked_entry.status.operator_new_entries_enabled);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after_block = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "new-entry gate history after blocked request",
+        )
+        .await;
+        assert_eq!(history_after_block.status(), StatusCode::OK);
+        let history_after_block_body = history_after_block
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_block: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_block_body).expect("history json should parse");
+        assert_eq!(
+            history_after_block.projection.total_order_records,
+            history_before.projection.total_order_records
+        );
+
+        let enable_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                            enabled: true,
+                            reason: Some("resume standard paper entries".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "enable new entries request",
+        )
+        .await;
+        assert_eq!(enable_response.status(), StatusCode::OK);
+        let enable_body = enable_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let enable_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&enable_body).expect("response json should parse");
+        assert_eq!(enable_response.status_code, HttpStatusCode::Ok);
+        assert_eq!(enable_response.message, "new entries enabled");
+        assert!(enable_response.status.operator_new_entries_enabled);
+        assert_eq!(enable_response.status.operator_new_entries_reason, None);
+
+        let allowed_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("manual paper entry after re-enable".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "allowed manual entry after re-enable request",
+        )
+        .await;
+
+        assert_eq!(allowed_entry_response.status(), StatusCode::OK);
+        let allowed_entry_body = allowed_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let allowed_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&allowed_entry_body).expect("response json should parse");
+        assert_eq!(allowed_entry.status_code, HttpStatusCode::Ok);
+        assert_eq!(allowed_entry.message, "manual entry command dispatched");
+        let command_result = allowed_entry
+            .command_result
+            .expect("manual entry should return a command result after re-enable");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        let oso = &place_osos[0];
+        assert_eq!(oso.context.account_id, 101);
+        assert_eq!(oso.context.account_spec, "paper-primary");
+        assert_eq!(oso.order.symbol, "GCM2026");
+        assert_eq!(oso.order.quantity, 1);
+        assert_eq!(
+            oso.order.order_type,
+            tv_bot_broker_tradovate::TradovateOrderType::Market
+        );
+        assert_eq!(oso.order.brackets.len(), 2);
+        drop(place_osos);
+
+        let history_after = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "new-entry gate history after success request",
+        )
+        .await;
+        assert_eq!(history_after.status(), StatusCode::OK);
+        let history_after_body = history_after
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_body).expect("history json should parse");
+        assert!(
+            history_after.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+
+        let journal_records = journal.list().expect("journal should list records");
+        let gate_updates = journal_records
+            .iter()
+            .filter(|record| record.action == "new_entries_gate_updated")
+            .collect::<Vec<_>>();
+        assert_eq!(gate_updates.len(), 2);
+        assert_eq!(gate_updates[0].payload["enabled"].as_bool(), Some(false));
+        assert_eq!(
+            gate_updates[0].payload["reason"].as_str(),
+            Some("let the current runner finish without adding size")
+        );
+        assert_eq!(gate_updates[1].payload["enabled"].as_bool(), Some(true));
+        let journal_actions = journal_records
+            .iter()
+            .map(|record| record.action.clone())
+            .collect::<Vec<_>>();
+        assert!(journal_actions.contains(&"intent_received".to_owned()));
+        assert!(journal_actions.contains(&"decision".to_owned()));
+        assert!(journal_actions.contains(&"dispatch_failed".to_owned()));
+        assert!(journal_actions.contains(&"dispatch_succeeded".to_owned()));
+        assert!(journal_records.iter().any(|record| {
+            record.action == "dispatch_failed"
+                && record.payload["error"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("new entries are blocked"))
+        }));
 
         let _ = fs::remove_file(strategy_path);
     }

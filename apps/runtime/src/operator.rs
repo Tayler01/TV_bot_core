@@ -14,8 +14,8 @@ use tv_bot_control_api::{
 };
 use tv_bot_core_types::{
     BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerPreference,
-    BrokerStatusSnapshot, ExecutionIntent, InstrumentMapping, ReadinessCheckStatus, RuntimeMode,
-    SystemHealthSnapshot, TradePathLatencyRecord, TradeSide, WarmupStatus,
+    BrokerStatusSnapshot, ExecutionIntent, InstrumentMapping, ReadinessCheck, ReadinessCheckStatus,
+    RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord, TradeSide, WarmupStatus,
 };
 use tv_bot_execution_engine::{
     ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,
@@ -139,6 +139,8 @@ impl RuntimeOperatorState {
             warmup_status: self.runtime.warmup_status(),
             strategy_loaded: self.runtime.is_strategy_loaded(),
             hard_override_active: self.runtime.hard_override_active(),
+            operator_new_entries_enabled: self.runtime.new_entries_enabled(),
+            operator_new_entries_reason: self.runtime.new_entries_reason(),
             current_strategy: self
                 .loaded_strategy
                 .as_ref()
@@ -230,6 +232,19 @@ impl RuntimeOperatorState {
             }
         }
 
+        if !self.runtime.new_entries_enabled() {
+            let message = self
+                .runtime
+                .new_entries_reason()
+                .map(|reason| format!("new entries are disabled by operator control: {reason}"))
+                .unwrap_or_else(|| "new entries are disabled by operator control".to_owned());
+            report.checks.push(ReadinessCheck {
+                name: "operator_entry_gate".to_owned(),
+                status: ReadinessCheckStatus::Warning,
+                message,
+            });
+        }
+
         RuntimeReadinessSnapshot { status, report }
     }
 
@@ -306,6 +321,20 @@ impl RuntimeOperatorState {
                     "runtime resumed into {}",
                     mode_label(&self.runtime.current_mode())
                 ))
+            }
+            RuntimeLifecycleCommand::SetNewEntriesEnabled { enabled, reason } => {
+                self.runtime
+                    .set_new_entries_enabled(enabled, reason.clone());
+                Ok(if enabled {
+                    "new entries enabled".to_owned()
+                } else {
+                    match reason {
+                        Some(reason) if !reason.trim().is_empty() => {
+                            format!("new entries disabled: {reason}")
+                        }
+                        _ => "new entries disabled".to_owned(),
+                    }
+                })
             }
             RuntimeLifecycleCommand::ResolveReconnectReview { .. } => {
                 Ok("reconnect review prepared".to_owned())
@@ -983,13 +1012,15 @@ impl RuntimeOperatorState {
     }
 
     fn new_entries_allowed(&self, context: &RuntimeStatusContext) -> bool {
-        !matches!(
-            self.market_data_health(context),
-            DependencyHealth::Blocking(_)
-        ) && !matches!(
-            self.broker_sync_health(context),
-            DependencyHealth::Blocking(_)
-        )
+        self.runtime.new_entries_enabled()
+            && !matches!(
+                self.market_data_health(context),
+                DependencyHealth::Blocking(_)
+            )
+            && !matches!(
+                self.broker_sync_health(context),
+                DependencyHealth::Blocking(_)
+            )
     }
 }
 
@@ -1900,6 +1931,65 @@ mod tests {
             }
             other => panic!("unexpected command shape: {other:?}"),
         }
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[test]
+    fn sanitize_command_request_blocks_new_entries_when_operator_gate_is_disabled() {
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let mut operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::LoadStrategy {
+                    path: strategy_path.clone(),
+                },
+                &sample_context(),
+            )
+            .expect("strategy should load");
+        operator
+            .apply_lifecycle_command(RuntimeLifecycleCommand::MarkWarmupReady, &sample_context())
+            .expect("warmup should mark ready");
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::Arm {
+                    allow_override: true,
+                },
+                &sample_context(),
+            )
+            .expect("runtime should arm");
+        operator
+            .apply_lifecycle_command(
+                RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                    enabled: false,
+                    reason: Some("let the current runner finish without adding".to_owned()),
+                },
+                &sample_context(),
+            )
+            .expect("operator gate should update");
+
+        let request = operator
+            .sanitize_command_request(&sample_context(), sample_entry_request())
+            .expect("request should sanitize");
+
+        match request.command {
+            ControlApiCommand::ManualIntent { request, .. } => {
+                assert!(request.execution.state.runtime_can_submit_orders);
+                assert!(!request.execution.state.new_entries_allowed);
+            }
+            other => panic!("unexpected command shape: {other:?}"),
+        }
+
+        let readiness = operator.readiness_snapshot(&sample_context());
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "operator_entry_gate"
+                && check.status == ReadinessCheckStatus::Warning
+                && check
+                    .message
+                    .contains("new entries are disabled by operator control")
+        }));
 
         let _ = fs::remove_file(strategy_path);
     }

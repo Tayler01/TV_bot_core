@@ -865,6 +865,7 @@ function App() {
   const [eventFeed, setEventFeed] = useState<EventFeedViewModel>(INITIAL_EVENT_FEED_VIEW_MODEL);
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [newEntriesReason, setNewEntriesReason] = useState("dashboard operator entry gate");
   const [closePositionReason, setClosePositionReason] = useState(
     "dashboard close position request",
   );
@@ -1026,6 +1027,26 @@ function App() {
       }
     },
   );
+
+  const updateNewEntriesEnabled = useEffectEvent(async (enabled: boolean) => {
+    const result = await executeLifecycleCommand(
+      {
+        kind: "set_new_entries_enabled",
+        enabled,
+        reason: newEntriesReason.trim() || null,
+      },
+      {
+        pendingLabel: enabled ? "Re-enabling new entries" : "Disabling new entries",
+        confirmMessage: enabled
+          ? undefined
+          : "Disable new entries now? Existing positions can still be managed, but fresh entry requests will stay blocked until you re-enable them.",
+      },
+    );
+
+    if (result?.httpStatus === 200) {
+      setNewEntriesReason("dashboard operator entry gate");
+    }
+  });
 
   const refreshStrategyLibrary = useEffectEvent(async (signal?: AbortSignal) => {
     setStrategyViewModel((current) => ({
@@ -1350,6 +1371,7 @@ function App() {
     snapshot != null &&
     snapshot.status.strategy_loaded === true &&
     snapshot.status.command_dispatch_ready === true &&
+    snapshot.status.operator_new_entries_enabled === true &&
     snapshot.status.arm_state === "armed" &&
     (snapshot.status.mode === "paper" || snapshot.status.mode === "live") &&
     manualEntryReason.trim().length > 0 &&
@@ -1372,6 +1394,14 @@ function App() {
     pendingAction === null;
   const canUploadSelectedStrategyFile =
     selectedStrategyUploadFile !== null && pendingAction === null;
+  const canDisableNewEntries =
+    snapshot != null &&
+    pendingAction === null &&
+    snapshot.status.operator_new_entries_enabled === true;
+  const canEnableNewEntries =
+    snapshot != null &&
+    pendingAction === null &&
+    snapshot.status.operator_new_entries_enabled === false;
   const reviewActionsDisabled = reviewButtonDisabled(pendingAction, snapshot);
   const reconnectCloseDisabled =
     reviewActionsDisabled || snapshot?.status.reconnect_review.required !== true;
@@ -1501,6 +1531,68 @@ function App() {
                     Live
                   </button>
                 </div>
+              </section>
+
+              <section className="control-card">
+                <p className="control-card__title">New entry gate</p>
+                <div className="pill-row">
+                  <Pill
+                    label={
+                      snapshot.status.operator_new_entries_enabled
+                        ? "New entries enabled"
+                        : "New entries disabled"
+                    }
+                    tone={
+                      snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"
+                    }
+                  />
+                  <Pill
+                    label={
+                      snapshot.status.operator_new_entries_reason ??
+                      "Operator gate is open for fresh entries"
+                    }
+                    tone={
+                      snapshot.status.operator_new_entries_enabled ? "info" : "warning"
+                    }
+                  />
+                </div>
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="New entry gate reason"
+                    placeholder="dashboard operator entry gate"
+                    value={newEntriesReason}
+                    onChange={(event) => {
+                      setNewEntriesReason(event.target.value);
+                    }}
+                  />
+                </label>
+                <div className="action-row">
+                  <button
+                    className="command-button command-button--danger"
+                    type="button"
+                    disabled={!canDisableNewEntries}
+                    onClick={() => {
+                      void updateNewEntriesEnabled(false);
+                    }}
+                  >
+                    Disable new entries
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={!canEnableNewEntries}
+                    onClick={() => {
+                      void updateNewEntriesEnabled(true);
+                    }}
+                  >
+                    Enable new entries
+                  </button>
+                </div>
+                <p className="control-card__note">
+                  This gate blocks fresh entry requests through the runtime host while still
+                  leaving flatten, close, and cancel actions available on existing exposure.
+                </p>
               </section>
 
               <section className="control-card control-card--wide">
@@ -2086,6 +2178,16 @@ function App() {
                 tone={snapshot.status.hard_override_active ? "warning" : "healthy"}
               />
               <Pill
+                label={
+                  snapshot.status.operator_new_entries_enabled
+                    ? "Entry gate open"
+                    : "Entry gate closed"
+                }
+                tone={
+                  snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"
+                }
+              />
+              <Pill
                 label={snapshot.status.command_dispatch_detail}
                 tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
               />
@@ -2097,6 +2199,15 @@ function App() {
                   snapshot.status.current_strategy
                     ? `${snapshot.status.current_strategy.name} v${snapshot.status.current_strategy.version}`
                     : "Not loaded"
+                }
+              />
+              <Definition
+                label="New entries"
+                value={
+                  snapshot.status.operator_new_entries_enabled
+                    ? "Enabled"
+                    : snapshot.status.operator_new_entries_reason ??
+                      "Disabled by operator control"
                 }
               />
               <Definition

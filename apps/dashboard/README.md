@@ -22,7 +22,7 @@ The current dashboard now covers:
 - explicit runtime mode with strong paper/live separation
 - strategy library upload, browsing, and host-backed validation before load
 - strategy load through the audited runtime lifecycle command path
-- warmup, arm/disarm, pause/resume, mode switch, manual entry, close-position, and cancel-working-orders controls
+- warmup, arm/disarm, pause/resume, mode switch, explicit `disable new entries`, manual entry, close-position, and cancel-working-orders controls
 - reconnect and shutdown review action cards through the runtime lifecycle command path
 - local `/events` WebSocket operator feed for journal, command, readiness, history, and health updates
 - account routing

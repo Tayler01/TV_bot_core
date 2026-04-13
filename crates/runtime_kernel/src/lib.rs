@@ -60,6 +60,8 @@ pub struct RuntimeStateMachine {
     warmup_status: WarmupStatus,
     strategy_loaded: bool,
     hard_override_active: bool,
+    new_entries_enabled: bool,
+    new_entries_reason: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -113,6 +115,8 @@ impl RuntimeStateMachine {
             warmup_status: WarmupStatus::NotLoaded,
             strategy_loaded: false,
             hard_override_active: false,
+            new_entries_enabled: true,
+            new_entries_reason: None,
         }
     }
 
@@ -134,6 +138,14 @@ impl RuntimeStateMachine {
 
     pub fn hard_override_active(&self) -> bool {
         self.hard_override_active
+    }
+
+    pub fn new_entries_enabled(&self) -> bool {
+        self.new_entries_enabled
+    }
+
+    pub fn new_entries_reason(&self) -> Option<String> {
+        self.new_entries_reason.clone()
     }
 
     pub fn switch_mode(&mut self, mode: RuntimeMode) {
@@ -282,6 +294,22 @@ impl RuntimeStateMachine {
     pub fn disarm(&mut self) {
         self.arm_state = ArmState::Disarmed;
         self.hard_override_active = false;
+    }
+
+    pub fn set_new_entries_enabled(&mut self, enabled: bool, reason: Option<String>) {
+        self.new_entries_enabled = enabled;
+        self.new_entries_reason = if enabled {
+            None
+        } else {
+            reason.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
+            })
+        };
     }
 
     pub fn can_submit_orders(&self) -> bool {
@@ -1224,6 +1252,31 @@ mod tests {
 
         state.pause();
         assert!(!state.can_submit_orders());
+    }
+
+    #[test]
+    fn manual_entry_gate_tracks_explicit_disable_and_enable() {
+        let mut state = RuntimeStateMachine::new(RuntimeMode::Paper);
+
+        assert!(state.new_entries_enabled());
+        assert_eq!(state.new_entries_reason(), None);
+
+        state.set_new_entries_enabled(
+            false,
+            Some("operator is letting the current runner finish without scaling".to_owned()),
+        );
+        assert!(!state.new_entries_enabled());
+        assert_eq!(
+            state.new_entries_reason().as_deref(),
+            Some("operator is letting the current runner finish without scaling")
+        );
+
+        state.pause();
+        assert!(!state.new_entries_enabled());
+
+        state.set_new_entries_enabled(true, Some("clear".to_owned()));
+        assert!(state.new_entries_enabled());
+        assert_eq!(state.new_entries_reason(), None);
     }
 
     #[test]

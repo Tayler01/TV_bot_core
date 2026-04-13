@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type {
   LoadedStrategySummary,
+  RuntimeLifecycleCommand,
   RuntimeStrategyValidationResponse,
 } from "./types/controlApi";
 
@@ -91,6 +92,8 @@ function installFetchMock(snapshotOverrides?: {
     warmup_status: "ready",
     strategy_loaded: true,
     hard_override_active: false,
+    operator_new_entries_enabled: true,
+    operator_new_entries_reason: null as string | null,
     current_strategy: currentStrategy,
     broker_status: {
       provider: "tradovate",
@@ -750,6 +753,42 @@ function installFetchMock(snapshotOverrides?: {
             },
             200,
           );
+        case "set_new_entries_enabled": {
+          const command = request.command as Extract<
+            RuntimeLifecycleCommand,
+            { kind: "set_new_entries_enabled" }
+          >;
+          status.operator_new_entries_enabled = command.enabled;
+          status.operator_new_entries_reason =
+            command.enabled === false ? command.reason ?? null : null;
+          readiness.status.operator_new_entries_enabled = status.operator_new_entries_enabled;
+          readiness.status.operator_new_entries_reason = status.operator_new_entries_reason;
+          readiness.report.checks = readiness.report.checks.filter(
+            (check) => check.name !== "operator_entry_gate",
+          );
+          if (status.operator_new_entries_enabled === false) {
+            readiness.report.checks.push({
+              name: "operator_entry_gate",
+              status: "warning",
+              message: status.operator_new_entries_reason
+                ? `new entries are disabled by operator control: ${status.operator_new_entries_reason}`
+                : "new entries are disabled by operator control",
+            });
+          }
+          return jsonResponse(
+            {
+              status_code: "Ok",
+              message:
+                status.operator_new_entries_enabled === false
+                  ? `new entries disabled: ${status.operator_new_entries_reason ?? "dashboard operator entry gate"}`
+                  : "new entries enabled",
+              status,
+              readiness,
+              command_result: null,
+            },
+            200,
+          );
+        }
         case "resolve_reconnect_review":
           status.reconnect_review.required = false;
           status.reconnect_review.last_decision = request.command.decision ?? null;
@@ -1182,6 +1221,72 @@ describe("App", () => {
       source: "dashboard",
       command: {
         kind: "pause",
+      },
+    });
+  });
+
+  it("posts the operator new-entry gate through the runtime lifecycle endpoint", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("New entry gate reason"), {
+      target: { value: "let the current runner finish without adding size" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Disable new entries" }));
+
+    expect(
+      await screen.findByText(
+        "new entries disabled: let the current runner finish without adding size",
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("New entries disabled")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Enable new entries" })).toBeEnabled();
+
+    const runtimeCommandCalls = fetchSpy.mock.calls.filter((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/runtime/commands");
+    });
+    const disableCall = runtimeCommandCalls[runtimeCommandCalls.length - 1];
+    expect(JSON.parse(String(disableCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "set_new_entries_enabled",
+        enabled: false,
+        reason: "let the current runner finish without adding size",
+      },
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Enable new entries" }));
+
+    expect(await screen.findByText("new entries enabled")).toBeInTheDocument();
+    expect(await screen.findByText("New entries enabled")).toBeInTheDocument();
+
+    const updatedRuntimeCommandCalls = fetchSpy.mock.calls.filter((call) => {
+      const target = call[0];
+      const endpoint =
+        typeof target === "string"
+          ? target
+          : target instanceof URL
+            ? target.pathname
+            : target.url;
+      return endpoint.endsWith("/runtime/commands");
+    });
+    const enableCall = updatedRuntimeCommandCalls[updatedRuntimeCommandCalls.length - 1];
+    expect(JSON.parse(String(enableCall?.[1]?.body))).toEqual({
+      source: "dashboard",
+      command: {
+        kind: "set_new_entries_enabled",
+        enabled: true,
+        reason: "dashboard operator entry gate",
       },
     });
   });

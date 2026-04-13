@@ -139,6 +139,8 @@ pub struct RuntimeStatusSnapshot {
     pub warmup_status: WarmupStatus,
     pub strategy_loaded: bool,
     pub hard_override_active: bool,
+    pub operator_new_entries_enabled: bool,
+    pub operator_new_entries_reason: Option<String>,
     pub current_strategy: Option<LoadedStrategySummary>,
     pub broker_status: Option<BrokerStatusSnapshot>,
     pub market_data_status: Option<MarketDataServiceSnapshot>,
@@ -302,6 +304,10 @@ pub enum RuntimeLifecycleCommand {
     Disarm,
     Pause,
     Resume,
+    SetNewEntriesEnabled {
+        enabled: bool,
+        reason: Option<String>,
+    },
     ResolveReconnectReview {
         decision: RuntimeReconnectDecision,
         contract_id: Option<i64>,

@@ -186,6 +186,8 @@ export interface RuntimeStatusSnapshot {
   warmup_status: WarmupStatus;
   strategy_loaded: boolean;
   hard_override_active: boolean;
+  operator_new_entries_enabled: boolean;
+  operator_new_entries_reason: string | null;
   current_strategy: LoadedStrategySummary | null;
   broker_status: BrokerStatusSnapshot | null;
   market_data_status: MarketDataServiceSnapshot | null;
@@ -445,6 +447,11 @@ export type RuntimeLifecycleCommand =
     }
   | {
       kind: "resume";
+    }
+  | {
+      kind: "set_new_entries_enabled";
+      enabled: boolean;
+      reason: string | null;
     }
   | {
       kind: "resolve_reconnect_review";
