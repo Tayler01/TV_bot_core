@@ -275,6 +275,7 @@ fn exits_on_opposite_signal_when_position_is_open() {
     let mut state = StrategyRuntimeState::default();
     let mut market_snapshot = snapshot(now, bearish_bars());
     market_snapshot.position = Some(BrokerPositionSnapshot {
+        account_id: Some("acct-paper".to_owned()),
         symbol: "GCM2026".to_owned(),
         quantity: 1,
         average_price: Some(Decimal::from(2100)),
@@ -357,6 +358,7 @@ fn flattens_after_session_end_when_position_is_open() {
         .with_timezone(&Utc);
     let mut market_snapshot = snapshot(now, bullish_bars());
     market_snapshot.position = Some(BrokerPositionSnapshot {
+        account_id: Some("acct-paper".to_owned()),
         symbol: "GCM2026".to_owned(),
         quantity: 1,
         average_price: Some(Decimal::from(2100)),

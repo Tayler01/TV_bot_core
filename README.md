@@ -6,7 +6,8 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
 - Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health, while final dashboard polish and release acceptance are still incomplete.
-- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows, but final regression sweeps, packaging, and runbooks are not complete.
+- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
+- Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix plus operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, but packaging and final hands-on release validation are still incomplete.
 
 The current implementation status review lives in `docs/architecture/current_status.md`.
 
@@ -90,7 +91,7 @@ tests/
 
 - Final dashboard control-center polish and operator ergonomics
 - Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
-- Cross-platform packaging, operational runbooks, and release hardening
+- Cross-platform packaging and final release hardening
 
 ## Local Development
 
@@ -104,6 +105,14 @@ cargo test -j 1
 
 This workspace is now the primary local checkout, but Windows may still briefly file-lock generated test executables. If that happens, retrying targeted serial tests is usually enough.
 
+For the release-hardening path, the repository now includes:
+
+- `.github/workflows/ci.yml` for Rust workspace tests on Windows, Linux, and macOS plus dashboard build/test checks
+- `docs/ops/paper_demo_verification.md`
+- `docs/ops/storage_fallback_override.md`
+- `docs/ops/reconnect_and_shutdown_review.md`
+- `docs/ops/release_checklist.md`
+
 ## Key Docs
 
 - `AGENTS.md`
@@ -112,3 +121,4 @@ This workspace is now the primary local checkout, but Windows may still briefly 
 - `V1_ACCEPTANCE_CRITERIA.md`
 - `docs/architecture/phase_0_phase_1_foundations.md`
 - `docs/architecture/current_status.md`
+- `docs/ops/README.md`

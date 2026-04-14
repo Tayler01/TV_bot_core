@@ -11,9 +11,9 @@ This review compares the current repository state against `AGENTS.md`, `codex_fu
 - Phase 4 foundations are substantially in place.
 - Phase 5 foundations are substantially in place, with the runtime host/control-plane server and CLI control surface implemented and the dashboard now partially wired for operator overview, lifecycle control, explicit no-new-entry gating, host-backed runtime settings editing, strategy-library upload/validation, event streaming, reconnect/shutdown safety actions, manual entry, persisted journal visibility, close/cancel plus open-order/fill and trade-ledger views, and deeper PnL, latency, and host-health drill-downs, while the remaining dashboard polish is still incomplete.
 - Phase 6 foundations are now in place, including durable trading-history record storage, live runtime/broker write-path wiring, queryable history projection through the control plane, runtime-collected latency persistence, host-level health supervision with sampled runtime-resource telemetry, and safety-critical shutdown/reconnect review control flows with explicit acceptance coverage for paper startup and reconnect review gating across position-only, working-orders-only, and mixed-exposure scenarios plus `close_position`, `leave_broker_protected`, and `reattach_bot_management`, as well as signal-time shutdown blocking, explicit paper arm-before-trade enforcement, `/readiness` release-gate coverage for broker/account/data/storage surfacing plus fallback override warnings, and a broader paper release-sweep regression that combines repeated paper-session gating with startup-review resolution plus cancel/close operator actions through the runtime host.
-- Phase 7 is mostly open.
+- Phase 7 is now partially in place with a checked-in GitHub Actions cross-platform CI matrix and concrete V1 operator runbooks, but packaging and final hands-on release verification are still open.
 
-V1 is not release-ready yet because final dashboard polish, broader release hardening, and the remaining cross-platform/release verification passes are still unfinished.
+V1 is not release-ready yet because final dashboard polish, packaging, and the remaining cross-platform/release verification passes are still unfinished.
 
 ## Implemented Through The Current Pass
 
@@ -49,7 +49,7 @@ V1 is not release-ready yet because final dashboard polish, broader release hard
 
 1. Build out the remaining dashboard operator workflow polish on top of the now-real host surfaces for status, readiness, commands, events, history, and health.
 2. Expand the last dashboard-facing operational views and deeper operator drill-downs on top of the now-sampled health and metrics pipeline.
-3. Run the remaining cross-platform/package/runbook hardening and final release verification passes.
+3. Run the remaining packaging and final release verification passes on top of the new CI matrix and operator runbooks.
 
 ## Remaining Work By Phase
 
@@ -66,10 +66,8 @@ V1 is not release-ready yet because final dashboard polish, broader release hard
 ### Phase 7
 
 - Cross-platform packaging
-- Hardening pass
-- Remaining paper-trading hardening and final regression sweeps across the broader acceptance matrix
-- Paper-trading test campaigns and final release verification passes
-- Operational docs and runbooks
+- Final hands-on paper-trading verification passes against the release candidate
+- Final release verification passes and sign-off
 
 ## Acceptance Gaps Still Open
 
@@ -81,5 +79,5 @@ V1 is not release-ready yet because final dashboard polish, broader release hard
 - CLI acceptance is substantially met for local operator control flow, with broker account/sync projection, live market-data status, shared storage/journal policy status, reconnect/shutdown review controls, and trading-history inspection now surfaced through the runtime host.
 - Persistence acceptance is substantially met for durable Postgres/SQLite adapters, fallback reporting, trading-history stores, live runtime/broker record ingestion, queryable history projection, and persisted latency/health snapshots.
 - Metrics acceptance is substantially met for V1 host and CLI surfaces: runtime-collected trade-path latency, persisted health snapshots, sampled CPU/memory runtime-resource telemetry, dashboard event streaming, and open-order/fill, trade-ledger, journal, PnL, and latency/health operator views are now surfaced, while final dashboard polish is still incomplete.
-- Full paper-trading acceptance is substantially met at the host/operator layer, and the broader host-level regression/release sweep is now in place, but final release verification is not complete yet.
+- Full paper-trading acceptance is substantially met at the host/operator layer, the broader host-level regression/release sweep is now in place, and the repository now has release runbooks plus a cross-platform CI matrix, but final hands-on release verification is not complete yet.
 - Final release gate items for the dashboard and full paper-mode acceptance are not met yet.
