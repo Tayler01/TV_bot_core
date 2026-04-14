@@ -3343,10 +3343,10 @@ mod tests {
         BrokerPreference, CompiledStrategy, ContractMode, DailyLossLimit, DashboardDisplay,
         DataFeedRequirement, DataRequirements, EntryOrderType, EntryRules, ExecutionIntent,
         ExecutionSpec, ExitRules, FailsafeRules, FeedType, MarketConfig, MarketSelection,
-        PartialTakeProfitRule, PositionSizing, PositionSizingMode, ReversalMode, RiskDecision,
-        RiskDecisionStatus, RiskLimits, ScalingConfig, SessionMode, SessionRules,
-        SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata, Timeframe,
-        TradeManagement, TrailingRule, WarmupStatus,
+        PartialTakeProfitRule, PositionSizing, PositionSizingMode, ReadinessCheckStatus,
+        ReversalMode, RiskDecision, RiskDecisionStatus, RiskLimits, ScalingConfig, SessionMode,
+        SessionRules, SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata,
+        Timeframe, TradeManagement, TrailingRule, WarmupStatus,
     };
     use tv_bot_execution_engine::{
         ExecutionDispatchReport, ExecutionDispatchResult, ExecutionInstrumentContext,
@@ -5065,6 +5065,169 @@ selection:
                 .and_then(|snapshot| snapshot.memory_bytes),
             Some(12_582_912)
         );
+    }
+
+    #[tokio::test]
+    async fn readiness_route_surfaces_broker_market_data_and_storage_health_for_paper_mode() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let mut state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api,
+            journal,
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        state.storage_status.fallback_activated = true;
+        state.storage_status.allow_runtime_fallback = true;
+        state.storage_status.detail =
+            "primary Postgres persistence is unavailable; SQLite fallback is active".to_owned();
+
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "readiness route load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "readiness route set mode paper request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "readiness route mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/readiness")
+                .body(Body::empty())
+                .expect("request should build"),
+            "readiness route request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let readiness: RuntimeReadinessSnapshot =
+            serde_json::from_slice(&body).expect("readiness json should parse");
+
+        assert_eq!(readiness.status.mode, RuntimeMode::Paper);
+        assert_eq!(readiness.status.arm_state, ArmState::Disarmed);
+        assert_eq!(readiness.status.warmup_status, WarmupStatus::Ready);
+        assert_eq!(
+            readiness.status.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert!(readiness.status.storage_status.fallback_activated);
+        assert!(readiness.status.storage_status.allow_runtime_fallback);
+        assert_eq!(
+            readiness.status.storage_status.detail,
+            "primary Postgres persistence is unavailable; SQLite fallback is active"
+        );
+        assert_eq!(
+            readiness
+                .status
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+        assert_eq!(
+            readiness
+                .status
+                .broker_status
+                .as_ref()
+                .map(|snapshot| snapshot.sync_state),
+            Some(tv_bot_core_types::BrokerSyncState::Synchronized)
+        );
+
+        assert!(readiness.report.hard_override_required);
+        assert!(!readiness.report.has_blocking_issues());
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "account_selected" && check.status == ReadinessCheckStatus::Pass
+        }));
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "market_data" && check.status == ReadinessCheckStatus::Pass
+        }));
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "broker_sync" && check.status == ReadinessCheckStatus::Pass
+        }));
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name == "storage"
+                && check.status == ReadinessCheckStatus::Warning
+                && check.message.contains(
+                    "primary Postgres persistence is unavailable; SQLite fallback is active",
+                )
+        }));
+        assert!(readiness.report.checks.iter().any(|check| {
+            check.name.starts_with("override_requirement_")
+                && check.status == ReadinessCheckStatus::Warning
+                && check.message.contains(
+                    "primary Postgres persistence is unavailable; SQLite fallback is active",
+                )
+        }));
+
+        let _ = fs::remove_file(strategy_path);
     }
 
     #[tokio::test]

@@ -81,6 +81,7 @@ tests/
 - Runtime host lifecycle/state handling in `apps/runtime`
 - Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
 - Runtime-host system-health and latency projection through `/health`, `/status`, and WebSocket events in `apps/runtime`
+- Runtime-host `/readiness` release-gate coverage for broker/account/data/storage surfacing and fallback override warnings in `apps/runtime`
 - Dashboard operator surfaces for lifecycle control, strategy upload/validation, settings, manual entry, close/cancel, journal/history, event streaming, and health in `apps/dashboard`
 - Host-level paper acceptance coverage for explicit arm enforcement, repeated manual entries, operator/degraded no-new-entry safety gates, scale-in, flatten, and startup/reconnect review decisions in `apps/runtime`
 - CLI launch, lifecycle, reconnect-review, shutdown-review, and history commands in `apps/cli`
