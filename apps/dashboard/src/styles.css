@@ -552,55 +552,121 @@ select {
   white-space: pre-wrap;
 }
 
-.pnl-trend {
+.pnl-chart {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 14px;
-  align-items: end;
+  gap: 16px;
 }
 
-.pnl-trend__point {
+.pnl-chart__canvas-wrap {
+  padding: 14px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(240, 233, 223, 0.92));
+}
+
+.pnl-chart__canvas {
+  display: block;
+  width: 100%;
+  height: 220px;
+}
+
+.pnl-chart__baseline {
+  stroke: rgba(29, 36, 51, 0.18);
+  stroke-dasharray: 3 3;
+  stroke-width: 1;
+}
+
+.pnl-chart__line {
+  fill: none;
+  stroke: url(#pnl-chart-line);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pnl-chart__dot {
+  stroke: rgba(255, 255, 255, 0.96);
+  stroke-width: 1.4;
+}
+
+.pnl-chart__dot--healthy {
+  fill: #145d2f;
+}
+
+.pnl-chart__dot--danger {
+  fill: #8d2515;
+}
+
+.pnl-chart__dot--info,
+.pnl-chart__dot--warning {
+  fill: #0d4d78;
+}
+
+.pnl-chart__points,
+.per-trade-pnl-grid,
+.mini-metric-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.pnl-chart__points {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.pnl-chart__point-card,
+.per-trade-pnl-card {
   display: grid;
   gap: 10px;
-  min-height: 220px;
-  padding: 16px 14px;
+  padding: 14px 16px;
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.82);
 }
 
-.pnl-trend__label,
-.pnl-trend__note {
+.pnl-chart__point-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.pnl-chart__point-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pnl-chart__point-pill--healthy {
+  background: rgba(86, 172, 119, 0.15);
+  color: #145d2f;
+}
+
+.pnl-chart__point-pill--danger {
+  background: rgba(187, 64, 40, 0.15);
+  color: #8d2515;
+}
+
+.pnl-chart__point-pill--info,
+.pnl-chart__point-pill--warning {
+  background: rgba(15, 102, 148, 0.14);
+  color: #0d4d78;
+}
+
+.pnl-chart__point-note {
   font-family: "IBM Plex Mono", "Consolas", monospace;
   font-size: 0.78rem;
   color: #536078;
 }
 
-.pnl-trend__bar-wrap {
-  display: flex;
-  align-items: end;
-  min-height: 120px;
-  padding: 10px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(240, 233, 223, 0.92));
+.per-trade-pnl-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
-.pnl-trend__bar {
-  display: block;
-  width: 100%;
-  border-radius: 12px 12px 6px 6px;
-}
-
-.pnl-trend__bar--healthy {
-  background: linear-gradient(180deg, rgba(86, 172, 119, 0.6), rgba(20, 93, 47, 0.95));
-}
-
-.pnl-trend__bar--danger {
-  background: linear-gradient(180deg, rgba(187, 64, 40, 0.55), rgba(141, 37, 21, 0.95));
-}
-
-.pnl-trend__bar--info,
-.pnl-trend__bar--warning {
-  background: linear-gradient(180deg, rgba(15, 102, 148, 0.45), rgba(13, 77, 120, 0.92));
+.mini-metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 .latency-list {

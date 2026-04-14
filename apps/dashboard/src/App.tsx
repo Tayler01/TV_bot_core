@@ -143,12 +143,35 @@ interface TradePerformanceViewModel {
   floatingNet: number | null;
 }
 
-interface PnlTrendPoint {
+interface PnlChartPoint {
   id: string;
   label: string;
   note: string;
   value: number;
-  magnitudePercent: number;
+  xPercent: number;
+  yPercent: number;
+  tone: BannerTone;
+}
+
+interface PnlChartViewModel {
+  points: PnlChartPoint[];
+  zeroPercent: number | null;
+}
+
+interface PerTradePnlViewModel {
+  tradeId: string;
+  symbol: string;
+  side: TradeSummaryRecord["side"];
+  quantity: number;
+  status: TradeSummaryRecord["status"];
+  netPnl: number | null;
+  grossPnl: number | null;
+  fees: number | null;
+  commissions: number | null;
+  slippage: number | null;
+  holdMinutes: number | null;
+  openedAt: string;
+  closedAt: string | null;
   tone: BannerTone;
 }
 
@@ -691,7 +714,7 @@ function tradePerformanceForProjection(snapshot: DashboardSnapshot): TradePerfor
   };
 }
 
-function pnlTrendPointsForProjection(snapshot: DashboardSnapshot): PnlTrendPoint[] {
+function pnlChartForProjection(snapshot: DashboardSnapshot): PnlChartViewModel {
   const closedTrades = Object.values(snapshot.history.projection.trade_summaries)
     .filter((trade) => trade.status === "closed")
     .sort(
@@ -707,7 +730,7 @@ function pnlTrendPointsForProjection(snapshot: DashboardSnapshot): PnlTrendPoint
     return {
       id: trade.trade_id,
       label: `T${index + 1}`,
-      note: `${trade.symbol} ${formatSignedCurrency(trade.net_pnl)}`,
+      note: `${trade.symbol} closed ${formatSignedCurrency(trade.net_pnl)}`,
       value: cumulativeNet,
     };
   });
@@ -717,22 +740,82 @@ function pnlTrendPointsForProjection(snapshot: DashboardSnapshot): PnlTrendPoint
     rawPoints.push({
       id: latestPnlSnapshot.snapshot_id,
       label: "Now",
-      note: `Snapshot ${formatDateTime(latestPnlSnapshot.captured_at)}`,
+      note: `Floating now at ${formatDateTime(latestPnlSnapshot.captured_at)}`,
       value: decimalToNumber(latestPnlSnapshot.net_pnl) ?? cumulativeNet,
     });
   }
 
-  const trimmedPoints = rawPoints.slice(-6);
-  const maxMagnitude = trimmedPoints.reduce(
-    (largest, point) => Math.max(largest, Math.abs(point.value)),
-    0,
+  const trimmedPoints = rawPoints.slice(-8);
+  if (!trimmedPoints.length) {
+    return {
+      points: [],
+      zeroPercent: null,
+    };
+  }
+
+  let minValue = trimmedPoints.reduce(
+    (lowest, point) => Math.min(lowest, point.value),
+    trimmedPoints[0]?.value ?? 0,
+  );
+  let maxValue = trimmedPoints.reduce(
+    (highest, point) => Math.max(highest, point.value),
+    trimmedPoints[0]?.value ?? 0,
   );
 
-  return trimmedPoints.map((point) => ({
-    ...point,
-    magnitudePercent:
-      maxMagnitude === 0 ? 20 : Math.max(20, Math.round((Math.abs(point.value) / maxMagnitude) * 100)),
-    tone: point.value > 0 ? "healthy" : point.value < 0 ? "danger" : "info",
+  if (minValue === maxValue) {
+    const padding = Math.max(Math.abs(maxValue) * 0.2, 1);
+    minValue -= padding;
+    maxValue += padding;
+  }
+
+  const chartLeft = 6;
+  const chartRight = 94;
+  const chartTop = 8;
+  const chartBottom = 92;
+  const range = maxValue - minValue;
+  const zeroPercent =
+    minValue <= 0 && maxValue >= 0
+      ? chartBottom - ((0 - minValue) / range) * (chartBottom - chartTop)
+      : null;
+
+  return {
+    points: trimmedPoints.map((point, index) => ({
+      ...point,
+      xPercent:
+        trimmedPoints.length === 1
+          ? 50
+          : chartLeft + (index / (trimmedPoints.length - 1)) * (chartRight - chartLeft),
+      yPercent: chartBottom - ((point.value - minValue) / range) * (chartBottom - chartTop),
+      tone: point.value > 0 ? "healthy" : point.value < 0 ? "danger" : "info",
+    })),
+    zeroPercent,
+  };
+}
+
+function pnlChartPath(points: PnlChartPoint[]): string {
+  return points
+    .map((point, index) =>
+      `${index === 0 ? "M" : "L"} ${point.xPercent.toFixed(1)} ${point.yPercent.toFixed(1)}`,
+    )
+    .join(" ");
+}
+
+function perTradePnlForProjection(snapshot: DashboardSnapshot): PerTradePnlViewModel[] {
+  return recentTradeSummariesForProjection(snapshot).map((trade) => ({
+    tradeId: trade.trade_id,
+    symbol: trade.symbol,
+    side: trade.side,
+    quantity: trade.quantity,
+    status: trade.status,
+    netPnl: decimalToNumber(trade.net_pnl),
+    grossPnl: decimalToNumber(trade.gross_pnl),
+    fees: decimalToNumber(trade.fees),
+    commissions: decimalToNumber(trade.commissions),
+    slippage: decimalToNumber(trade.slippage),
+    holdMinutes: minutesBetween(trade.opened_at, trade.closed_at),
+    openedAt: trade.opened_at,
+    closedAt: trade.closed_at,
+    tone: tradeTone(trade),
   }));
 }
 
@@ -893,6 +976,7 @@ function Definition({ label, value }: { label: string; value: string }) {
 
 function App() {
   const strategyUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const settingsDraftRef = useRef<RuntimeSettingsDraft | null>(null);
   const [viewModel, setViewModel] = useState<ViewModel>(INITIAL_VIEW_MODEL);
   const [strategyViewModel, setStrategyViewModel] = useState<StrategySummaryViewModel>(
     INITIAL_STRATEGY_VIEW_MODEL,
@@ -1155,7 +1239,9 @@ function App() {
         error: null,
         lastAttemptedAt: new Date().toISOString(),
       }));
-      setSettingsDraft(settingsDraftFromSnapshot(result.settings));
+      const nextDraft = settingsDraftFromSnapshot(result.settings);
+      settingsDraftRef.current = nextDraft;
+      setSettingsDraft(nextDraft);
       setSettingsDirty(false);
       setCommandFeedback({
         tone: result.settings.persistence_mode === "config_file" ? "healthy" : "warning",
@@ -1414,12 +1500,31 @@ function App() {
   }, [strategyViewModel.selectedPath]);
 
   const snapshot = viewModel.snapshot;
+  const updateSettingsDraft = useEffectEvent(
+    (updater: (draft: RuntimeSettingsDraft) => RuntimeSettingsDraft) => {
+      if (!snapshot) {
+        return;
+      }
+
+      setSettingsDirty(true);
+      setSettingsDraft((current) => {
+        const next = updater(
+          current ?? settingsDraftRef.current ?? settingsDraftFromSnapshot(snapshot.settings),
+        );
+        settingsDraftRef.current = next;
+        return next;
+      });
+    },
+  );
+
   useEffect(() => {
     if (!snapshot || settingsDirty) {
       return;
     }
 
-    setSettingsDraft(settingsDraftFromSnapshot(snapshot.settings));
+    const nextDraft = settingsDraftFromSnapshot(snapshot.settings);
+    settingsDraftRef.current = nextDraft;
+    setSettingsDraft(nextDraft);
   }, [settingsDirty, snapshot]);
 
   const selectedStrategyEntry =
@@ -1449,7 +1554,9 @@ function App() {
   const recentTrades = snapshot ? recentTradeSummariesForProjection(snapshot) : [];
   const journalRecords = snapshot ? recentJournalRecords(snapshot) : [];
   const tradePerformance = snapshot ? tradePerformanceForProjection(snapshot) : null;
-  const pnlTrend = snapshot ? pnlTrendPointsForProjection(snapshot) : [];
+  const pnlChart = snapshot ? pnlChartForProjection(snapshot) : null;
+  const pnlChartPathData = pnlChart ? pnlChartPath(pnlChart.points) : "";
+  const perTradePnl = snapshot ? perTradePnlForProjection(snapshot) : [];
   const journalSummary = summarizeJournalRecords(journalRecords);
   const latencyBreakdown = snapshot ? latencyStages(snapshot.health.latest_trade_latency) : [];
   const slowestLatencyStage = latencyBreakdown.reduce<LatencyStageViewModel | null>(
@@ -1944,9 +2051,8 @@ function App() {
                       value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
                       disabled={pendingAction !== null}
                       onChange={(event) => {
-                        setSettingsDirty(true);
-                        setSettingsDraft((current) => ({
-                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                        updateSettingsDraft((current) => ({
+                          ...current,
                           startupMode: event.target.value as RuntimeMode,
                         }));
                       }}
@@ -1968,9 +2074,8 @@ function App() {
                       }
                       disabled={pendingAction !== null}
                       onChange={(event) => {
-                        setSettingsDirty(true);
-                        setSettingsDraft((current) => ({
-                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                        updateSettingsDraft((current) => ({
+                          ...current,
                           defaultStrategyPath: event.target.value,
                         }));
                       }}
@@ -1988,9 +2093,8 @@ function App() {
                       }
                       disabled={pendingAction !== null}
                       onChange={(event) => {
-                        setSettingsDirty(true);
-                        setSettingsDraft((current) => ({
-                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                        updateSettingsDraft((current) => ({
+                          ...current,
                           allowSqliteFallback: event.target.value === "allow",
                         }));
                       }}
@@ -2010,9 +2114,8 @@ function App() {
                       }
                       disabled={pendingAction !== null}
                       onChange={(event) => {
-                        setSettingsDirty(true);
-                        setSettingsDraft((current) => ({
-                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                        updateSettingsDraft((current) => ({
+                          ...current,
                           paperAccountName: event.target.value,
                         }));
                       }}
@@ -2029,9 +2132,8 @@ function App() {
                       }
                       disabled={pendingAction !== null}
                       onChange={(event) => {
-                        setSettingsDirty(true);
-                        setSettingsDraft((current) => ({
-                          ...(current ?? settingsDraftFromSnapshot(snapshot.settings)),
+                        updateSettingsDraft((current) => ({
+                          ...current,
                           liveAccountName: event.target.value,
                         }));
                       }}
@@ -2054,7 +2156,9 @@ function App() {
                     type="button"
                     disabled={!settingsDirty || pendingAction !== null}
                     onClick={() => {
-                      setSettingsDraft(settingsDraftFromSnapshot(snapshot.settings));
+                      const nextDraft = settingsDraftFromSnapshot(snapshot.settings);
+                      settingsDraftRef.current = nextDraft;
+                      setSettingsDraft(nextDraft);
                       setSettingsDirty(false);
                     }}
                   >
@@ -2804,29 +2908,81 @@ function App() {
               />
             </dl>
             <section className="review-card review-card--wide">
-              <p className="control-card__title">P&L trend</p>
-              {pnlTrend.length ? (
-                <div className="pnl-trend">
-                  {pnlTrend.map((point) => (
-                    <article key={point.id} className="pnl-trend__point">
-                      <span className="pnl-trend__label">{point.label}</span>
-                      <div className="pnl-trend__bar-wrap">
-                        <span
-                          className={`pnl-trend__bar pnl-trend__bar--${point.tone}`}
-                          style={{ height: `${point.magnitudePercent}%` }}
+              <p className="control-card__title">Real-time P&amp;L chart</p>
+              {pnlChart && pnlChart.points.length ? (
+                <div className="pnl-chart">
+                  <div className="pnl-chart__canvas-wrap">
+                    <svg
+                      className="pnl-chart__canvas"
+                      viewBox="0 0 100 100"
+                      preserveAspectRatio="none"
+                      role="img"
+                      aria-label="Real-time P&L chart"
+                    >
+                      <defs>
+                        <linearGradient id="pnl-chart-line" x1="0" x2="1" y1="0" y2="0">
+                          <stop offset="0%" stopColor="#0d4d78" />
+                          <stop offset="55%" stopColor="#0f6694" />
+                          <stop offset="100%" stopColor="#ef8a2b" />
+                        </linearGradient>
+                      </defs>
+                      {pnlChart.zeroPercent !== null ? (
+                        <line
+                          className="pnl-chart__baseline"
+                          x1="4"
+                          x2="96"
+                          y1={pnlChart.zeroPercent}
+                          y2={pnlChart.zeroPercent}
                         />
-                      </div>
-                      <strong>{formatSignedCurrency(point.value)}</strong>
-                      <span className="pnl-trend__note">{point.note}</span>
-                    </article>
-                  ))}
+                      ) : null}
+                      <path className="pnl-chart__line" d={pnlChartPathData} />
+                      {pnlChart.points.map((point) => (
+                        <circle
+                          key={point.id}
+                          className={`pnl-chart__dot pnl-chart__dot--${point.tone}`}
+                          cx={point.xPercent}
+                          cy={point.yPercent}
+                          r="2.6"
+                        />
+                      ))}
+                    </svg>
+                  </div>
+                  <div className="pnl-chart__points">
+                    {pnlChart.points.map((point) => (
+                      <article key={point.id} className="pnl-chart__point-card">
+                        <div className="pnl-chart__point-header">
+                          <span className={`pnl-chart__point-pill pnl-chart__point-pill--${point.tone}`}>
+                            {point.label}
+                          </span>
+                          <strong>{formatSignedCurrency(point.value)}</strong>
+                        </div>
+                        <span className="pnl-chart__point-note">{point.note}</span>
+                      </article>
+                    ))}
+                  </div>
                 </div>
               ) : (
                 <p className="panel__footnote">
-                  The runtime host has not projected enough closed-trade history to draw a P&L trend yet.
+                  The runtime host has not projected enough history to draw the real-time P&amp;L chart yet.
                 </p>
               )}
               <div className="subgrid">
+                <MiniMetric
+                  label="Floating now"
+                  value={formatSignedCurrency(tradePerformance?.floatingNet)}
+                />
+                <MiniMetric
+                  label="Average closed net"
+                  value={formatSignedCurrency(tradePerformance?.averageNet)}
+                />
+                <MiniMetric
+                  label="Win rate"
+                  value={formatPercentage(tradePerformance?.winRate)}
+                />
+                <MiniMetric
+                  label="Average hold"
+                  value={formatDurationMinutes(tradePerformance?.averageHoldMinutes)}
+                />
                 <MiniMetric
                   label="Largest win"
                   value={formatSignedCurrency(tradePerformance?.largestWin)}
@@ -2845,7 +3001,46 @@ function App() {
                 />
               </div>
               <p className="control-card__note">
-                This trend is derived from the projected trade summaries and the latest persisted PnL snapshot that come through the local `/history` endpoint.
+                This chart is derived from the projected trade summaries plus the latest persisted floating P&amp;L snapshot that come through the local `/history` endpoint.
+              </p>
+            </section>
+            <section className="review-card review-card--wide">
+              <p className="control-card__title">Per-trade P&amp;L</p>
+              {perTradePnl.length ? (
+                <div className="per-trade-pnl-grid">
+                  {perTradePnl.map((trade) => (
+                    <article key={trade.tradeId} className="per-trade-pnl-card">
+                      <div className="event-list__header">
+                        <strong>{`${trade.symbol} | ${formatMode(trade.side)} ${formatInteger(trade.quantity)}`}</strong>
+                        <Pill label={formatSignedCurrency(trade.netPnl)} tone={trade.tone} />
+                      </div>
+                      <p className="event-list__meta">
+                        {`Trade ${trade.tradeId} | ${formatMode(trade.status)} | opened ${formatDateTime(
+                          trade.openedAt,
+                        )}${trade.closedAt ? ` | closed ${formatDateTime(trade.closedAt)}` : ""} | hold ${formatDurationMinutes(
+                          trade.holdMinutes,
+                        )}`}
+                      </p>
+                      <div className="mini-metric-grid">
+                        <MiniMetric label="Gross" value={formatSignedCurrency(trade.grossPnl)} />
+                        <MiniMetric label="Net" value={formatSignedCurrency(trade.netPnl)} />
+                        <MiniMetric label="Fees" value={formatCurrency(trade.fees)} />
+                        <MiniMetric
+                          label="Commissions"
+                          value={formatCurrency(trade.commissions)}
+                        />
+                        <MiniMetric label="Slippage" value={formatCurrency(trade.slippage)} />
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="panel__footnote">
+                  No trade summaries are projected yet, so per-trade P&amp;L is unavailable.
+                </p>
+              )}
+              <p className="control-card__note">
+                Each per-trade card is rendered from the host-projected trade summary instead of frontend-calculated outcomes.
               </p>
             </section>
             <div className="subgrid">

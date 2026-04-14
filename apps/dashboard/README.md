@@ -31,7 +31,7 @@ The current dashboard now covers:
 - account routing
 - grouped readiness checks
 - broker, feed, storage, and host health with connectivity clocks and feed/storage detail
-- history and PnL drill-downs including a projected PnL trend, richer trade ledger, working-order/fill views, and floating snapshot context
+- history and PnL drill-downs including an explicit real-time P&L chart, per-trade P&L cards, richer trade ledger, working-order/fill views, and floating snapshot context
 - persisted journal audit-trail drill-downs with severity/category summaries and formatted payloads
 - latency detail views including per-stage trade-path timing and host-correlation context
 
