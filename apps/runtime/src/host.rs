@@ -6686,6 +6686,345 @@ selection:
     }
 
     #[tokio::test]
+    async fn paper_manual_entry_requires_arm_before_dispatch_through_runtime_host() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api.clone(),
+            journal.clone(),
+            history.clone(),
+            latency_collector.clone(),
+            health_supervisor.clone(),
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper manual entry requires arm load strategy request",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        for (label, command) in [
+            (
+                "paper manual entry requires arm set mode request",
+                RuntimeLifecycleCommand::SetMode {
+                    mode: RuntimeMode::Paper,
+                },
+            ),
+            (
+                "paper manual entry requires arm mark warmup ready request",
+                RuntimeLifecycleCommand::MarkWarmupReady,
+            ),
+        ] {
+            let response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command,
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                label,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let status_before_arm = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/status")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper manual entry requires arm status before arm request",
+        )
+        .await;
+        assert_eq!(status_before_arm.status(), StatusCode::OK);
+        let status_before_arm_body = status_before_arm
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let status_before_arm: RuntimeStatusSnapshot =
+            serde_json::from_slice(&status_before_arm_body).expect("status json should parse");
+        assert_eq!(status_before_arm.mode, RuntimeMode::Paper);
+        assert_eq!(status_before_arm.arm_state, ArmState::Disarmed);
+        assert_eq!(
+            status_before_arm.current_account_name.as_deref(),
+            Some("paper-primary")
+        );
+        assert_eq!(
+            status_before_arm
+                .market_data_status
+                .as_ref()
+                .map(|snapshot| snapshot.session.market_data.health),
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+
+        let history_before = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper manual entry requires arm history before request",
+        )
+        .await;
+        assert_eq!(history_before.status(), StatusCode::OK);
+        let history_before_body = history_before
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_before: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+        let blocked_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_510, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("blocked while still disarmed".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper manual entry requires arm blocked entry request",
+        )
+        .await;
+
+        assert_eq!(
+            blocked_entry_response.status(),
+            StatusCode::PRECONDITION_REQUIRED
+        );
+        let blocked_entry_body = blocked_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let blocked_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&blocked_entry_body).expect("response json should parse");
+        assert_eq!(
+            blocked_entry.status_code,
+            HttpStatusCode::PreconditionRequired
+        );
+        assert!(blocked_entry.command_result.is_none());
+        assert_eq!(blocked_entry.status.mode, RuntimeMode::Paper);
+        assert_eq!(blocked_entry.status.arm_state, ArmState::Disarmed);
+
+        let place_orders = execution_api
+            .place_orders
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_orders.is_empty());
+        drop(place_orders);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(place_osos.is_empty());
+        drop(place_osos);
+
+        let liquidations = execution_api
+            .liquidations
+            .lock()
+            .expect("execution mutex should not poison");
+        assert!(liquidations.is_empty());
+        drop(liquidations);
+
+        let history_after_block = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper manual entry requires arm history after blocked request",
+        )
+        .await;
+        assert_eq!(history_after_block.status(), StatusCode::OK);
+        let history_after_block_body = history_after_block
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_block: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_block_body).expect("history json should parse");
+        assert_eq!(
+            history_after_block.projection.total_order_records,
+            history_before.projection.total_order_records
+        );
+
+        let arm_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::Arm {
+                            allow_override: true,
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper manual entry requires arm arm request",
+        )
+        .await;
+        assert_eq!(arm_response.status(), StatusCode::OK);
+        let arm_body = arm_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let arm_response: RuntimeLifecycleResponse =
+            serde_json::from_slice(&arm_body).expect("response json should parse");
+        assert_eq!(arm_response.status_code, HttpStatusCode::Ok);
+        assert!(arm_response.message.contains("runtime armed"));
+        assert_eq!(arm_response.status.arm_state, ArmState::Armed);
+
+        let allowed_entry_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Dashboard,
+                        command: RuntimeLifecycleCommand::ManualEntry {
+                            side: tv_bot_core_types::TradeSide::Buy,
+                            quantity: 1,
+                            tick_size: Decimal::new(10, 1),
+                            entry_reference_price: Decimal::new(238_620, 2),
+                            tick_value_usd: Some(Decimal::new(10, 0)),
+                            reason: Some("allowed after explicit arm".to_owned()),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "paper manual entry requires arm allowed entry request",
+        )
+        .await;
+        assert_eq!(allowed_entry_response.status(), StatusCode::OK);
+        let allowed_entry_body = allowed_entry_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let allowed_entry: RuntimeLifecycleResponse =
+            serde_json::from_slice(&allowed_entry_body).expect("response json should parse");
+        assert_eq!(allowed_entry.status_code, HttpStatusCode::Ok);
+        assert_eq!(allowed_entry.message, "manual entry command dispatched");
+        let command_result = allowed_entry
+            .command_result
+            .expect("manual entry should return a command result after arm");
+        assert_eq!(command_result.status, ControlApiCommandStatus::Executed);
+        assert_eq!(command_result.risk_status, RiskDecisionStatus::Accepted);
+        assert!(command_result.dispatch_performed);
+
+        let place_osos = execution_api
+            .place_osos
+            .lock()
+            .expect("execution mutex should not poison");
+        assert_eq!(place_osos.len(), 1);
+        assert_eq!(place_osos[0].context.account_id, 101);
+        assert_eq!(place_osos[0].context.account_spec, "paper-primary");
+        assert_eq!(place_osos[0].order.symbol, "GCM2026");
+        assert_eq!(place_osos[0].order.quantity, 1);
+        assert_eq!(place_osos[0].order.brackets.len(), 2);
+        drop(place_osos);
+
+        let history_after_allowed = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .uri("/history")
+                .body(Body::empty())
+                .expect("request should build"),
+            "paper manual entry requires arm history after allowed request",
+        )
+        .await;
+        assert_eq!(history_after_allowed.status(), StatusCode::OK);
+        let history_after_allowed_body = history_after_allowed
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_after_allowed: RuntimeHistorySnapshot =
+            serde_json::from_slice(&history_after_allowed_body).expect("history json should parse");
+        assert!(
+            history_after_allowed.projection.total_order_records
+                > history_before.projection.total_order_records
+        );
+
+        let journal_actions = journal
+            .list()
+            .expect("journal should list records")
+            .into_iter()
+            .map(|record| record.action)
+            .collect::<Vec<_>>();
+        assert!(journal_actions.contains(&"dispatch_succeeded".to_owned()));
+
+        let _ = fs::remove_file(strategy_path);
+    }
+
+    #[tokio::test]
     async fn operator_new_entry_gate_blocks_and_reenables_paper_manual_entry_through_runtime_host()
     {
         let history = test_history();

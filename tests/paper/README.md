@@ -5,6 +5,7 @@ Paper-mode acceptance is currently exercised primarily through the kernel-backed
 Current host-level coverage includes:
 
 - manual paper entry with broker-side stop-loss and take-profit brackets
+- manual paper entry remaining blocked while disarmed until the runtime is explicitly armed
 - repeated paper manual-entry regression coverage through the same runtime host path
 - paper scale-in dispatch when the loaded strategy allows adding size
 - flatten, close-position, and cancel-working-order flows
