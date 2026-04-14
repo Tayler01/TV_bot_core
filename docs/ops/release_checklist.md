@@ -35,7 +35,9 @@ Use this checklist before calling V1 release-ready.
 
 ## Packaging And Delivery
 
-- Build and archive the intended runtime and dashboard deliverables for the target release.
+- Build and archive the intended runtime and dashboard deliverables for the target release with:
+  - Windows: `.\scripts\package_release.ps1`
+  - Linux/macOS: `./scripts/package_release.sh`
 - Verify the packaged config defaults do not imply live trading or silent fallback behavior.
 - Record the exact runtime config, strategy file, and candidate commit used for the validation session.
 

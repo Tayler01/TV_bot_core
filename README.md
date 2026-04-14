@@ -108,6 +108,7 @@ This workspace is now the primary local checkout, but Windows may still briefly 
 For the release-hardening path, the repository now includes:
 
 - `.github/workflows/ci.yml` for Rust workspace tests on Windows, Linux, and macOS plus dashboard build/test checks
+- `scripts/package_release.ps1` and `scripts/package_release.sh` for cross-platform release bundle creation
 - `docs/ops/paper_demo_verification.md`
 - `docs/ops/storage_fallback_override.md`
 - `docs/ops/reconnect_and_shutdown_review.md`

@@ -67,3 +67,49 @@ jobs:
 
       - name: Build dashboard
         run: npm run build
+
+  package-release:
+    name: Package release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Package release bundle on Windows
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: .\scripts\package_release.ps1
+
+      - name: Package release bundle on Unix
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: bash ./scripts/package_release.sh
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-release-${{ matrix.os }}
+          path: dist/releases/*

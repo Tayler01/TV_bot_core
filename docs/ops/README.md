@@ -13,6 +13,22 @@ This directory now holds the operator runbooks and release-check materials for V
 - `release_checklist.md`
   Final release verification checklist covering CI, paper acceptance, dashboard verification, and packaging follow-through.
 
+## Packaging
+
+Use the checked-in packaging scripts to build a release bundle from the workspace root:
+
+- Windows: `.\scripts\package_release.ps1`
+- Linux/macOS: `./scripts/package_release.sh`
+
+Both scripts produce release artifacts under `dist/releases/` and include:
+
+- runtime and CLI binaries
+- the built dashboard bundle
+- sample runtime config
+- operator runbooks
+- example strategies
+- a release manifest with commit and build metadata
+
 ## Scope
 
 These docs are for local operator/runtime behavior only:
