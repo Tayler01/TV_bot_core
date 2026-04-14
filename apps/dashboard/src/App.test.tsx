@@ -1398,13 +1398,13 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.change(await screen.findByLabelText("Close position reason"), {
+    fireEvent.change(await screen.findByLabelText("Flatten position reason"), {
       target: { value: "dashboard safety close" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Close current position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Flatten current position" }));
 
     expect(confirmSpy).toHaveBeenCalledWith(
-      "Close the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot.",
+      "Flatten the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot and dispatch the audited flatten path.",
     );
 
     await waitFor(() => {
@@ -1430,10 +1430,10 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.change(await screen.findByLabelText("Close position reason"), {
+    fireEvent.change(await screen.findByLabelText("Flatten position reason"), {
       target: { value: "dashboard safety close" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Close current position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Flatten current position" }));
 
     expect(await screen.findByText("close position command dispatched")).toBeInTheDocument();
 

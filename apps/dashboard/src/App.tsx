@@ -902,7 +902,7 @@ function App() {
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [newEntriesReason, setNewEntriesReason] = useState("dashboard operator entry gate");
   const [closePositionReason, setClosePositionReason] = useState(
-    "dashboard close position request",
+    "dashboard flatten position request",
   );
   const [manualEntrySide, setManualEntrySide] = useState<"buy" | "sell">("buy");
   const [manualEntryQuantity, setManualEntryQuantity] = useState("1");
@@ -2302,7 +2302,7 @@ function App() {
                   </section>
 
                   <section className="control-card control-card--wide">
-                    <p className="control-card__title">Close current position</p>
+                    <p className="control-card__title">Flatten current position</p>
                     <form
                       className="flatten-form"
                       onSubmit={(event) => {
@@ -2319,14 +2319,14 @@ function App() {
                               reason: closePositionReason.trim(),
                             },
                             {
-                              pendingLabel: "Closing active broker position",
+                              pendingLabel: "Flattening active broker position",
                               confirmMessage:
-                                "Close the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot.",
+                                "Flatten the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot and dispatch the audited flatten path.",
                             },
                           );
 
                           if (result?.httpStatus === 200) {
-                            setClosePositionReason("dashboard close position request");
+                            setClosePositionReason("dashboard flatten position request");
                           }
                         })();
                       }}
@@ -2334,8 +2334,8 @@ function App() {
                       <label className="field field--wide">
                         <span>Reason</span>
                         <input
-                          aria-label="Close position reason"
-                          placeholder="dashboard close position request"
+                          aria-label="Flatten position reason"
+                          placeholder="dashboard flatten position request"
                           value={closePositionReason}
                           onChange={(event) => {
                             setClosePositionReason(event.target.value);
@@ -2347,9 +2347,14 @@ function App() {
                         type="submit"
                         disabled={pendingAction !== null || !canClosePosition}
                       >
-                        Close current position
+                        Flatten current position
                       </button>
                     </form>
+                    <p className="control-card__note">
+                      This is the direct dashboard flatten control. The runtime host resolves the
+                      active broker contract from the synchronized snapshot and keeps the action on
+                      the same audited close/flatten path used elsewhere.
+                    </p>
                   </section>
 
                   <section className="control-card control-card--wide">

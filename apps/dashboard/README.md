@@ -25,7 +25,7 @@ The current dashboard now covers:
 - strategy library upload, browsing, and host-backed validation before load
 - host-backed runtime settings editing for startup mode, default strategy path, SQLite fallback policy, and paper/live account routing names
 - strategy load through the audited runtime lifecycle command path
-- warmup, arm/disarm, pause/resume, mode switch, explicit `disable new entries`, manual entry, close-position, and cancel-working-orders controls
+- warmup, arm/disarm, pause/resume, mode switch, explicit `disable new entries`, manual entry, direct flatten/current-position close, and cancel-working-orders controls
 - reconnect and shutdown review action cards through the runtime lifecycle command path
 - local `/events` WebSocket operator feed for journal, command, readiness, history, and health updates
 - account routing
