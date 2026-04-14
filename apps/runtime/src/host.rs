@@ -18,7 +18,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,9 +36,11 @@ use tv_bot_broker_tradovate::{
 use tv_bot_config::{
     persist_runtime_settings_update, AppConfig, ConfigUpdateError, RuntimeSettingsFileUpdate,
 };
+#[cfg(test)]
+use tv_bot_control_api::ControlApiCommand;
 use tv_bot_control_api::{
-    ControlApiCommand, ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest,
-    HttpCommandResponse, HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
+    ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest, HttpCommandResponse,
+    HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
     RuntimeCommandDispatcher, RuntimeEditableSettings, RuntimeHistorySnapshot,
     RuntimeJournalSnapshot, RuntimeJournalStatus, RuntimeKernelCommandDispatcher,
     RuntimeLifecycleCommand, RuntimeLifecycleRequest, RuntimeLifecycleResponse,
@@ -52,12 +54,14 @@ use tv_bot_control_api::{
     WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
-    ActionSource, BrokerStatusSnapshot, EventJournalRecord, EventSeverity, RuntimeMode,
-    SystemHealthSnapshot, TradePathLatencyRecord, TradePathTimestamps,
+    ActionSource, EventJournalRecord, EventSeverity, SystemHealthSnapshot, TradePathLatencyRecord,
+    TradePathTimestamps,
 };
+#[cfg(test)]
+use tv_bot_core_types::{BrokerStatusSnapshot, RuntimeMode};
 use tv_bot_health::{
-    RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor, RuntimeResourceSample,
-    RuntimeResourceSampler, SysinfoRuntimeResourceSampler,
+    RuntimeHealthError, RuntimeHealthInputs, RuntimeHealthSupervisor, RuntimeResourceSampler,
+    SysinfoRuntimeResourceSampler,
 };
 use tv_bot_journal::{EventJournal, JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
@@ -121,6 +125,7 @@ enum RuntimeMarketDataState {
     Active {
         service: MarketDataService<DatabentoLiveTransport>,
         last_snapshot: Option<MarketDataServiceSnapshot>,
+        warmup_mode: DatabentoWarmupMode,
     },
     #[cfg(test)]
     SnapshotOverride {
@@ -132,6 +137,50 @@ enum RuntimeMarketDataState {
 struct RuntimeMarketDataManager {
     config: Option<RuntimeMarketDataConfig>,
     state: RuntimeMarketDataState,
+}
+
+fn strategy_warmup_mode(
+    strategy: &tv_bot_core_types::CompiledStrategy,
+    now: DateTime<Utc>,
+) -> DatabentoWarmupMode {
+    strategy_warmup_replay_from(strategy, now)
+        .map(DatabentoWarmupMode::ReplayFrom)
+        .unwrap_or(DatabentoWarmupMode::LiveOnly)
+}
+
+fn strategy_warmup_replay_from(
+    strategy: &tv_bot_core_types::CompiledStrategy,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    strategy
+        .warmup
+        .bars_required
+        .iter()
+        .filter_map(|(timeframe, required_bars)| {
+            let required_bars = i32::try_from(*required_bars).ok()?;
+            let replay_window = timeframe_duration(*timeframe).checked_mul(required_bars)?;
+            Some(align_timeframe_start(now, *timeframe) - replay_window)
+        })
+        .min()
+}
+
+fn timeframe_duration(timeframe: tv_bot_core_types::Timeframe) -> ChronoDuration {
+    match timeframe {
+        tv_bot_core_types::Timeframe::OneSecond => ChronoDuration::seconds(1),
+        tv_bot_core_types::Timeframe::OneMinute => ChronoDuration::minutes(1),
+        tv_bot_core_types::Timeframe::FiveMinute => ChronoDuration::minutes(5),
+    }
+}
+
+fn align_timeframe_start(
+    timestamp: DateTime<Utc>,
+    timeframe: tv_bot_core_types::Timeframe,
+) -> DateTime<Utc> {
+    let seconds = timeframe_duration(timeframe).num_seconds();
+    let aligned_seconds = timestamp.timestamp() - timestamp.timestamp().rem_euclid(seconds);
+
+    DateTime::<Utc>::from_timestamp(aligned_seconds, 0)
+        .expect("aligned warmup timestamp should be valid")
 }
 
 #[derive(Clone, Debug, Default)]
@@ -455,9 +504,11 @@ impl RuntimeMarketDataManager {
         ) {
             Ok(service) => {
                 let snapshot = service.snapshot(now);
+                let warmup_mode = strategy_warmup_mode(&seed.strategy, now);
                 self.state = RuntimeMarketDataState::Active {
                     service,
                     last_snapshot: Some(snapshot),
+                    warmup_mode,
                 };
             }
             Err(error) => {
@@ -476,8 +527,9 @@ impl RuntimeMarketDataManager {
             RuntimeMarketDataState::Active {
                 service,
                 last_snapshot,
+                warmup_mode,
             } => service
-                .start_warmup(DatabentoWarmupMode::LiveOnly, now)
+                .start_warmup(warmup_mode.clone(), now)
                 .await
                 .map(|snapshot| {
                     *last_snapshot = Some(snapshot.clone());
@@ -489,9 +541,10 @@ impl RuntimeMarketDataManager {
             | RuntimeMarketDataState::StrategyBlocked { detail } => Err(detail.clone()),
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride { snapshot, .. } => {
+                let warmup_mode = snapshot.warmup_mode.clone();
                 snapshot.warmup_requested = true;
-                snapshot.warmup_mode = DatabentoWarmupMode::LiveOnly;
-                snapshot.replay_caught_up = true;
+                snapshot.warmup_mode = warmup_mode;
+                snapshot.replay_caught_up = snapshot.warmup_mode.replay_from().is_none();
                 snapshot.session.market_data.warmup.started_at = Some(
                     snapshot
                         .session
@@ -507,7 +560,7 @@ impl RuntimeMarketDataManager {
                 ) && matches!(
                     snapshot.session.market_data.warmup.status,
                     tv_bot_core_types::WarmupStatus::Ready
-                );
+                ) && snapshot.replay_caught_up;
                 snapshot.updated_at = now;
                 Ok(Some(snapshot.clone()))
             }
@@ -519,21 +572,32 @@ impl RuntimeMarketDataManager {
             RuntimeMarketDataState::Active {
                 service,
                 last_snapshot,
+                ..
             } => {
-                for _ in 0..MARKET_DATA_POLL_BUDGET {
-                    match timeout(MARKET_DATA_POLL_TIMEOUT, service.poll_next_update()).await {
-                        Ok(Ok(Some(_))) => continue,
-                        Ok(Ok(None)) | Err(_) => break,
-                        Ok(Err(error)) => {
-                            service
-                                .session_mut()
-                                .coordinator_mut()
-                                .set_connection_state(MarketDataConnectionState::Failed, now);
-                            service.session_mut().coordinator_mut().mark_degraded(
-                                format!("market-data service polling failed: {error}"),
-                                now,
-                            );
-                            break;
+                let is_connected = !matches!(
+                    service.snapshot(now).session.market_data.connection_state,
+                    MarketDataConnectionState::Disconnected
+                );
+                let mut poll_error_detail = None;
+                if is_connected {
+                    for _ in 0..MARKET_DATA_POLL_BUDGET {
+                        match timeout(MARKET_DATA_POLL_TIMEOUT, service.poll_next_update()).await {
+                            Ok(Ok(Some(_))) => continue,
+                            Ok(Ok(None)) | Err(_) => break,
+                            Ok(Err(error)) => {
+                                let detail = format!("market-data service polling failed: {error}");
+                                service
+                                    .session_mut()
+                                    .coordinator_mut()
+                                    .set_connection_state(MarketDataConnectionState::Failed, now);
+                                service
+                                    .session_mut()
+                                    .coordinator_mut()
+                                    .mark_degraded(detail.clone(), now);
+                                warn!(?error, "market-data service polling failed");
+                                poll_error_detail = Some(detail);
+                                break;
+                            }
                         }
                     }
                 }
@@ -543,7 +607,7 @@ impl RuntimeMarketDataManager {
                     snapshot.session.market_data.connection_state,
                     MarketDataConnectionState::Failed
                 ) {
-                    Some(
+                    Some(poll_error_detail.unwrap_or_else(|| {
                         snapshot
                             .session
                             .market_data
@@ -556,8 +620,8 @@ impl RuntimeMarketDataManager {
                                 )
                             })
                             .map(|status| status.detail.clone())
-                            .unwrap_or_else(|| "market-data service reported a failure".to_owned()),
-                    )
+                            .unwrap_or_else(|| "market-data service reported a failure".to_owned())
+                    }))
                 } else {
                     None
                 };
@@ -872,6 +936,7 @@ pub async fn run_runtime_host(
 
 pub fn build_http_router(state: RuntimeHostState) -> Router {
     Router::new()
+        .route("/", get(root_handler))
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/readiness", get(readiness_handler))
@@ -1118,6 +1183,27 @@ async fn health_handler(State(state): State<RuntimeHostState>) -> Json<RuntimeHo
         system_health,
         latest_trade_latency,
     })
+}
+
+async fn root_handler() -> Json<serde_json::Value> {
+    Json(json!({
+        "service": "tv-bot-runtime-host",
+        "detail": "local control-plane API; use one of the listed routes instead of the bare root URL",
+        "routes": [
+            "/health",
+            "/status",
+            "/readiness",
+            "/history",
+            "/journal",
+            "/settings",
+            "/strategies",
+            "/strategies/upload",
+            "/strategies/validate",
+            "/runtime/commands",
+            "/commands",
+            "/events"
+        ]
+    }))
 }
 
 async fn status_handler(State(state): State<RuntimeHostState>) -> Json<RuntimeStatusSnapshot> {
@@ -3318,6 +3404,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::{body::Body, http::Request, response::Response, Router};
+    use chrono::TimeZone;
     use http_body_util::BodyExt;
     use rust_decimal::Decimal;
     use secrecy::SecretString;
@@ -3352,6 +3439,7 @@ mod tests {
         ExecutionDispatchReport, ExecutionDispatchResult, ExecutionInstrumentContext,
         ExecutionRequest, ExecutionStateContext,
     };
+    use tv_bot_health::RuntimeResourceSample;
     use tv_bot_journal::{EventJournal, InMemoryJournal};
     use tv_bot_persistence::RuntimePersistence;
     use tv_bot_risk_engine::{BrokerProtectionSupport, RiskInstrumentContext, RiskStateContext};
@@ -4808,6 +4896,220 @@ mod tests {
         }
     }
 
+    fn sample_mapping() -> tv_bot_core_types::InstrumentMapping {
+        tv_bot_core_types::InstrumentMapping {
+            market_family: "gold".to_owned(),
+            market_display_name: "COMEX Gold".to_owned(),
+            contract_mode: ContractMode::FrontMonthAuto,
+            resolved_contract: tv_bot_core_types::FuturesContract {
+                market_family: "gold".to_owned(),
+                display_name: "COMEX Gold".to_owned(),
+                venue: "COMEX".to_owned(),
+                symbol_root: "GC".to_owned(),
+                month: tv_bot_core_types::ContractMonth {
+                    year: 2026,
+                    month: 6,
+                },
+                canonical_symbol: "GCM2026".to_owned(),
+            },
+            databento_symbols: vec![tv_bot_core_types::DatabentoInstrument {
+                dataset: "GLBX.MDP3".to_owned(),
+                symbol: "GCM6".to_owned(),
+                symbology: tv_bot_core_types::DatabentoSymbology::RawSymbol,
+            }],
+            tradovate_symbol: "GCM2026".to_owned(),
+            resolution_basis: tv_bot_core_types::FrontMonthSelectionBasis::ChainOrder,
+            resolved_at: chrono::Utc
+                .with_ymd_and_hms(2026, 4, 10, 13, 30, 0)
+                .single()
+                .expect("timestamp should be valid"),
+            summary: "host test mapping".to_owned(),
+        }
+    }
+
+    #[test]
+    fn strategy_warmup_mode_prefers_historical_replay_for_largest_requirement() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 14, 13, 42, 15)
+            .single()
+            .expect("timestamp should be valid");
+        let mut strategy = sample_strategy();
+        strategy.warmup.bars_required = std::collections::BTreeMap::from([
+            (Timeframe::OneSecond, 600),
+            (Timeframe::OneMinute, 100),
+            (Timeframe::FiveMinute, 50),
+        ]);
+
+        let replay_from = strategy_warmup_replay_from(&strategy, now)
+            .expect("historical warmup should compute a replay start");
+
+        assert_eq!(
+            replay_from,
+            chrono::Utc
+                .with_ymd_and_hms(2026, 4, 14, 9, 30, 0)
+                .single()
+                .expect("timestamp should be valid")
+        );
+        assert_eq!(
+            strategy_warmup_mode(&strategy, now),
+            DatabentoWarmupMode::ReplayFrom(replay_from)
+        );
+    }
+
+    #[test]
+    fn market_data_manager_stores_strategy_driven_replay_mode() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 14, 13, 42, 15)
+            .single()
+            .expect("timestamp should be valid");
+        let mut strategy = sample_strategy();
+        strategy.warmup.bars_required = std::collections::BTreeMap::from([
+            (Timeframe::OneMinute, 10),
+            (Timeframe::FiveMinute, 4),
+        ]);
+        let expected_replay_from = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 14, 13, 20, 0)
+            .single()
+            .expect("timestamp should be valid");
+
+        let config = AppConfig {
+            runtime: tv_bot_config::RuntimeConfig {
+                startup_mode: RuntimeMode::Observation,
+                default_strategy_path: None,
+                allow_sqlite_fallback: true,
+            },
+            market_data: tv_bot_config::MarketDataConfig {
+                dataset: Some("GLBX.MDP3".to_owned()),
+                gateway: None,
+                api_key: Some(SecretString::new("db-test-key".to_owned().into_boxed_str())),
+            },
+            broker: tv_bot_config::BrokerConfig {
+                environment: None,
+                http_base_url: None,
+                websocket_url: None,
+                username: None,
+                password: None,
+                cid: None,
+                sec: None,
+                app_id: None,
+                app_version: None,
+                device_id: None,
+                paper_account_name: None,
+                live_account_name: None,
+            },
+            persistence: tv_bot_config::PersistenceConfig {
+                primary_url: None,
+                sqlite_fallback: tv_bot_config::SqliteFallbackConfig {
+                    enabled: true,
+                    path: PathBuf::from("data/tv_bot_core.sqlite"),
+                },
+            },
+            control_api: tv_bot_config::ControlApiConfig {
+                http_bind: "127.0.0.1:8080".to_owned(),
+                websocket_bind: "127.0.0.1:8081".to_owned(),
+            },
+            logging: tv_bot_config::LoggingConfig {
+                level: "info".to_owned(),
+                json: false,
+            },
+        };
+
+        let mut manager = RuntimeMarketDataManager::from_app_config(&config);
+        manager.configure_for_strategy(
+            Some(LoadedStrategyMarketDataSeed {
+                strategy,
+                instrument_mapping: Some(sample_mapping()),
+                instrument_resolution_error: None,
+            }),
+            now,
+        );
+
+        match manager.state {
+            RuntimeMarketDataState::Active { warmup_mode, .. } => {
+                assert_eq!(
+                    warmup_mode,
+                    DatabentoWarmupMode::ReplayFrom(expected_replay_from)
+                );
+            }
+            _ => panic!("market-data manager should be active after strategy configuration"),
+        }
+    }
+
+    #[tokio::test]
+    async fn market_data_refresh_stays_disconnected_before_warmup_starts() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 14, 13, 42, 15)
+            .single()
+            .expect("timestamp should be valid");
+        let config = AppConfig {
+            runtime: tv_bot_config::RuntimeConfig {
+                startup_mode: RuntimeMode::Observation,
+                default_strategy_path: None,
+                allow_sqlite_fallback: true,
+            },
+            market_data: tv_bot_config::MarketDataConfig {
+                dataset: Some("GLBX.MDP3".to_owned()),
+                gateway: None,
+                api_key: Some(SecretString::new("db-test-key".to_owned().into_boxed_str())),
+            },
+            broker: tv_bot_config::BrokerConfig {
+                environment: None,
+                http_base_url: None,
+                websocket_url: None,
+                username: None,
+                password: None,
+                cid: None,
+                sec: None,
+                app_id: None,
+                app_version: None,
+                device_id: None,
+                paper_account_name: None,
+                live_account_name: None,
+            },
+            persistence: tv_bot_config::PersistenceConfig {
+                primary_url: None,
+                sqlite_fallback: tv_bot_config::SqliteFallbackConfig {
+                    enabled: true,
+                    path: PathBuf::from("data/tv_bot_core.sqlite"),
+                },
+            },
+            control_api: tv_bot_config::ControlApiConfig {
+                http_bind: "127.0.0.1:8080".to_owned(),
+                websocket_bind: "127.0.0.1:8081".to_owned(),
+            },
+            logging: tv_bot_config::LoggingConfig {
+                level: "info".to_owned(),
+                json: false,
+            },
+        };
+
+        let mut manager = RuntimeMarketDataManager::from_app_config(&config);
+        manager.configure_for_strategy(
+            Some(LoadedStrategyMarketDataSeed {
+                strategy: sample_strategy(),
+                instrument_mapping: Some(sample_mapping()),
+                instrument_resolution_error: None,
+            }),
+            now,
+        );
+
+        let view = manager.refresh(now).await;
+        let snapshot = view
+            .snapshot
+            .expect("configured market-data snapshot should exist");
+
+        assert!(view.detail.is_none());
+        assert_eq!(
+            snapshot.session.market_data.connection_state,
+            MarketDataConnectionState::Disconnected
+        );
+        assert_eq!(
+            snapshot.session.market_data.health,
+            tv_bot_market_data::MarketDataHealth::Disconnected
+        );
+        assert!(!snapshot.warmup_requested);
+    }
+
     fn sample_outcome() -> RuntimeCommandOutcome {
         RuntimeCommandOutcome::Execution(RuntimeExecutionOutcome {
             risk: tv_bot_risk_engine::RiskEvaluationOutcome {
@@ -5065,6 +5367,61 @@ selection:
                 .and_then(|snapshot| snapshot.memory_bytes),
             Some(12_582_912)
         );
+    }
+
+    #[tokio::test]
+    async fn root_route_lists_control_plane_endpoints() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let app = build_http_router(test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_dispatched_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("root payload should parse");
+
+        assert_eq!(payload["service"], "tv-bot-runtime-host");
+        assert!(payload["routes"]
+            .as_array()
+            .expect("routes should be an array")
+            .iter()
+            .any(|entry| entry == "/settings"));
+        assert!(payload["routes"]
+            .as_array()
+            .expect("routes should be an array")
+            .iter()
+            .any(|entry| entry == "/events"));
     }
 
     #[tokio::test]

@@ -27,6 +27,7 @@ import {
   formatLatency,
   formatMode,
   formatSignedCurrency,
+  formatWarmupMode,
 } from "./lib/format";
 import type {
   ControlApiEvent,
@@ -2782,7 +2783,7 @@ function App() {
                   />
                   <Definition
                     label="Warmup mode"
-                    value={snapshot.status.market_data_status?.warmup_mode ?? "Unavailable"}
+                    value={formatWarmupMode(snapshot.status.market_data_status?.warmup_mode)}
                   />
                   <Definition
                     label="Primary DB"

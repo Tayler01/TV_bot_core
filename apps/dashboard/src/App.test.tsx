@@ -151,7 +151,9 @@ function installFetchMock(snapshotOverrides?: {
         },
       },
       warmup_requested: true,
-      warmup_mode: "live_only",
+      warmup_mode: {
+        ReplayFrom: "2026-04-12T18:50:00Z",
+      },
       replay_caught_up: true,
       trade_ready: true,
       updated_at: "2026-04-12T20:11:00Z",

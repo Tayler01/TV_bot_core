@@ -306,6 +306,15 @@ fn format_contract_symbol(symbol_root: &str, month: &ContractMonth) -> String {
     )
 }
 
+fn format_databento_raw_symbol(symbol_root: &str, month: &ContractMonth) -> String {
+    format!(
+        "{root}{month_code}{year_digit}",
+        root = symbol_root,
+        month_code = futures_month_code(month.month),
+        year_digit = month.year.rem_euclid(10),
+    )
+}
+
 fn futures_month_code(month: u8) -> char {
     match month {
         1 => 'F',
@@ -462,9 +471,10 @@ fn build_contract_chain(
     for year in start_year..=(start_year + years_ahead) {
         for &month in cycle_months {
             let contract_month = ContractMonth { year, month };
-            let symbol = format_contract_symbol(symbol_root, &contract_month);
+            let databento_symbol = format_databento_raw_symbol(symbol_root, &contract_month);
+            let tradovate_symbol = format_contract_symbol(symbol_root, &contract_month);
             chain.push(
-                ContractListing::new(contract_month, symbol.clone(), symbol)
+                ContractListing::new(contract_month, databento_symbol, tradovate_symbol)
                     .with_first_notice_date(previous_month_date(year, month, rollover_day)),
             );
         }
@@ -536,7 +546,7 @@ mod tests {
                     year: 2026,
                     month: 6,
                 },
-                "GCM2026",
+                "GCM6",
                 "GCM2026",
             )
             .with_first_notice_date(NaiveDate::from_ymd_opt(2026, 5, 28).expect("valid date")),
@@ -545,7 +555,7 @@ mod tests {
                     year: 2026,
                     month: 8,
                 },
-                "GCQ2026",
+                "GCQ6",
                 "GCQ2026",
             )
             .with_first_notice_date(NaiveDate::from_ymd_opt(2026, 7, 29).expect("valid date")),
@@ -709,6 +719,7 @@ mod tests {
             .resolve_for_strategy(&compiled_strategy("gold"))
             .expect("built-in chains should resolve gold");
 
+        assert_eq!(mapping.databento_symbols[0].symbol, "GCM6");
         assert_eq!(mapping.tradovate_symbol, "GCM2026");
         assert_eq!(mapping.resolved_contract.canonical_symbol, "GCM2026");
     }
@@ -725,7 +736,7 @@ mod tests {
 
         assert_eq!(mapping.market_family, "gold");
         assert_eq!(mapping.resolved_contract.canonical_symbol, "GCM2026");
-        assert_eq!(mapping.databento_symbols[0].symbol, "GCM2026");
+        assert_eq!(mapping.databento_symbols[0].symbol, "GCM6");
         assert_eq!(mapping.tradovate_symbol, "GCM2026");
         assert_eq!(
             mapping.resolution_basis,

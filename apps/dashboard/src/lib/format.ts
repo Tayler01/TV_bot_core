@@ -39,6 +39,24 @@ export function formatMode(value: string): string {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+export function formatWarmupMode(
+  value: string | { ReplayFrom: string } | null | undefined,
+): string {
+  if (!value) {
+    return "Unavailable";
+  }
+
+  if (typeof value === "string") {
+    return formatMode(value);
+  }
+
+  if ("ReplayFrom" in value) {
+    return `Replay from ${formatDateTime(value.ReplayFrom)}`;
+  }
+
+  return "Unavailable";
+}
+
 export function formatDecimal(value: DecimalLike): string {
   const parsed = asNumber(value);
   if (parsed === null) {

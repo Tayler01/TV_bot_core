@@ -1,3 +1,10 @@
 # Dev Scripts
 
-Reserve this directory for local developer automation such as environment bootstrap helpers and validation scripts.
+This directory holds local developer automation helpers.
+
+## Available Helpers
+
+- `start_databento_observation.ps1`
+  Starts the runtime in safe observation mode against `config/runtime.local.toml`, waits for the local control plane, and loads the built-in sample strategy.
+  Warmup uses the strategy's historical Databento replay window before falling through to live updates.
+  It requires `TV_BOT__MARKET_DATA__API_KEY` in the current PowerShell session before launch.

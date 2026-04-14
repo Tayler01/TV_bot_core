@@ -6,6 +6,8 @@ const HTTP_ENDPOINTS = [
   "/status",
   "/readiness",
   "/history",
+  "/journal",
+  "/settings",
   "/strategies",
   "/strategies/validate",
   "/runtime/commands",

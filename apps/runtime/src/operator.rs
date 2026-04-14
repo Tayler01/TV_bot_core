@@ -12,10 +12,12 @@ use tv_bot_control_api::{
     RuntimeReconnectReviewStatus, RuntimeShutdownReviewStatus, RuntimeStatusSnapshot,
     RuntimeStorageStatus,
 };
+#[cfg(test)]
+use tv_bot_core_types::WarmupStatus;
 use tv_bot_core_types::{
     BrokerOrderStatus, BrokerOrderUpdate, BrokerPositionSnapshot, BrokerPreference,
     BrokerStatusSnapshot, ExecutionIntent, InstrumentMapping, ReadinessCheck, ReadinessCheckStatus,
-    RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord, TradeSide, WarmupStatus,
+    RuntimeMode, SystemHealthSnapshot, TradePathLatencyRecord, TradeSide,
 };
 use tv_bot_execution_engine::{
     ExecutionInstrumentContext, ExecutionRequest, ExecutionStateContext,

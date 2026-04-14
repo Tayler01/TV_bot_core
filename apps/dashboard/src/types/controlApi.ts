@@ -120,7 +120,7 @@ export interface MarketDataServiceSnapshot {
     market_data: MarketDataStatusSnapshot;
   };
   warmup_requested: boolean;
-  warmup_mode: string;
+  warmup_mode: string | { ReplayFrom: string };
   replay_caught_up: boolean;
   trade_ready: boolean;
   updated_at: string;

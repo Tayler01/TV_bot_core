@@ -67,7 +67,7 @@ tests/
 - Environment + TOML config loading in `crates/config`
 - Runtime mode, warmup, readiness, arming, and audited command orchestration in `crates/runtime_kernel`
 - Strict strategy parsing, validation, and compilation in `crates/strategy_loader`
-- Front-month symbol resolution in `crates/instrument_resolver`
+- Front-month symbol resolution plus provider-specific Databento raw-symbol and Tradovate routing-symbol mapping in `crates/instrument_resolver`
 - Databento transport/session, warmup buffers, replay-aware warmup, and aggregation in `crates/market_data`
 - Tradovate auth, sync, and execution primitives in `crates/broker_tradovate`
 - Strategy-agnostic risk evaluation in `crates/risk_engine`
@@ -104,6 +104,21 @@ cargo test -j 1
 ```
 
 This workspace is now the primary local checkout, but Windows may still briefly file-lock generated test executables. If that happens, retrying targeted serial tests is usually enough.
+
+For a quick local smoke test on Windows:
+
+- start the runtime host with `.\target\release\tv-bot-runtime.exe .\config\runtime.local.toml`
+- start the dashboard dev server from `apps/dashboard` with `npm run dev`
+- open `http://127.0.0.1:4173`
+- use `http://127.0.0.1:8080/status` or the root API landing page at `http://127.0.0.1:8080/` instead of expecting a UI on the runtime port
+
+For a Databento-only observation smoke test on Windows, set `TV_BOT__MARKET_DATA__API_KEY` in the current PowerShell session and run:
+
+```powershell
+.\scripts\dev\start_databento_observation.ps1 -StartDashboard
+```
+
+That observation path now starts warmup with a strategy-driven Databento historical replay window instead of waiting only on live bars, so multi-timeframe warmup should catch up much faster when historical data is available.
 
 For the release-hardening path, the repository now includes:
 

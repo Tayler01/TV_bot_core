@@ -49,6 +49,8 @@ The Vite dev server proxies the local runtime control plane by default:
 - HTTP proxy target: `http://127.0.0.1:8080`
 - WebSocket proxy target: `ws://127.0.0.1:8081`
 
+The dev proxy includes the dashboard read paths and settings/journal routes used by the operator surface, so `http://127.0.0.1:4173` can talk to the local runtime host without extra frontend configuration.
+
 If the runtime uses different binds, set:
 
 - `VITE_CONTROL_API_PROXY_TARGET`
