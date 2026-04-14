@@ -12,5 +12,6 @@ Current host-level coverage includes:
 - operator no-new-entry gating and degraded-feed no-new-entry blocking
 - startup and reconnect review detection across position-only, working-orders-only, and mixed-exposure scenarios
 - startup and reconnect operator decisions for `close_position`, `leave_broker_protected`, and `reattach_bot_management`
+- a broader host-level paper release sweep that combines repeated healthy-session entry/gating behavior with startup-review resolution plus cancel/close operator actions
 
 This directory remains the place for any broader black-box paper/demo campaigns that should live outside the runtime-host crate-level acceptance suite.

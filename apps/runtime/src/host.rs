@@ -8222,6 +8222,634 @@ selection:
     }
 
     #[tokio::test]
+    async fn paper_release_sweep_covers_session_gating_and_review_resolution_through_runtime_host()
+    {
+        {
+            let history = test_history();
+            let latency_collector = test_latency_collector();
+            let health_supervisor = test_health_supervisor();
+            let execution_api = TestExecutionApi::default();
+            let journal = InMemoryJournal::new();
+            let state = build_kernel_backed_state_with_manager(
+                sample_session_manager().await,
+                execution_api.clone(),
+                journal.clone(),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+            );
+            let app = build_http_router(state.clone());
+            let strategy_path = temp_strategy_path();
+            write_strategy_file(&strategy_path);
+
+            let load_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::LoadStrategy {
+                                path: strategy_path.clone(),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep session load strategy request",
+            )
+            .await;
+            assert_eq!(load_response.status(), StatusCode::OK);
+
+            set_test_market_data_snapshot(
+                &state,
+                sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+                None,
+            )
+            .await;
+
+            for (label, command) in [
+                (
+                    "paper release sweep session set mode request",
+                    RuntimeLifecycleCommand::SetMode {
+                        mode: RuntimeMode::Paper,
+                    },
+                ),
+                (
+                    "paper release sweep session mark warmup ready request",
+                    RuntimeLifecycleCommand::MarkWarmupReady,
+                ),
+                (
+                    "paper release sweep session arm request",
+                    RuntimeLifecycleCommand::Arm {
+                        allow_override: true,
+                    },
+                ),
+            ] {
+                let response = request_with_timeout(
+                    app.clone(),
+                    Request::builder()
+                        .method("POST")
+                        .uri("/runtime/commands")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&RuntimeLifecycleRequest {
+                                source: ManualCommandSource::Cli,
+                                command,
+                            })
+                            .expect("request should serialize"),
+                        ))
+                        .expect("request should build"),
+                    label,
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::OK);
+            }
+
+            let history_before = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .uri("/history")
+                    .body(Body::empty())
+                    .expect("request should build"),
+                "paper release sweep session history before request",
+            )
+            .await;
+            assert_eq!(history_before.status(), StatusCode::OK);
+            let history_before_body = history_before
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let history_before: RuntimeHistorySnapshot =
+                serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+            for (label, expected_status, expected_message, command) in [
+                (
+                    "paper release sweep session first entry request",
+                    StatusCode::OK,
+                    Some("manual entry command dispatched"),
+                    RuntimeLifecycleCommand::ManualEntry {
+                        side: tv_bot_core_types::TradeSide::Buy,
+                        quantity: 1,
+                        tick_size: Decimal::new(10, 1),
+                        entry_reference_price: Decimal::new(238_510, 2),
+                        tick_value_usd: Some(Decimal::new(10, 0)),
+                        reason: Some("paper release sweep first entry".to_owned()),
+                    },
+                ),
+                (
+                    "paper release sweep session disable gate request",
+                    StatusCode::OK,
+                    None,
+                    RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                        enabled: false,
+                        reason: Some("hold fresh entries during release sweep".to_owned()),
+                    },
+                ),
+                (
+                    "paper release sweep session blocked gate entry request",
+                    StatusCode::CONFLICT,
+                    Some("new entries are blocked"),
+                    RuntimeLifecycleCommand::ManualEntry {
+                        side: tv_bot_core_types::TradeSide::Buy,
+                        quantity: 1,
+                        tick_size: Decimal::new(10, 1),
+                        entry_reference_price: Decimal::new(238_620, 2),
+                        tick_value_usd: Some(Decimal::new(10, 0)),
+                        reason: Some("blocked by release sweep gate".to_owned()),
+                    },
+                ),
+                (
+                    "paper release sweep session re-enable gate request",
+                    StatusCode::OK,
+                    None,
+                    RuntimeLifecycleCommand::SetNewEntriesEnabled {
+                        enabled: true,
+                        reason: Some("resume release sweep entries".to_owned()),
+                    },
+                ),
+            ] {
+                let response = request_with_timeout(
+                    app.clone(),
+                    Request::builder()
+                        .method("POST")
+                        .uri("/runtime/commands")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&RuntimeLifecycleRequest {
+                                source: ManualCommandSource::Dashboard,
+                                command,
+                            })
+                            .expect("request should serialize"),
+                        ))
+                        .expect("request should build"),
+                    label,
+                )
+                .await;
+                assert_eq!(response.status(), expected_status);
+                let body = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .expect("body should collect")
+                    .to_bytes();
+                let lifecycle_response: RuntimeLifecycleResponse =
+                    serde_json::from_slice(&body).expect("response json should parse");
+                if let Some(expected_message) = expected_message {
+                    assert!(lifecycle_response.message.contains(expected_message));
+                }
+            }
+
+            set_test_market_data_snapshot(
+                &state,
+                sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Degraded),
+                Some("market data is degraded; new entries must remain blocked".to_owned()),
+            )
+            .await;
+
+            let degraded_entry_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Dashboard,
+                            command: RuntimeLifecycleCommand::ManualEntry {
+                                side: tv_bot_core_types::TradeSide::Buy,
+                                quantity: 1,
+                                tick_size: Decimal::new(10, 1),
+                                entry_reference_price: Decimal::new(238_730, 2),
+                                tick_value_usd: Some(Decimal::new(10, 0)),
+                                reason: Some("blocked by degraded release sweep feed".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep session degraded entry request",
+            )
+            .await;
+            assert_eq!(degraded_entry_response.status(), StatusCode::CONFLICT);
+
+            set_test_market_data_snapshot(
+                &state,
+                sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+                None,
+            )
+            .await;
+
+            let recovered_entry_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Dashboard,
+                            command: RuntimeLifecycleCommand::ManualEntry {
+                                side: tv_bot_core_types::TradeSide::Buy,
+                                quantity: 1,
+                                tick_size: Decimal::new(10, 1),
+                                entry_reference_price: Decimal::new(238_840, 2),
+                                tick_value_usd: Some(Decimal::new(10, 0)),
+                                reason: Some("paper release sweep recovered entry".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep session recovered entry request",
+            )
+            .await;
+            assert_eq!(recovered_entry_response.status(), StatusCode::OK);
+
+            let place_osos = execution_api
+                .place_osos
+                .lock()
+                .expect("execution mutex should not poison");
+            assert_eq!(place_osos.len(), 2);
+            drop(place_osos);
+
+            let cancel_orders = execution_api
+                .cancel_orders
+                .lock()
+                .expect("execution mutex should not poison");
+            assert!(cancel_orders.is_empty());
+            drop(cancel_orders);
+
+            let liquidations = execution_api
+                .liquidations
+                .lock()
+                .expect("execution mutex should not poison");
+            assert!(liquidations.is_empty());
+            drop(liquidations);
+
+            let history_after = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .uri("/history")
+                    .body(Body::empty())
+                    .expect("request should build"),
+                "paper release sweep session history after request",
+            )
+            .await;
+            assert_eq!(history_after.status(), StatusCode::OK);
+            let history_after_body = history_after
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let history_after: RuntimeHistorySnapshot =
+                serde_json::from_slice(&history_after_body).expect("history json should parse");
+            assert!(
+                history_after.projection.total_order_records
+                    > history_before.projection.total_order_records
+            );
+
+            let journal_records = journal.list().expect("journal should list records");
+            assert_eq!(
+                journal_records
+                    .iter()
+                    .filter(|record| record.action == "dispatch_succeeded")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                journal_records
+                    .iter()
+                    .filter(|record| record.action == "dispatch_failed")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                journal_records
+                    .iter()
+                    .filter(|record| record.action == "new_entries_gate_updated")
+                    .count(),
+                2
+            );
+
+            let _ = fs::remove_file(strategy_path);
+        }
+
+        {
+            let history = test_history();
+            let latency_collector = test_latency_collector();
+            let health_supervisor = test_health_supervisor();
+            let execution_api = TestExecutionApi::default();
+            let journal = InMemoryJournal::new();
+            let state = build_kernel_backed_state_with_manager(
+                sample_session_manager_with_contract_startup_review_required().await,
+                execution_api.clone(),
+                journal.clone(),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+            );
+            let app = build_http_router(state.clone());
+            let strategy_path = temp_strategy_path();
+            write_strategy_file(&strategy_path);
+
+            let load_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::LoadStrategy {
+                                path: strategy_path.clone(),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup load strategy request",
+            )
+            .await;
+            assert_eq!(load_response.status(), StatusCode::OK);
+
+            set_test_market_data_snapshot(
+                &state,
+                sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+                None,
+            )
+            .await;
+
+            for (label, command) in [
+                (
+                    "paper release sweep startup set mode request",
+                    RuntimeLifecycleCommand::SetMode {
+                        mode: RuntimeMode::Paper,
+                    },
+                ),
+                (
+                    "paper release sweep startup mark warmup ready request",
+                    RuntimeLifecycleCommand::MarkWarmupReady,
+                ),
+            ] {
+                let response = request_with_timeout(
+                    app.clone(),
+                    Request::builder()
+                        .method("POST")
+                        .uri("/runtime/commands")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&RuntimeLifecycleRequest {
+                                source: ManualCommandSource::Cli,
+                                command,
+                            })
+                            .expect("request should serialize"),
+                        ))
+                        .expect("request should build"),
+                    label,
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::OK);
+            }
+
+            let history_before = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .uri("/history")
+                    .body(Body::empty())
+                    .expect("request should build"),
+                "paper release sweep startup history before request",
+            )
+            .await;
+            assert_eq!(history_before.status(), StatusCode::OK);
+            let history_before_body = history_before
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let history_before: RuntimeHistorySnapshot =
+                serde_json::from_slice(&history_before_body).expect("history json should parse");
+
+            let blocked_arm_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::Arm {
+                                allow_override: true,
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup blocked arm request",
+            )
+            .await;
+            assert_eq!(blocked_arm_response.status(), StatusCode::CONFLICT);
+
+            let resolved_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Dashboard,
+                            command: RuntimeLifecycleCommand::ResolveReconnectReview {
+                                decision: RuntimeReconnectDecision::ReattachBotManagement,
+                                contract_id: None,
+                                reason: Some("clear startup review for release sweep".to_owned()),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup resolve review request",
+            )
+            .await;
+            assert_eq!(resolved_response.status(), StatusCode::OK);
+            let resolved_body = resolved_response
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let resolved_response: RuntimeLifecycleResponse =
+                serde_json::from_slice(&resolved_body).expect("response json should parse");
+            assert_eq!(
+                resolved_response.message,
+                "reconnect review resolved with reattach_bot_management"
+            );
+            assert!(!resolved_response.status.reconnect_review.required);
+
+            let arm_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Cli,
+                            command: RuntimeLifecycleCommand::Arm {
+                                allow_override: true,
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup arm request",
+            )
+            .await;
+            assert_eq!(arm_response.status(), StatusCode::OK);
+
+            let cancel_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Dashboard,
+                            command: RuntimeLifecycleCommand::CancelWorkingOrders {
+                                reason: Some(
+                                    "clear startup working orders for release sweep".to_owned(),
+                                ),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup cancel request",
+            )
+            .await;
+            assert_eq!(cancel_response.status(), StatusCode::OK);
+
+            let close_response = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/runtime/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&RuntimeLifecycleRequest {
+                            source: ManualCommandSource::Dashboard,
+                            command: RuntimeLifecycleCommand::ClosePosition {
+                                contract_id: None,
+                                reason: Some(
+                                    "flatten startup position for release sweep".to_owned(),
+                                ),
+                            },
+                        })
+                        .expect("request should serialize"),
+                    ))
+                    .expect("request should build"),
+                "paper release sweep startup close request",
+            )
+            .await;
+            assert_eq!(close_response.status(), StatusCode::OK);
+
+            let cancel_orders = execution_api
+                .cancel_orders
+                .lock()
+                .expect("execution mutex should not poison");
+            assert_eq!(cancel_orders.len(), 1);
+            assert_eq!(cancel_orders[0].context.account_id, 101);
+            assert_eq!(cancel_orders[0].order_id, 8102);
+            drop(cancel_orders);
+
+            let liquidations = execution_api
+                .liquidations
+                .lock()
+                .expect("execution mutex should not poison");
+            assert_eq!(liquidations.len(), 1);
+            assert_eq!(liquidations[0].context.account_id, 101);
+            assert_eq!(liquidations[0].contract_id, 4444);
+            drop(liquidations);
+
+            let place_osos = execution_api
+                .place_osos
+                .lock()
+                .expect("execution mutex should not poison");
+            assert!(place_osos.is_empty());
+            drop(place_osos);
+
+            let history_after = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .uri("/history")
+                    .body(Body::empty())
+                    .expect("request should build"),
+                "paper release sweep startup history after request",
+            )
+            .await;
+            assert_eq!(history_after.status(), StatusCode::OK);
+            let history_after_body = history_after
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let history_after: RuntimeHistorySnapshot =
+                serde_json::from_slice(&history_after_body).expect("history json should parse");
+            assert!(
+                history_after.projection.total_order_records
+                    > history_before.projection.total_order_records
+            );
+
+            let final_status = request_with_timeout(
+                app.clone(),
+                Request::builder()
+                    .uri("/status")
+                    .body(Body::empty())
+                    .expect("request should build"),
+                "paper release sweep startup final status request",
+            )
+            .await;
+            assert_eq!(final_status.status(), StatusCode::OK);
+            let final_status_body = final_status
+                .into_body()
+                .collect()
+                .await
+                .expect("body should collect")
+                .to_bytes();
+            let final_status: RuntimeStatusSnapshot =
+                serde_json::from_slice(&final_status_body).expect("status json should parse");
+            assert_eq!(final_status.mode, RuntimeMode::Paper);
+            assert_eq!(final_status.arm_state, ArmState::Armed);
+            assert!(!final_status.reconnect_review.required);
+
+            let journal_records = journal.list().expect("journal should list records");
+            assert!(journal_records.iter().any(|record| {
+                record.action == "reconnect_review_resolved"
+                    && record.payload["decision"].as_str() == Some("reattach_bot_management")
+            }));
+            assert_eq!(
+                journal_records
+                    .iter()
+                    .filter(|record| record.action == "dispatch_succeeded")
+                    .count(),
+                2
+            );
+
+            let _ = fs::remove_file(strategy_path);
+        }
+    }
+
+    #[tokio::test]
     async fn journal_route_returns_recent_persisted_records() {
         let history = test_history();
         let latency_collector = test_latency_collector();
