@@ -22,7 +22,7 @@ The dashboard consumes only the local control plane:
 The current dashboard now covers:
 
 - a dark-first shell refresh with a higher-signal operator status rail for mode, arm, readiness, warmup, dispatch, and safety posture
-- a grouped control center that separates mode/gating, strategy/settings, and execution-facing operator actions with a denser command-summary rail and tighter high-frequency action groupings
+- a grouped control center that separates mode/gating, strategy/settings, and execution-facing operator actions with a denser command-summary rail, dedicated form-grid rules for settings/manual actions, and tighter high-frequency action groupings
 - a denser monitoring and audit deck that gives history, latency, journal, and live event surfaces clearer section hierarchy and cleaner empty states
 - shared dashboard primitives plus extracted monitoring, control-center, and safety-review components, with the polling/event/command controller now split into runtime-host, strategy-workflow, and settings-workflow hooks and the projection helpers living in a dedicated lib module so the redesign is no longer trapped inside one oversized `App.tsx`
 - explicit runtime mode with strong paper/live separation
@@ -38,6 +38,7 @@ The current dashboard now covers:
 - history and PnL drill-downs including an explicit real-time P&L chart, per-trade P&L cards, richer trade ledger, working-order/fill views, and floating snapshot context
 - persisted journal audit-trail drill-downs with severity/category summaries and formatted payloads
 - latency detail views including per-stage trade-path timing and host-correlation context
+- a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
 ## Local Development
 
@@ -80,4 +81,4 @@ That plan is the current source of truth for:
 - overflow and responsive hardening
 - component decomposition and frontend QA gates
 
-The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, and the runtime-to-view-model shaping logic now lives in a dedicated projection module while the broader component/layout cleanup remains ongoing.
+The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the latest browser QA pass cleared page-level overflow at `390px`, `768px`, `1024px`, and `1440px` while the broader component/layout cleanup remains ongoing.

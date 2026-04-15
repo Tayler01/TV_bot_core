@@ -7,18 +7,29 @@ This plan defines the work needed to turn the current local operator interface i
 
 ## Audit Snapshot
 
-Audit date: 2026-04-14
+Audit date: 2026-04-15
 
 Current evidence from the running dashboard and codebase:
 
-- The active theme is still light-first in [apps/dashboard/src/styles.css](</C:/repos/TV_bot_core/apps/dashboard/src/styles.css>) via `color-scheme: light`, a bright background gradient, and light panels.
-- The main dashboard surface is implemented in a single large file: [apps/dashboard/src/App.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/App.tsx>) is over 3,000 lines.
-- The shared dashboard stylesheet is also a single large global file: [apps/dashboard/src/styles.css](</C:/repos/TV_bot_core/apps/dashboard/src/styles.css>) is over 650 lines.
-- A real browser audit at `390px` width showed horizontal overflow: the document width grew to `609px`, so the current mobile layout is not safe.
-- The current layout allows text and control overflow in several places, including strategy-library controls and multiple operator reason inputs.
-- The interface currently gives too many panels equal visual weight, which makes critical operator state, controls, monitoring, and audit views compete with each other.
-- Many cards contain long explanatory copy that is useful during development but too verbose for a production operator surface.
-- The live, paper, and observation distinctions exist, but the visual system is still too soft and too subtle for fast operational scanning.
+- The active theme is now dark-first in [apps/dashboard/src/styles.css](</C:/repos/TV_bot_core/apps/dashboard/src/styles.css>) with shared tokens for canvas, panel, text, and mode accents.
+- The main dashboard surface has been decomposed substantially: [apps/dashboard/src/App.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/App.tsx>) is now primarily composition/orchestration, while monitoring, control-center, and workflow concerns live in dedicated component and hook modules.
+- The shared dashboard stylesheet is still global, but it now carries the redesigned shell, control-center, monitoring, and responsive hardening rules instead of the earlier light-theme scaffold.
+- A real browser audit across `390px`, `768px`, `1024px`, and `1440px` now shows no page-level horizontal overflow in the current dashboard build.
+- The worst field and button spillover issues are fixed through dedicated form-grid rules for settings, manual entry, and operator action forms.
+- The control center and monitoring deck now have clearer hierarchy, but the interface still contains some verbose development-oriented copy and a few dense lower-priority sections.
+- The live, paper, and observation distinctions are materially stronger than before, but final production sign-off should still include one more deliberate operator-ergonomics review.
+
+## Progress Snapshot
+
+The original seven-phase plan is no longer theoretical. Current state by phase:
+
+- Phase 1 `dark-mode foundation`: substantially complete
+- Phase 2 `information architecture reset`: substantially complete
+- Phase 3 `control-surface redesign`: substantially complete
+- Phase 4 `monitoring, history, and audit redesign`: substantially complete
+- Phase 5 `responsive and overflow hardening`: materially in place, with browser-verified page-level overflow checks now passing at `390px`, `768px`, `1024px`, and `1440px`
+- Phase 6 `frontend structure cleanup`: substantially in place through extracted monitoring/control components plus dedicated runtime-host, strategy, settings, controller, and projection modules
+- Phase 7 `QA and acceptance`: in progress, with browser-based responsive QA now added to the evidence, but final release sign-off still pending
 
 ## Design Constraints
 

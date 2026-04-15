@@ -319,6 +319,19 @@ select {
   font-size: 1.4rem;
 }
 
+.panel--monitoring .panel__heading {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(140, 167, 205, 0.12);
+}
+
+.panel--monitoring .panel__detail {
+  max-width: 34ch;
+  text-align: right;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
 .panel__detail,
 .panel__footnote,
 .control-card__note,
@@ -339,6 +352,31 @@ select {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 14px;
+}
+
+.control-grid--form {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+
+.control-grid--form-tight {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+
+.control-grid--form .field--wide {
+  grid-column: 1 / -1;
+}
+
+.control-grid--operator-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.control-grid--operator-actions > .control-card {
+  grid-column: span 1;
+}
+
+.control-grid--operator-actions > .control-card--span-7,
+.control-grid--operator-actions > .control-card--span-12 {
+  grid-column: 1 / -1;
 }
 
 .control-shell {
@@ -496,9 +534,18 @@ select {
 
 .flatten-form {
   display: grid;
-  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.flatten-form > .control-grid,
+.flatten-form > .field--wide {
+  grid-column: 1 / -1;
+}
+
+.flatten-form > button {
+  justify-self: start;
 }
 
 .strategy-toolbar {
@@ -523,6 +570,7 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-subtle);
+  overflow-wrap: anywhere;
 }
 
 .field input {
@@ -604,6 +652,22 @@ select {
   font-size: 0.98rem;
 }
 
+.panel--monitoring .metric-row,
+.panel--monitoring .subgrid,
+.panel--monitoring .pill-row {
+  gap: 10px;
+}
+
+.panel--monitoring .metric,
+.panel--monitoring .mini-metric {
+  padding: 12px 14px;
+}
+
+.panel--monitoring .metric span,
+.panel--monitoring .mini-metric span {
+  line-height: 1.45;
+}
+
 .pill-row {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   margin-bottom: 18px;
@@ -623,6 +687,8 @@ select {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-family: "IBM Plex Mono", "Consolas", monospace;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .pill--healthy {
@@ -704,6 +770,11 @@ select {
   margin-top: 18px;
 }
 
+.panel--monitoring .section-grid {
+  gap: 14px;
+  margin-top: 16px;
+}
+
 .section-grid--wide {
   grid-template-columns: repeat(12, minmax(0, 1fr));
 }
@@ -716,6 +787,14 @@ select {
   border-radius: 20px;
   border: 1px solid var(--border-soft);
   background: var(--bg-surface-subtle);
+}
+
+.panel--monitoring .section-block {
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(18, 30, 47, 0.94), rgba(11, 20, 33, 0.96));
 }
 
 .section-block--span-4 {
@@ -745,6 +824,11 @@ select {
   line-height: 1.55;
 }
 
+.panel--monitoring .section-block__note {
+  max-width: 48ch;
+  font-size: 0.92rem;
+}
+
 .section-block__empty {
   margin: 0;
   padding: 14px 16px;
@@ -760,6 +844,10 @@ select {
   grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
   gap: 10px 14px;
   margin: 18px 0 0;
+}
+
+.panel--monitoring .definition-list {
+  margin-top: 14px;
 }
 
 .definition-list dt {
@@ -794,6 +882,13 @@ select {
   background: var(--bg-surface-subtle);
 }
 
+.panel--monitoring .event-list__item {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(22, 35, 54, 0.88), rgba(14, 25, 40, 0.9));
+}
+
 .event-list__header {
   display: flex;
   justify-content: space-between;
@@ -801,10 +896,25 @@ select {
   align-items: center;
 }
 
+.panel--monitoring .event-list__header {
+  align-items: flex-start;
+}
+
+.panel--monitoring .event-list__header strong {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .event-list__item p {
   margin: 10px 0 0;
   line-height: 1.5;
   color: var(--text-muted);
+}
+
+.panel--monitoring .event-list__item p,
+.panel--monitoring .event-list__meta,
+.panel--monitoring .panel__footnote {
+  overflow-wrap: anywhere;
 }
 
 .event-list__meta {
@@ -826,6 +936,10 @@ select {
   font-size: 0.76rem;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.panel--monitoring .payload-block {
+  max-height: 280px;
 }
 
 .pnl-chart {
@@ -889,6 +1003,10 @@ select {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.panel--monitoring .pnl-chart__points {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
 .pnl-chart__point-card,
 .per-trade-pnl-card {
   display: grid;
@@ -897,6 +1015,12 @@ select {
   border-radius: 18px;
   border: 1px solid var(--border-soft);
   background: var(--bg-surface-subtle);
+}
+
+.panel--monitoring .per-trade-pnl-card,
+.panel--monitoring .pnl-chart__point-card {
+  gap: 8px;
+  padding: 12px 14px;
 }
 
 .pnl-chart__point-header {
@@ -1052,6 +1176,10 @@ select {
   .section-block--span-8 {
     grid-column: span 12;
   }
+
+  .control-grid--operator-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1090,6 +1218,11 @@ select {
 
   .control-card {
     grid-column: span 12;
+  }
+
+  .control-grid--form,
+  .control-grid--form-tight {
+    grid-template-columns: 1fr;
   }
 
   .hero__copy h1 {

@@ -541,7 +541,7 @@ export function ControlCenterPanel({
                   tone={snapshot.settings.config_file_path ? "info" : "warning"}
                 />
               </div>
-              <div className="control-grid">
+              <div className="control-grid control-grid--form">
                 <label className="field">
                   <span>Startup mode</span>
                   <select
@@ -725,7 +725,7 @@ export function ControlCenterPanel({
 
             <section className="control-card control-card--span-12">
               <p className="control-card__title">Operator actions</p>
-              <div className="control-grid">
+              <div className="control-grid control-grid--operator-actions">
                 <section className="control-card control-card--span-7">
                   <p className="control-card__title">Manual entry</p>
                   <form
@@ -739,7 +739,7 @@ export function ControlCenterPanel({
                       onManualEntrySubmit();
                     }}
                   >
-                    <div className="control-grid">
+                    <div className="control-grid control-grid--form control-grid--form-tight">
                       <label className="field">
                         <span>Side</span>
                         <select

@@ -375,7 +375,12 @@ export function HistoryPanel({
   projectedPnlSnapshot: PnlSnapshotRecord | null;
 }) {
   return (
-    <Panel eyebrow="History" title="Trade state and PnL projection">
+    <Panel
+      className="panel--full panel--monitoring panel--history"
+      eyebrow="History"
+      title="Trade state and PnL projection"
+      detail="Projected orders, fills, trade summaries, and floating P&L from the local runtime host."
+    >
       <div className="metric-row">
         <Metric
           label="Open positions"
@@ -688,7 +693,12 @@ export function LatencyPanel({
   slowestLatencyStage: LatencyStageViewModel | null;
 }) {
   return (
-    <Panel eyebrow="Latency" title="Latest trade-path timing">
+    <Panel
+      className="panel--full panel--monitoring panel--latency"
+      eyebrow="Latency"
+      title="Latest trade-path timing"
+      detail="Latest signal-to-fill path with host write and reconnect context."
+    >
       <div className="metric-row">
         <Metric
           label="Recorded paths"
@@ -824,6 +834,7 @@ export function JournalPanel({
 }) {
   return (
     <Panel
+      className="panel--full panel--monitoring panel--journal"
       eyebrow="Journal"
       title="Persisted operator journal and audit trail"
       detail={`${formatInteger(snapshot.journal.total_records)} total record(s)`}
@@ -905,6 +916,7 @@ export function EventsPanel({
 }) {
   return (
     <Panel
+      className="panel--full panel--monitoring panel--events"
       eyebrow="Events"
       title="Local operator feed from /events"
       detail={
