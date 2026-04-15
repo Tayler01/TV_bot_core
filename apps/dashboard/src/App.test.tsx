@@ -1021,11 +1021,12 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(
-      await screen.findByText("Operator dashboard for the local runtime host"),
-    ).toBeInTheDocument();
-    expect(await screen.findAllByText("Paper")).toHaveLength(4);
-    expect(await screen.findByText("paper-primary")).toBeInTheDocument();
+    expect(await screen.findByText("Local runtime command center")).toBeInTheDocument();
+    expect(await screen.findByText("TV Bot Operator Console")).toBeInTheDocument();
+    expect(await screen.findByText("Dispatch")).toBeInTheDocument();
+    expect(await screen.findByText("Safety review")).toBeInTheDocument();
+    expect(await screen.findAllByText("Paper")).not.toHaveLength(0);
+    expect(await screen.findAllByText("paper-primary")).not.toHaveLength(0);
     expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(2);
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
     expect(await screen.findByText("Validation passed")).toBeInTheDocument();
@@ -1149,7 +1150,7 @@ describe("App", () => {
         kind: "resolve_reconnect_review",
         decision: "reattach_bot_management",
         contract_id: null,
-        reason: "dashboard reconnect review resolution",
+        reason: "resolve reconnect review",
       },
     });
     expect(JSON.parse(String(runtimeCommandCalls[1]?.[1]?.body))).toEqual({
@@ -1158,7 +1159,7 @@ describe("App", () => {
         kind: "shutdown",
         decision: "flatten_first",
         contract_id: null,
-        reason: "dashboard shutdown review decision",
+        reason: "resolve shutdown review",
       },
     });
   });

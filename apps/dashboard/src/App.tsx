@@ -82,6 +82,7 @@ async function readStrategyUploadFile(file: File): Promise<string> {
 type LoadState = "idle" | "loading" | "ready" | "error";
 type BannerTone = "healthy" | "warning" | "danger" | "info";
 type EventConnectionState = "connecting" | "open" | "closed" | "error" | "unsupported";
+type SignalTone = BannerTone | "paper" | "live" | "neutral";
 
 interface ViewModel {
   snapshot: DashboardSnapshot | null;
@@ -291,6 +292,49 @@ function reviewSummary(status: RuntimeStatusSnapshot) {
   }
 
   return "No active safety review";
+}
+
+function readinessSummary(counts: { pass: number; warning: number; blocking: number }) {
+  if (counts.blocking > 0) {
+    return `${counts.blocking} blocking`;
+  }
+
+  if (counts.warning > 0) {
+    return `${counts.warning} warning`;
+  }
+
+  return "Ready";
+}
+
+function readinessTone(counts: { pass: number; warning: number; blocking: number }): BannerTone {
+  if (counts.blocking > 0) {
+    return "danger";
+  }
+
+  if (counts.warning > 0) {
+    return "warning";
+  }
+
+  return "healthy";
+}
+
+function dispatchTone(status: RuntimeStatusSnapshot): BannerTone {
+  if (status.command_dispatch_ready) {
+    return "healthy";
+  }
+
+  return status.mode === "observation" ? "info" : "warning";
+}
+
+function warmupTone(status: RuntimeStatusSnapshot["warmup_status"]): BannerTone {
+  switch (status) {
+    case "ready":
+      return "healthy";
+    case "failed":
+      return "danger";
+    default:
+      return "warning";
+  }
 }
 
 function mergeLifecycleResponseIntoSnapshot(
@@ -957,6 +1001,26 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function SignalTile({
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone: SignalTone;
+}) {
+  return (
+    <div className={`signal-tile signal-tile--${tone}`}>
+      <span className="signal-tile__label">{label}</span>
+      <strong>{value}</strong>
+      {detail ? <p className="signal-tile__detail">{detail}</p> : null}
+    </div>
+  );
+}
+
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="mini-metric">
@@ -985,23 +1049,19 @@ function App() {
   const [eventFeed, setEventFeed] = useState<EventFeedViewModel>(INITIAL_EVENT_FEED_VIEW_MODEL);
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [newEntriesReason, setNewEntriesReason] = useState("dashboard operator entry gate");
-  const [closePositionReason, setClosePositionReason] = useState(
-    "dashboard flatten position request",
-  );
+  const [newEntriesReason, setNewEntriesReason] = useState("operator gate");
+  const [closePositionReason, setClosePositionReason] = useState("flatten position");
   const [manualEntrySide, setManualEntrySide] = useState<"buy" | "sell">("buy");
   const [manualEntryQuantity, setManualEntryQuantity] = useState("1");
   const [manualEntryTickSize, setManualEntryTickSize] = useState("0.1");
   const [manualEntryReferencePrice, setManualEntryReferencePrice] = useState("");
   const [manualEntryTickValueUsd, setManualEntryTickValueUsd] = useState("");
-  const [manualEntryReason, setManualEntryReason] = useState("dashboard manual entry");
+  const [manualEntryReason, setManualEntryReason] = useState("manual entry");
   const [cancelWorkingOrdersReason, setCancelWorkingOrdersReason] = useState(
-    "dashboard cancel working orders request",
+    "cancel working orders",
   );
-  const [reconnectReason, setReconnectReason] = useState(
-    "dashboard reconnect review resolution",
-  );
-  const [shutdownReason, setShutdownReason] = useState("dashboard shutdown review decision");
+  const [reconnectReason, setReconnectReason] = useState("resolve reconnect review");
+  const [shutdownReason, setShutdownReason] = useState("resolve shutdown review");
   const [selectedStrategyUploadFile, setSelectedStrategyUploadFile] = useState<File | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<RuntimeSettingsDraft | null>(null);
   const [settingsDirty, setSettingsDirty] = useState(false);
@@ -1576,6 +1636,8 @@ function App() {
   );
   const projectedPnlSnapshot = snapshot ? latestPnlSnapshot(snapshot) : null;
   const feedStatuses = snapshot?.status.market_data_status?.session.market_data.feed_statuses ?? [];
+  const readinessState = readinessSummary(readinessCounts);
+  const activeReviewSummary = snapshot ? reviewSummary(snapshot.status) : "Awaiting runtime";
   const canManualEntry =
     snapshot != null &&
     snapshot.status.strategy_loaded === true &&
@@ -1626,35 +1688,124 @@ function App() {
   return (
     <main className="shell">
       <div className={`hero hero--${headlineTone}`}>
-        <div className="hero__copy">
-          <p className="eyebrow">TV Bot Control Center</p>
-          <h1>Operator dashboard for the local runtime host</h1>
-          <p className="hero__summary">
-            This slice adds the first real control-center actions on top of the local control
-            plane, while keeping live and paper modes visually distinct and confirming the risky
-            paths before the dashboard sends them.
-          </p>
-        </div>
-        <div className="hero__meta">
-          <div className="hero__mode-lockup">
-            <span className="hero__mode-label">Mode</span>
-            <strong>{snapshot ? formatMode(snapshot.status.mode) : "Waiting for runtime"}</strong>
-          </div>
-          <div className="hero__actions">
-            <button
-              className="refresh-button"
-              type="button"
-              onClick={() => {
-                void refreshSnapshot();
-              }}
-            >
-              Refresh now
-            </button>
-            <p className="hero__timestamp">
-              Last sync{" "}
-              {snapshot ? formatDateTime(snapshot.fetchedAt) : formatDateTime(viewModel.lastAttemptedAt)}
+        <div className="hero__content">
+          <div className="hero__copy">
+            <p className="eyebrow">TV Bot Operator Console</p>
+            <h1>Local runtime command center</h1>
+            <p className="hero__summary">
+              Operate the runtime, watch the live safety posture, and resolve review-required
+              states from the local control plane without losing the backend as the source of
+              truth.
             </p>
           </div>
+          <div className="hero__meta">
+            <div className="hero__mode-lockup">
+              <span className="hero__mode-label">Current mode</span>
+              <strong>{snapshot ? formatMode(snapshot.status.mode) : "Waiting for runtime"}</strong>
+              <span className="hero__mode-detail">{activeReviewSummary}</span>
+            </div>
+            <div className="hero__actions">
+              <button
+                className="refresh-button"
+                type="button"
+                onClick={() => {
+                  void refreshSnapshot();
+                }}
+              >
+                Refresh now
+              </button>
+              <p className="hero__timestamp">
+                Last sync{" "}
+                {snapshot
+                  ? formatDateTime(snapshot.fetchedAt)
+                  : formatDateTime(viewModel.lastAttemptedAt)}
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="hero__rail" aria-label="Runtime posture">
+          <SignalTile
+            label="Arm state"
+            value={snapshot ? formatMode(snapshot.status.arm_state) : "Waiting"}
+            detail={
+              snapshot
+                ? snapshot.status.strategy_loaded
+                  ? "Strategy is loaded and tracked by the host"
+                  : "No strategy is currently loaded"
+                : "Polling local runtime host"
+            }
+            tone={
+              snapshot
+                ? snapshot.status.arm_state === "armed"
+                  ? "healthy"
+                  : "neutral"
+                : "info"
+            }
+          />
+          <SignalTile
+            label="Readiness"
+            value={snapshot ? readinessState : "Waiting"}
+            detail={
+              snapshot
+                ? `${readinessCounts.pass} pass | ${readinessCounts.warning} warning`
+                : "Waiting for grouped checks"
+            }
+            tone={snapshot ? readinessTone(readinessCounts) : "info"}
+          />
+          <SignalTile
+            label="Warmup"
+            value={snapshot ? formatMode(snapshot.status.warmup_status) : "Waiting"}
+            detail={
+              snapshot?.status.market_data_status?.warmup_mode
+                ? formatWarmupMode(snapshot.status.market_data_status.warmup_mode)
+                : "Awaiting market-data state"
+            }
+            tone={snapshot ? warmupTone(snapshot.status.warmup_status) : "info"}
+          />
+          <SignalTile
+            label="Dispatch"
+            value={
+              snapshot
+                ? snapshot.status.command_dispatch_ready
+                  ? "Ready"
+                  : "Blocked"
+                : "Waiting"
+            }
+            detail={
+              snapshot
+                ? snapshot.status.command_dispatch_ready
+                  ? snapshot.status.current_account_name ?? "Runtime host is dispatch-ready"
+                  : snapshot.status.command_dispatch_detail
+                : "Waiting for dispatcher state"
+            }
+            tone={snapshot ? dispatchTone(snapshot.status) : "info"}
+          />
+          <SignalTile
+            label="Safety review"
+            value={
+              snapshot
+                ? snapshot.status.reconnect_review.required ||
+                  snapshot.status.shutdown_review.blocked ||
+                  snapshot.status.shutdown_review.awaiting_flatten
+                  ? "Attention"
+                  : "Clear"
+                : "Waiting"
+            }
+            detail={
+              snapshot
+                ? activeReviewSummary
+                : "Waiting for reconnect and shutdown review state"
+            }
+            tone={
+              snapshot
+                ? snapshot.status.reconnect_review.required ||
+                  snapshot.status.shutdown_review.blocked ||
+                  snapshot.status.shutdown_review.awaiting_flatten
+                  ? "warning"
+                  : "healthy"
+                : "info"
+            }
+          />
         </div>
       </div>
 
@@ -1771,7 +1922,7 @@ function App() {
                   <span>Reason</span>
                   <input
                     aria-label="New entry gate reason"
-                    placeholder="dashboard operator entry gate"
+                    placeholder="operator gate"
                     value={newEntriesReason}
                     onChange={(event) => {
                       setNewEntriesReason(event.target.value);
@@ -2384,7 +2535,7 @@ function App() {
                         <span>Reason</span>
                         <input
                           aria-label="Manual entry reason"
-                          placeholder="dashboard manual entry"
+                    placeholder="manual entry"
                           value={manualEntryReason}
                           onChange={(event) => {
                             setManualEntryReason(event.target.value);
@@ -2440,7 +2591,7 @@ function App() {
                         <span>Reason</span>
                         <input
                           aria-label="Flatten position reason"
-                          placeholder="dashboard flatten position request"
+                    placeholder="flatten position"
                           value={closePositionReason}
                           onChange={(event) => {
                             setClosePositionReason(event.target.value);
@@ -2497,7 +2648,7 @@ function App() {
                         <span>Reason</span>
                         <input
                           aria-label="Cancel working orders reason"
-                          placeholder="dashboard cancel working orders request"
+                    placeholder="cancel working orders"
                           value={cancelWorkingOrdersReason}
                           onChange={(event) => {
                             setCancelWorkingOrdersReason(event.target.value);
