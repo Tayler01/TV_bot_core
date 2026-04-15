@@ -24,7 +24,7 @@ The current dashboard now covers:
 - a dark-first shell refresh with a higher-signal operator status rail for mode, arm, readiness, warmup, dispatch, and safety posture
 - a grouped control center that separates mode/gating, strategy/settings, and execution-facing operator actions
 - a denser monitoring and audit deck that gives history, latency, journal, and live event surfaces clearer section hierarchy and cleaner empty states
-- shared dashboard primitives plus extracted read-only monitoring/audit components so the redesign is no longer trapped inside one oversized `App.tsx`
+- shared dashboard primitives plus extracted monitoring, control-center, and safety-review components so the redesign is no longer trapped inside one oversized `App.tsx`
 - explicit runtime mode with strong paper/live separation
 - strategy library upload, browsing, and host-backed validation before load
 - host-backed runtime settings editing for startup mode, default strategy path, SQLite fallback policy, and paper/live account routing names
@@ -80,4 +80,4 @@ That plan is the current source of truth for:
 - overflow and responsive hardening
 - component decomposition and frontend QA gates
 
-The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules, the monitoring/audit deck has stronger hierarchy, the biggest read-only panels now live in dedicated component files, and the worst top-level/mobile overflow issues were reduced while the broader component/layout cleanup remains ongoing.
+The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, and the worst top-level/mobile overflow issues were reduced while the broader component/layout cleanup remains ongoing.

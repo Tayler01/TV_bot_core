@@ -23,7 +23,6 @@ import {
   latencyStages,
   minutesBetween,
   reviewSummary,
-  reviewTone,
   tradeTone,
 } from "./lib/dashboardPresentation";
 import {
@@ -44,12 +43,10 @@ import {
   RuntimeSummaryPanel,
 } from "./components/dashboardMonitoring";
 import {
-  ControlCluster,
-  Definition,
-  Panel,
-  Pill,
-  SignalTile,
-} from "./components/dashboardPrimitives";
+  ControlCenterPanel,
+  SafetyPanel,
+} from "./components/dashboardControlPanels";
+import { SignalTile } from "./components/dashboardPrimitives";
 import type {
   BannerTone,
   CommandFeedback,
@@ -79,9 +76,7 @@ import type {
   RuntimeEditableSettings,
   RuntimeSettingsSnapshot,
   RuntimeStatusSnapshot,
-  RuntimeStrategyCatalogEntry,
   RuntimeStrategyLibraryResponse,
-  RuntimeStrategyValidationResponse,
   TradeSummaryRecord,
 } from "./types/controlApi";
 
@@ -233,38 +228,6 @@ function selectStrategyPath(
   return library.strategies.find((entry) => entry.valid)?.path ?? library.strategies[0]?.path ?? "";
 }
 
-function strategyTone(entry: RuntimeStrategyCatalogEntry | null | undefined): BannerTone {
-  if (!entry) {
-    return "info";
-  }
-
-  if (!entry.valid) {
-    return "danger";
-  }
-
-  if (entry.warning_count > 0) {
-    return "warning";
-  }
-
-  return "healthy";
-}
-
-function validationTone(validation: RuntimeStrategyValidationResponse | null): BannerTone {
-  if (!validation) {
-    return "info";
-  }
-
-  if (!validation.valid) {
-    return "danger";
-  }
-
-  if (validation.warnings.length > 0) {
-    return "warning";
-  }
-
-  return "healthy";
-}
-
 function settingsDraftFromSnapshot(settings: RuntimeSettingsSnapshot): RuntimeSettingsDraft {
   return {
     startupMode: settings.editable.startup_mode,
@@ -287,18 +250,6 @@ function runtimeSettingsRequestFromDraft(draft: RuntimeSettingsDraft): RuntimeEd
     paper_account_name: paperAccountName.length > 0 ? paperAccountName : null,
     live_account_name: liveAccountName.length > 0 ? liveAccountName : null,
   };
-}
-
-function strategyLabel(validation: RuntimeStrategyValidationResponse | null): string {
-  if (!validation) {
-    return "No strategy selected";
-  }
-
-  if (validation.summary) {
-    return `${validation.summary.name} v${validation.summary.version}`;
-  }
-
-  return validation.title ?? validation.display_path;
 }
 
 function reviewButtonDisabled(
@@ -1374,6 +1325,170 @@ function App() {
   const shutdownFlattenDisabled =
     reviewActionsDisabled || snapshot?.status.shutdown_review.blocked !== true;
 
+  const handleSetMode = (mode: RuntimeMode) => {
+    const options =
+      mode === "live"
+        ? {
+            pendingLabel: "Switching runtime to live mode",
+            confirmMessage:
+              "Switch the runtime into LIVE mode? Paper and live are intentionally separated. Continue?",
+          }
+        : {
+            pendingLabel:
+              mode === "paper"
+                ? "Switching runtime to paper mode"
+                : "Switching runtime to observation mode",
+          };
+
+    void executeLifecycleCommand({ kind: "set_mode", mode }, options);
+  };
+
+  const handleStrategyPathChange = (path: string) => {
+    setStrategyViewModel((current) => ({
+      ...current,
+      selectedPath: path,
+    }));
+  };
+
+  const handleSettingsReset = () => {
+    if (!snapshot) {
+      return;
+    }
+
+    const nextDraft = settingsDraftFromSnapshot(snapshot.settings);
+    settingsDraftRef.current = nextDraft;
+    setSettingsDraft(nextDraft);
+    setSettingsDirty(false);
+  };
+
+  const handleArmToggle = () => {
+    if (!snapshot) {
+      return;
+    }
+
+    if (snapshot.status.arm_state === "armed") {
+      void executeLifecycleCommand(
+        { kind: "disarm" },
+        { pendingLabel: "Disarming runtime" },
+      );
+      return;
+    }
+
+    const allowOverride = snapshot.readiness.report.hard_override_required;
+    const confirmMessage = allowOverride
+      ? "Arm now with a temporary hard override for this session?"
+      : snapshot.status.mode === "live"
+        ? "Arm LIVE trading? This enables live execution once commands or strategy logic fire."
+        : "Arm the runtime for paper or observation execution?";
+
+    void executeLifecycleCommand(
+      { kind: "arm", allow_override: allowOverride },
+      {
+        pendingLabel: allowOverride
+          ? "Arming runtime with temporary override"
+          : "Arming runtime",
+        confirmMessage,
+      },
+    );
+  };
+
+  const handlePauseResume = () => {
+    if (!snapshot) {
+      return;
+    }
+
+    void executeLifecycleCommand(
+      { kind: snapshot.status.mode === "paused" ? "resume" : "pause" },
+      {
+        pendingLabel:
+          snapshot.status.mode === "paused" ? "Resuming runtime" : "Pausing runtime",
+      },
+    );
+  };
+
+  const handleLoadSelectedStrategy = () => {
+    void (async () => {
+      const result = await executeLifecycleCommand(
+        {
+          kind: "load_strategy",
+          path: strategyViewModel.selectedPath,
+        },
+        {
+          pendingLabel: "Loading strategy through runtime host",
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        void refreshStrategyValidation(strategyViewModel.selectedPath);
+      }
+    })();
+  };
+
+  const handleManualEntrySubmit = () => {
+    void (async () => {
+      const result = await executeLifecycleCommand(
+        {
+          kind: "manual_entry",
+          side: manualEntrySide,
+          quantity: Number.parseInt(manualEntryQuantity, 10),
+          tick_size: manualEntryTickSize.trim(),
+          entry_reference_price: manualEntryReferencePrice.trim(),
+          tick_value_usd: manualEntryTickValueUsd.trim() || null,
+          reason: manualEntryReason.trim(),
+        },
+        {
+          pendingLabel: `Submitting manual ${manualEntrySide} entry`,
+          confirmMessage:
+            "Submit a manual entry through the loaded strategy and runtime safety path now?",
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        setManualEntryReason("manual entry");
+      }
+    })();
+  };
+
+  const handleClosePositionSubmit = () => {
+    void (async () => {
+      const result = await executeLifecycleCommand(
+        {
+          kind: "close_position",
+          contract_id: null,
+          reason: closePositionReason.trim(),
+        },
+        {
+          pendingLabel: "Flattening active broker position",
+          confirmMessage:
+            "Flatten the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot and dispatch the audited flatten path.",
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        setClosePositionReason("flatten position");
+      }
+    })();
+  };
+
+  const handleCancelWorkingOrdersSubmit = () => {
+    void (async () => {
+      const result = await executeLifecycleCommand(
+        {
+          kind: "cancel_working_orders",
+          reason: cancelWorkingOrdersReason.trim(),
+        },
+        {
+          pendingLabel: "Cancelling working broker orders",
+          confirmMessage: "Cancel all working broker orders for the loaded market now?",
+        },
+      );
+
+      if (result?.httpStatus === 200) {
+        setCancelWorkingOrdersReason("cancel working orders");
+      }
+    })();
+  };
+
   return (
     <main className="shell">
       <div className={`hero hero--${headlineTone}`}>
@@ -1528,869 +1643,90 @@ function App() {
 
       {snapshot ? (
         <div className="dashboard-grid">
-          <Panel
-            className="panel--full panel--command-center"
-            eyebrow="Control Center"
-            title="Lifecycle commands through /runtime/commands"
-            detail={`Current mode: ${formatMode(snapshot.status.mode)} | Dispatch: ${snapshot.status.command_dispatch_detail}`}
-          >
-            <div className="control-shell">
-              <ControlCluster
-                eyebrow="Mode and gating"
-                title="Runtime posture and operator entry controls"
-                detail="High-frequency controls for mode selection and fresh-entry gating stay grouped together."
-              >
-                <div className="control-grid">
-                  <section className="control-card control-card--span-4">
-                <p className="control-card__title">Mode</p>
-                <div className="action-row">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={pendingAction !== null || snapshot.status.mode === "paper"}
-                    onClick={() => {
-                      void executeLifecycleCommand(
-                        { kind: "set_mode", mode: "paper" },
-                        { pendingLabel: "Switching runtime to paper mode" },
-                      );
-                    }}
-                  >
-                    Paper
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={pendingAction !== null || snapshot.status.mode === "observation"}
-                    onClick={() => {
-                      void executeLifecycleCommand(
-                        { kind: "set_mode", mode: "observation" },
-                        { pendingLabel: "Switching runtime to observation mode" },
-                      );
-                    }}
-                  >
-                    Observation
-                  </button>
-                  <button
-                    className="command-button command-button--danger"
-                    type="button"
-                    disabled={pendingAction !== null || snapshot.status.mode === "live"}
-                    onClick={() => {
-                      void executeLifecycleCommand(
-                        { kind: "set_mode", mode: "live" },
-                        {
-                          pendingLabel: "Switching runtime to live mode",
-                          confirmMessage:
-                            "Switch the runtime into LIVE mode? Paper and live are intentionally separated. Continue?",
-                        },
-                      );
-                    }}
-                  >
-                    Live
-                  </button>
-                </div>
-              </section>
-
-                  <section className="control-card control-card--span-8">
-                <p className="control-card__title">New entry gate</p>
-                <div className="pill-row">
-                  <Pill
-                    label={
-                      snapshot.status.operator_new_entries_enabled
-                        ? "New entries enabled"
-                        : "New entries disabled"
-                    }
-                    tone={
-                      snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"
-                    }
-                  />
-                  <Pill
-                    label={
-                      snapshot.status.operator_new_entries_reason ??
-                      "Operator gate is open for fresh entries"
-                    }
-                    tone={
-                      snapshot.status.operator_new_entries_enabled ? "info" : "warning"
-                    }
-                  />
-                </div>
-                <label className="field field--wide">
-                  <span>Reason</span>
-                  <input
-                    aria-label="New entry gate reason"
-                    placeholder="operator gate"
-                    value={newEntriesReason}
-                    onChange={(event) => {
-                      setNewEntriesReason(event.target.value);
-                    }}
-                  />
-                </label>
-                <div className="action-row">
-                  <button
-                    className="command-button command-button--danger"
-                    type="button"
-                    disabled={!canDisableNewEntries}
-                    onClick={() => {
-                      void updateNewEntriesEnabled(false);
-                    }}
-                  >
-                    Disable new entries
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={!canEnableNewEntries}
-                    onClick={() => {
-                      void updateNewEntriesEnabled(true);
-                    }}
-                  >
-                    Enable new entries
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  This gate blocks fresh entry requests through the runtime host while still
-                  leaving flatten, close, and cancel actions available on existing exposure.
-                </p>
-                  </section>
-                </div>
-              </ControlCluster>
-
-              <ControlCluster
-                eyebrow="Strategy and settings"
-                title="Library workflow and runtime configuration"
-                detail="Strategy selection, upload, validation, and settings edits stay backend-owned."
-              >
-                <div className="control-grid">
-
-                  <section className="control-card control-card--span-7">
-                <p className="control-card__title">Strategy Library</p>
-                <div className="strategy-toolbar">
-                  <label className="field field--wide">
-                    <span>Available strategy</span>
-                    <select
-                      aria-label="Available strategy"
-                      value={strategyViewModel.selectedPath}
-                      disabled={
-                        strategyViewModel.libraryState === "loading" ||
-                        !strategyViewModel.library?.strategies.length
-                      }
-                      onChange={(event) => {
-                        setStrategyViewModel((current) => ({
-                          ...current,
-                          selectedPath: event.target.value,
-                        }));
-                      }}
-                    >
-                      {strategyViewModel.library?.strategies.length ? (
-                        strategyViewModel.library.strategies.map((entry) => (
-                          <option key={entry.path} value={entry.path}>
-                            {entry.name ?? entry.title ?? entry.display_path}
-                          </option>
-                        ))
-                      ) : (
-                        <option value="">No strategies available</option>
-                      )}
-                    </select>
-                  </label>
-                  <label className="field field--wide">
-                    <span>Upload strategy file</span>
-                    <input
-                      ref={strategyUploadInputRef}
-                      aria-label="Upload strategy file"
-                      type="file"
-                      accept=".md,text/markdown"
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        setSelectedStrategyUploadFile(event.target.files?.[0] ?? null);
-                      }}
-                    />
-                  </label>
-                  <div className="action-row">
-                    <button
-                      className="command-button"
-                      type="button"
-                      disabled={!canUploadSelectedStrategyFile}
-                      onClick={() => {
-                        void uploadSelectedStrategyFile();
-                      }}
-                    >
-                      Upload to library
-                    </button>
-                    <button
-                      className="command-button"
-                      type="button"
-                      disabled={strategyViewModel.libraryState === "loading"}
-                      onClick={() => {
-                        void refreshStrategyLibrary();
-                      }}
-                    >
-                      Refresh library
-                    </button>
-                    <button
-                      className="command-button"
-                      type="button"
-                      disabled={
-                        !strategyViewModel.selectedPath ||
-                        strategyViewModel.validationState === "loading"
-                      }
-                      onClick={() => {
-                        void refreshStrategyValidation(strategyViewModel.selectedPath);
-                      }}
-                    >
-                      Validate selection
-                    </button>
-                    <button
-                      className="command-button"
-                      type="button"
-                      disabled={!canLoadSelectedStrategy}
-                      onClick={() => {
-                        void (async () => {
-                          const result = await executeLifecycleCommand(
-                            {
-                              kind: "load_strategy",
-                              path: strategyViewModel.selectedPath,
-                            },
-                            {
-                              pendingLabel: "Loading strategy through runtime host",
-                            },
-                          );
-
-                          if (result?.httpStatus === 200) {
-                            void refreshStrategyValidation(strategyViewModel.selectedPath);
-                          }
-                        })();
-                      }}
-                    >
-                      Load selected strategy
-                    </button>
-                  </div>
-                </div>
-                <div className="pill-row">
-                  <Pill
-                    label={
-                      selectedStrategyEntry
-                        ? selectedStrategyEntry.valid
-                          ? "Library entry valid"
-                          : "Library entry needs fixes"
-                        : "No strategy selected"
-                    }
-                    tone={strategyTone(selectedStrategyEntry)}
-                  />
-                  <Pill
-                    label={
-                      strategyViewModel.validation
-                        ? strategyViewModel.validation.valid
-                          ? "Validation passed"
-                          : "Validation failed"
-                        : strategyViewModel.validationState === "loading"
-                          ? "Validation running"
-                          : "Validation idle"
-                    }
-                    tone={
-                      strategyViewModel.validationState === "loading"
-                        ? "info"
-                        : validationTone(strategyViewModel.validation)
-                    }
-                  />
-                  <Pill
-                    label={`${strategyViewModel.validation?.warnings.length ?? 0} warning(s)`}
-                    tone={
-                      (strategyViewModel.validation?.warnings.length ?? 0) > 0
-                        ? "warning"
-                        : "healthy"
-                    }
-                  />
-                  <Pill
-                    label={`${strategyViewModel.validation?.errors.length ?? 0} error(s)`}
-                    tone={
-                      (strategyViewModel.validation?.errors.length ?? 0) > 0
-                        ? "danger"
-                        : "healthy"
-                    }
-                  />
-                </div>
-                <dl className="definition-list">
-                  <Definition
-                    label="Selected"
-                    value={strategyLabel(strategyViewModel.validation)}
-                  />
-                  <Definition
-                    label="Path"
-                    value={
-                      strategyViewModel.validation?.display_path ??
-                      selectedStrategyEntry?.display_path ??
-                      "No strategy selected"
-                    }
-                  />
-                  <Definition
-                    label="Scanned roots"
-                    value={
-                      strategyViewModel.library?.scanned_roots.length
-                        ? strategyViewModel.library.scanned_roots.join(" | ")
-                        : "No strategy library roots detected"
-                    }
-                  />
-                  <Definition
-                    label="Load status"
-                    value={
-                      snapshot?.status.current_strategy?.path === strategyViewModel.selectedPath
-                        ? "Loaded into runtime"
-                        : "Not loaded"
-                    }
-                  />
-                  <Definition
-                    label="Upload ready"
-                    value={
-                      selectedStrategyUploadFile
-                        ? selectedStrategyUploadFile.name
-                        : "Choose a local Markdown strategy file"
-                    }
-                  />
-                </dl>
-                {strategyViewModel.libraryError ? (
-                  <p className="control-card__note">{strategyViewModel.libraryError}</p>
-                ) : null}
-                {strategyViewModel.validationError ? (
-                  <p className="control-card__note">{strategyViewModel.validationError}</p>
-                ) : null}
-                {strategyViewModel.validation?.errors.length ? (
-                  <ul className="issue-list">
-                    {strategyViewModel.validation.errors.slice(0, 3).map((issue, index) => (
-                      <li key={`${issue.message}-${index}`}>
-                        {issue.message}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {strategyViewModel.validation?.warnings.length ? (
-                  <ul className="issue-list issue-list--warning">
-                    {strategyViewModel.validation.warnings.slice(0, 3).map((issue, index) => (
-                      <li key={`${issue.message}-${index}`}>
-                        {issue.message}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                <p className="control-card__note">
-                  The dashboard now uploads, browses, validates, and loads strategy Markdown only
-                  through the local runtime host, keeping file writes and validation inside the
-                  backend-owned strategy library workflow.
-                </p>
-              </section>
-
-                  <section className="control-card control-card--span-5">
-                <p className="control-card__title">Runtime settings</p>
-                <div className="pill-row">
-                  <Pill
-                    label={
-                      snapshot.settings.persistence_mode === "config_file"
-                        ? "Config file backed"
-                        : "Session only"
-                    }
-                    tone={
-                      snapshot.settings.persistence_mode === "config_file" ? "healthy" : "warning"
-                    }
-                  />
-                  <Pill
-                    label={snapshot.settings.restart_required ? "Restart required" : "Live applied"}
-                    tone={snapshot.settings.restart_required ? "warning" : "healthy"}
-                  />
-                  <Pill
-                    label={snapshot.settings.config_file_path ?? "No config file path"}
-                    tone={snapshot.settings.config_file_path ? "info" : "warning"}
-                  />
-                </div>
-                <div className="control-grid">
-                  <label className="field">
-                    <span>Startup mode</span>
-                    <select
-                      aria-label="Runtime startup mode"
-                      value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        updateSettingsDraft((current) => ({
-                          ...current,
-                          startupMode: event.target.value as RuntimeMode,
-                        }));
-                      }}
-                    >
-                      <option value="paper">Paper</option>
-                      <option value="observation">Observation</option>
-                      <option value="paused">Paused</option>
-                      <option value="live">Live</option>
-                    </select>
-                  </label>
-                  <label className="field field--wide">
-                    <span>Default strategy path</span>
-                    <input
-                      aria-label="Default strategy path"
-                      placeholder="strategies/examples/gc_momentum_fade_v1.md"
-                      value={
-                        settingsDraft?.defaultStrategyPath ??
-                        (snapshot.settings.editable.default_strategy_path ?? "")
-                      }
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        updateSettingsDraft((current) => ({
-                          ...current,
-                          defaultStrategyPath: event.target.value,
-                        }));
-                      }}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Persistence fallback</span>
-                    <select
-                      aria-label="Persistence fallback policy"
-                      value={
-                        (settingsDraft?.allowSqliteFallback ??
-                        snapshot.settings.editable.allow_sqlite_fallback)
-                          ? "allow"
-                          : "block"
-                      }
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        updateSettingsDraft((current) => ({
-                          ...current,
-                          allowSqliteFallback: event.target.value === "allow",
-                        }));
-                      }}
-                    >
-                      <option value="block">Require primary Postgres</option>
-                      <option value="allow">Allow SQLite fallback</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>Paper account name</span>
-                    <input
-                      aria-label="Paper account name"
-                      placeholder="paper-primary"
-                      value={
-                        settingsDraft?.paperAccountName ??
-                        (snapshot.settings.editable.paper_account_name ?? "")
-                      }
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        updateSettingsDraft((current) => ({
-                          ...current,
-                          paperAccountName: event.target.value,
-                        }));
-                      }}
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Live account name</span>
-                    <input
-                      aria-label="Live account name"
-                      placeholder="live-primary"
-                      value={
-                        settingsDraft?.liveAccountName ??
-                        (snapshot.settings.editable.live_account_name ?? "")
-                      }
-                      disabled={pendingAction !== null}
-                      onChange={(event) => {
-                        updateSettingsDraft((current) => ({
-                          ...current,
-                          liveAccountName: event.target.value,
-                        }));
-                      }}
-                    />
-                  </label>
-                </div>
-                <div className="action-row">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={!canSaveSettings}
-                    onClick={() => {
-                      void saveRuntimeSettings();
-                    }}
-                  >
-                    Save runtime settings
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={!settingsDirty || pendingAction !== null}
-                    onClick={() => {
-                      const nextDraft = settingsDraftFromSnapshot(snapshot.settings);
-                      settingsDraftRef.current = nextDraft;
-                      setSettingsDraft(nextDraft);
-                      setSettingsDirty(false);
-                    }}
-                  >
-                    Reset form
-                  </button>
-                </div>
-                <dl className="definition-list">
-                  <Definition label="HTTP bind" value={snapshot.settings.http_bind} />
-                  <Definition label="WebSocket bind" value={snapshot.settings.websocket_bind} />
-                  <Definition
-                    label="Config path"
-                    value={snapshot.settings.config_file_path ?? "Runtime launched without a config file"}
-                  />
-                  <Definition
-                    label="Effective path"
-                    value={
-                      snapshot.settings.editable.default_strategy_path ??
-                      "No default strategy path"
-                    }
-                  />
-                </dl>
-                <p className="control-card__note">{snapshot.settings.detail}</p>
-                  </section>
-                </div>
-              </ControlCluster>
-
-              <ControlCluster
-                eyebrow="Execution controls"
-                title="Warmup, arming, and manual operator actions"
-                detail="Execution-facing controls stay separate from strategy and settings work."
-              >
-                <div className="control-grid">
-
-                  <section className="control-card control-card--span-4">
-                <p className="control-card__title">Warmup</p>
-                <div className="action-row">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={pendingAction !== null || !snapshot.status.strategy_loaded}
-                    onClick={() => {
-                      void executeLifecycleCommand(
-                        { kind: "start_warmup" },
-                        { pendingLabel: "Starting warmup" },
-                      );
-                    }}
-                  >
-                    Start warmup
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  Strategy loaded: {snapshot.status.strategy_loaded ? "Yes" : "No"} | Warmup:{" "}
-                  {formatMode(snapshot.status.warmup_status)}
-                </p>
-                  </section>
-
-                  <section className="control-card control-card--span-4">
-                <p className="control-card__title">Arming</p>
-                <div className="action-row">
-                  <button
-                    className={
-                      snapshot.status.arm_state === "armed"
-                        ? "command-button"
-                        : "command-button command-button--danger"
-                    }
-                    type="button"
-                    disabled={pendingAction !== null}
-                    onClick={() => {
-                      if (snapshot.status.arm_state === "armed") {
-                        void executeLifecycleCommand(
-                          { kind: "disarm" },
-                          { pendingLabel: "Disarming runtime" },
-                        );
-                        return;
-                      }
-
-                      const allowOverride = snapshot.readiness.report.hard_override_required;
-                      const confirmMessage = allowOverride
-                        ? "Arm now with a temporary hard override for this session?"
-                        : snapshot.status.mode === "live"
-                          ? "Arm LIVE trading? This enables live execution once commands or strategy logic fire."
-                          : "Arm the runtime for paper or observation execution?";
-
-                      void executeLifecycleCommand(
-                        { kind: "arm", allow_override: allowOverride },
-                        {
-                          pendingLabel: allowOverride
-                            ? "Arming runtime with temporary override"
-                            : "Arming runtime",
-                          confirmMessage,
-                        },
-                      );
-                    }}
-                  >
-                    {armButtonLabel}
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  Arm state: {formatMode(snapshot.status.arm_state)} | Override required:{" "}
-                  {snapshot.readiness.report.hard_override_required ? "Yes" : "No"}
-                </p>
-                  </section>
-
-                  <section className="control-card control-card--span-4">
-                <p className="control-card__title">Flow Control</p>
-                <div className="action-row">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={pendingAction !== null}
-                    onClick={() => {
-                      void executeLifecycleCommand(
-                        { kind: snapshot.status.mode === "paused" ? "resume" : "pause" },
-                        {
-                          pendingLabel:
-                            snapshot.status.mode === "paused"
-                              ? "Resuming runtime"
-                              : "Pausing runtime",
-                        },
-                      );
-                    }}
-                  >
-                    {pauseButtonLabel}
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  Use pause to stop new entries without changing the selected trading mode.
-                </p>
-                  </section>
-
-                  <section className="control-card control-card--span-12">
-                <p className="control-card__title">Operator actions</p>
-                <div className="control-grid">
-                  <section className="control-card control-card--span-7">
-                    <p className="control-card__title">Manual entry</p>
-                    <form
-                      className="flatten-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        if (!canManualEntry) {
-                          return;
-                        }
-
-                        void (async () => {
-                          const result = await executeLifecycleCommand(
-                            {
-                              kind: "manual_entry",
-                              side: manualEntrySide,
-                              quantity: Number.parseInt(manualEntryQuantity, 10),
-                              tick_size: manualEntryTickSize.trim(),
-                              entry_reference_price: manualEntryReferencePrice.trim(),
-                              tick_value_usd: manualEntryTickValueUsd.trim() || null,
-                              reason: manualEntryReason.trim(),
-                            },
-                            {
-                              pendingLabel: `Submitting manual ${manualEntrySide} entry`,
-                              confirmMessage:
-                                "Submit a manual entry through the loaded strategy and runtime safety path now?",
-                            },
-                          );
-
-                          if (result?.httpStatus === 200) {
-                            setManualEntryReason("manual entry");
-                          }
-                        })();
-                      }}
-                    >
-                      <div className="control-grid">
-                        <label className="field">
-                          <span>Side</span>
-                          <select
-                            aria-label="Manual entry side"
-                            value={manualEntrySide}
-                            onChange={(event) => {
-                              setManualEntrySide(event.target.value as "buy" | "sell");
-                            }}
-                          >
-                            <option value="buy">Buy</option>
-                            <option value="sell">Sell</option>
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Quantity</span>
-                          <input
-                            aria-label="Manual entry quantity"
-                            inputMode="numeric"
-                            value={manualEntryQuantity}
-                            onChange={(event) => {
-                              setManualEntryQuantity(event.target.value);
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Tick size</span>
-                          <input
-                            aria-label="Manual entry tick size"
-                            inputMode="decimal"
-                            placeholder="0.25"
-                            value={manualEntryTickSize}
-                            onChange={(event) => {
-                              setManualEntryTickSize(event.target.value);
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Reference price</span>
-                          <input
-                            aria-label="Manual entry reference price"
-                            inputMode="decimal"
-                            placeholder="2410.50"
-                            value={manualEntryReferencePrice}
-                            onChange={(event) => {
-                              setManualEntryReferencePrice(event.target.value);
-                            }}
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Tick value USD</span>
-                          <input
-                            aria-label="Manual entry tick value"
-                            inputMode="decimal"
-                            placeholder="Optional for risk-based sizing"
-                            value={manualEntryTickValueUsd}
-                            onChange={(event) => {
-                              setManualEntryTickValueUsd(event.target.value);
-                            }}
-                          />
-                        </label>
-                      </div>
-                      <label className="field field--wide">
-                        <span>Reason</span>
-                        <input
-                          aria-label="Manual entry reason"
-                    placeholder="manual entry"
-                          value={manualEntryReason}
-                          onChange={(event) => {
-                            setManualEntryReason(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <button
-                        className="command-button"
-                        type="submit"
-                        disabled={pendingAction !== null || !canManualEntry}
-                      >
-                        Submit manual entry
-                      </button>
-                    </form>
-                    <p className="control-card__note">
-                      Manual entry reuses the loaded strategy for order type, reversal, and
-                      broker-protection handling. Reference price and tick inputs keep the
-                      execution path explicit and strategy-agnostic.
-                    </p>
-                  </section>
-
-                  <section className="control-card control-card--span-5">
-                    <p className="control-card__title">Flatten current position</p>
-                    <form
-                      className="flatten-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        if (!canClosePosition) {
-                          return;
-                        }
-
-                        void (async () => {
-                          const result = await executeLifecycleCommand(
-                            {
-                              kind: "close_position",
-                              contract_id: null,
-                              reason: closePositionReason.trim(),
-                            },
-                            {
-                              pendingLabel: "Flattening active broker position",
-                              confirmMessage:
-                                "Flatten the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot and dispatch the audited flatten path.",
-                            },
-                          );
-
-                          if (result?.httpStatus === 200) {
-                            setClosePositionReason("flatten position");
-                          }
-                        })();
-                      }}
-                    >
-                      <label className="field field--wide">
-                        <span>Reason</span>
-                        <input
-                          aria-label="Flatten position reason"
-                    placeholder="flatten position"
-                          value={closePositionReason}
-                          onChange={(event) => {
-                            setClosePositionReason(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <button
-                        className="command-button command-button--danger"
-                        type="submit"
-                        disabled={pendingAction !== null || !canClosePosition}
-                      >
-                        Flatten current position
-                      </button>
-                    </form>
-                    <p className="control-card__note">
-                      This is the direct dashboard flatten control. The runtime host resolves the
-                      active broker contract from the synchronized snapshot and keeps the action on
-                      the same audited close/flatten path used elsewhere.
-                    </p>
-                  </section>
-
-                  <section className="control-card control-card--span-5">
-                    <p className="control-card__title">Cancel working orders</p>
-                    <form
-                      className="flatten-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        if (!canCancelWorkingOrders) {
-                          return;
-                        }
-
-                        void (async () => {
-                          const result = await executeLifecycleCommand(
-                            {
-                              kind: "cancel_working_orders",
-                              reason: cancelWorkingOrdersReason.trim(),
-                            },
-                            {
-                              pendingLabel: "Cancelling working broker orders",
-                              confirmMessage:
-                                "Cancel all working broker orders for the loaded market now?",
-                            },
-                          );
-
-                          if (result?.httpStatus === 200) {
-                            setCancelWorkingOrdersReason("cancel working orders");
-                          }
-                        })();
-                      }}
-                    >
-                      <label className="field field--wide">
-                        <span>Reason</span>
-                        <input
-                          aria-label="Cancel working orders reason"
-                    placeholder="cancel working orders"
-                          value={cancelWorkingOrdersReason}
-                          onChange={(event) => {
-                            setCancelWorkingOrdersReason(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <button
-                        className="command-button"
-                        type="submit"
-                        disabled={pendingAction !== null || !canCancelWorkingOrders}
-                      >
-                        Cancel working orders
-                      </button>
-                    </form>
-                    <p className="control-card__note">
-                      Cancel routes only the current market&apos;s working orders through the
-                      audited backend path.
-                    </p>
-                  </section>
-                </div>
-                <p className="control-card__note">
-                  All three actions stay inside the local runtime host. Manual entry uses the
-                  loaded strategy and synchronized market contract, close resolves the active
-                  contract automatically when there is a single live position, and cancel routes
-                  only the current market&apos;s working orders through the audited backend path.
-                </p>
-                  </section>
-                </div>
-              </ControlCluster>
-            </div>
-          </Panel>
+          <ControlCenterPanel
+            snapshot={snapshot}
+            pendingAction={pendingAction}
+            strategyViewModel={strategyViewModel}
+            selectedStrategyEntry={selectedStrategyEntry}
+            selectedStrategyUploadFile={selectedStrategyUploadFile}
+            strategyUploadInputRef={strategyUploadInputRef}
+            settingsDraft={settingsDraft}
+            settingsDirty={settingsDirty}
+            newEntriesReason={newEntriesReason}
+            closePositionReason={closePositionReason}
+            manualEntrySide={manualEntrySide}
+            manualEntryQuantity={manualEntryQuantity}
+            manualEntryTickSize={manualEntryTickSize}
+            manualEntryReferencePrice={manualEntryReferencePrice}
+            manualEntryTickValueUsd={manualEntryTickValueUsd}
+            manualEntryReason={manualEntryReason}
+            cancelWorkingOrdersReason={cancelWorkingOrdersReason}
+            armButtonLabel={armButtonLabel}
+            pauseButtonLabel={pauseButtonLabel}
+            canLoadSelectedStrategy={canLoadSelectedStrategy}
+            canUploadSelectedStrategyFile={canUploadSelectedStrategyFile}
+            canDisableNewEntries={canDisableNewEntries}
+            canEnableNewEntries={canEnableNewEntries}
+            canSaveSettings={canSaveSettings}
+            canManualEntry={canManualEntry}
+            canClosePosition={canClosePosition}
+            canCancelWorkingOrders={canCancelWorkingOrders}
+            onSetMode={handleSetMode}
+            onNewEntriesReasonChange={setNewEntriesReason}
+            onSetNewEntriesEnabled={(enabled) => {
+              void updateNewEntriesEnabled(enabled);
+            }}
+            onStrategyPathChange={handleStrategyPathChange}
+            onStrategyUploadFileChange={setSelectedStrategyUploadFile}
+            onUploadSelectedStrategyFile={() => {
+              void uploadSelectedStrategyFile();
+            }}
+            onRefreshStrategyLibrary={() => {
+              void refreshStrategyLibrary();
+            }}
+            onRefreshStrategyValidation={() => {
+              void refreshStrategyValidation(strategyViewModel.selectedPath);
+            }}
+            onLoadSelectedStrategy={handleLoadSelectedStrategy}
+            onSettingsStartupModeChange={(mode) => {
+              updateSettingsDraft((current) => ({ ...current, startupMode: mode }));
+            }}
+            onSettingsDefaultStrategyPathChange={(value) => {
+              updateSettingsDraft((current) => ({ ...current, defaultStrategyPath: value }));
+            }}
+            onSettingsAllowSqliteFallbackChange={(enabled) => {
+              updateSettingsDraft((current) => ({ ...current, allowSqliteFallback: enabled }));
+            }}
+            onSettingsPaperAccountNameChange={(value) => {
+              updateSettingsDraft((current) => ({ ...current, paperAccountName: value }));
+            }}
+            onSettingsLiveAccountNameChange={(value) => {
+              updateSettingsDraft((current) => ({ ...current, liveAccountName: value }));
+            }}
+            onSaveRuntimeSettings={() => {
+              void saveRuntimeSettings();
+            }}
+            onResetSettings={handleSettingsReset}
+            onStartWarmup={() => {
+              void executeLifecycleCommand(
+                { kind: "start_warmup" },
+                { pendingLabel: "Starting warmup" },
+              );
+            }}
+            onArmToggle={handleArmToggle}
+            onPauseResume={handlePauseResume}
+            onManualEntrySideChange={setManualEntrySide}
+            onManualEntryQuantityChange={setManualEntryQuantity}
+            onManualEntryTickSizeChange={setManualEntryTickSize}
+            onManualEntryReferencePriceChange={setManualEntryReferencePrice}
+            onManualEntryTickValueUsdChange={setManualEntryTickValueUsd}
+            onManualEntryReasonChange={setManualEntryReason}
+            onManualEntrySubmit={handleManualEntrySubmit}
+            onClosePositionReasonChange={setClosePositionReason}
+            onClosePositionSubmit={handleClosePositionSubmit}
+            onCancelWorkingOrdersReasonChange={setCancelWorkingOrdersReason}
+            onCancelWorkingOrdersSubmit={handleCancelWorkingOrdersSubmit}
+          />
 
           <RuntimeSummaryPanel snapshot={snapshot} />
 
@@ -2416,153 +1752,23 @@ function App() {
             slowestLatencyStage={slowestLatencyStage}
           />
 
-          <Panel eyebrow="Safety" title="Reconnect, shutdown, and operator guardrails">
-            <div className="pill-row">
-              <Pill
-                label={
-                  snapshot.status.reconnect_review.required
-                    ? "Reconnect review active"
-                    : "Reconnect clear"
-                }
-                tone={reviewTone(snapshot.status.reconnect_review)}
-              />
-              <Pill
-                label={
-                  snapshot.status.shutdown_review.blocked ||
-                  snapshot.status.shutdown_review.awaiting_flatten
-                    ? "Shutdown review active"
-                    : "Shutdown clear"
-                }
-                tone={reviewTone(snapshot.status.shutdown_review)}
-              />
-            </div>
-            <dl className="definition-list">
-              <Definition
-                label="Reconnect review"
-                value={
-                  snapshot.status.reconnect_review.reason ??
-                  (snapshot.status.reconnect_review.last_decision
-                    ? `Last decision: ${formatMode(snapshot.status.reconnect_review.last_decision)}`
-                    : "No reconnect review pending")
-                }
-              />
-              <Definition
-                label="Shutdown review"
-                value={
-                  snapshot.status.shutdown_review.reason ??
-                  (snapshot.status.shutdown_review.decision
-                    ? `Last decision: ${formatMode(snapshot.status.shutdown_review.decision)}`
-                    : "No shutdown review pending")
-                }
-              />
-              <Definition
-                label="Reconnect counts"
-                value={formatInteger(
-                  snapshot.status.broker_status?.reconnect_count ??
-                    snapshot.health.system_health?.reconnect_count,
-                )}
-              />
-            </dl>
-            {snapshot.status.reconnect_review.required ? (
-              <section className="review-card">
-                <p className="control-card__title">Reconnect review actions</p>
-                <label className="field field--wide">
-                  <span>Reason</span>
-                  <input
-                    aria-label="Reconnect review reason"
-                    placeholder="resolve reconnect review"
-                    value={reconnectReason}
-                    onChange={(event) => {
-                      setReconnectReason(event.target.value);
-                    }}
-                  />
-                </label>
-                <div className="action-row">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={reviewActionsDisabled}
-                    onClick={() => {
-                      void executeReconnectDecision("reattach_bot_management");
-                    }}
-                  >
-                    Reattach bot management
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={reviewActionsDisabled}
-                    onClick={() => {
-                      void executeReconnectDecision("leave_broker_protected");
-                    }}
-                  >
-                    Leave broker-side
-                  </button>
-                  <button
-                    className="command-button command-button--danger"
-                    type="button"
-                    disabled={reconnectCloseDisabled}
-                    onClick={() => {
-                      void executeReconnectDecision("close_position");
-                    }}
-                  >
-                    Close position
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  The runtime host resolves the active contract id when there is only one open
-                  broker position, so reconnect-close can stay inside the audited control path.
-                </p>
-              </section>
-            ) : null}
-            {snapshot.status.shutdown_review.blocked ? (
-              <section className="review-card">
-                <p className="control-card__title">Shutdown review actions</p>
-                <label className="field field--wide">
-                  <span>Reason</span>
-                  <input
-                    aria-label="Shutdown review reason"
-                    placeholder="resolve shutdown review"
-                    value={shutdownReason}
-                    onChange={(event) => {
-                      setShutdownReason(event.target.value);
-                    }}
-                  />
-                </label>
-                <div className="action-row">
-                  <button
-                    className="command-button command-button--danger"
-                    type="button"
-                    disabled={shutdownFlattenDisabled}
-                    onClick={() => {
-                      void executeShutdownDecision("flatten_first");
-                    }}
-                  >
-                    Flatten first
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={shutdownLeaveDisabled}
-                    onClick={() => {
-                      void executeShutdownDecision("leave_broker_protected");
-                    }}
-                  >
-                    Leave broker-protected
-                  </button>
-                </div>
-                <p className="control-card__note">
-                  Leave-in-place is only enabled when every open position reports broker-side
-                  protection through the runtime host snapshot.
-                </p>
-              </section>
-            ) : null}
-            <p className="panel__footnote">
-              Reconnect hardening now covers startup and reconnect review decisions through the real
-              runtime host. The remaining work here is final operator polish and hands-on release
-              verification.
-            </p>
-          </Panel>
+          <SafetyPanel
+            snapshot={snapshot}
+            reconnectReason={reconnectReason}
+            shutdownReason={shutdownReason}
+            reviewActionsDisabled={reviewActionsDisabled}
+            reconnectCloseDisabled={reconnectCloseDisabled}
+            shutdownLeaveDisabled={shutdownLeaveDisabled}
+            shutdownFlattenDisabled={shutdownFlattenDisabled}
+            onReconnectReasonChange={setReconnectReason}
+            onShutdownReasonChange={setShutdownReason}
+            onReconnectDecision={(decision) => {
+              void executeReconnectDecision(decision);
+            }}
+            onShutdownDecision={(decision) => {
+              void executeShutdownDecision(decision);
+            }}
+          />
 
           <JournalPanel
             snapshot={snapshot}
