@@ -22,6 +22,7 @@ The dashboard consumes only the local control plane:
 The current dashboard now covers:
 
 - a dark-first shell refresh with a higher-signal operator status rail for mode, arm, readiness, warmup, dispatch, and safety posture
+- a grouped control center that separates mode/gating, strategy/settings, and execution-facing operator actions
 - explicit runtime mode with strong paper/live separation
 - strategy library upload, browsing, and host-backed validation before load
 - host-backed runtime settings editing for startup mode, default strategy path, SQLite fallback policy, and paper/live account routing names
@@ -77,4 +78,4 @@ That plan is the current source of truth for:
 - overflow and responsive hardening
 - component decomposition and frontend QA gates
 
-The first implementation slice of that plan is now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, and the worst top-level field overflow defaults were reduced while the broader component/layout cleanup remains ongoing.
+The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules, and the worst top-level/mobile overflow issues were reduced while the broader component/layout cleanup remains ongoing.

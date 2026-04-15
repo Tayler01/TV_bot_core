@@ -341,6 +341,39 @@ select {
   gap: 14px;
 }
 
+.control-shell {
+  display: grid;
+  gap: 18px;
+}
+
+.control-cluster {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.control-cluster__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+}
+
+.control-cluster__header h3 {
+  margin: 8px 0 0;
+  font-size: 1.16rem;
+}
+
+.control-cluster__detail {
+  max-width: 40ch;
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 .control-card {
   grid-column: span 3;
   display: grid;
@@ -353,6 +386,30 @@ select {
 }
 
 .control-card--wide {
+  grid-column: span 12;
+}
+
+.control-card--span-4 {
+  grid-column: span 4;
+}
+
+.control-card--span-5 {
+  grid-column: span 5;
+}
+
+.control-card--span-6 {
+  grid-column: span 6;
+}
+
+.control-card--span-7 {
+  grid-column: span 7;
+}
+
+.control-card--span-8 {
+  grid-column: span 8;
+}
+
+.control-card--span-12 {
   grid-column: span 12;
 }
 
@@ -861,6 +918,18 @@ select {
     justify-items: start;
   }
 
+  .control-cluster__header {
+    flex-direction: column;
+  }
+
+  .control-card--span-4,
+  .control-card--span-5,
+  .control-card--span-6,
+  .control-card--span-7,
+  .control-card--span-8 {
+    grid-column: span 6;
+  }
+
   .control-card {
     grid-column: span 6;
   }
@@ -875,6 +944,15 @@ select {
 
   .flatten-form {
     grid-template-columns: 1fr;
+  }
+
+  .control-card--span-4,
+  .control-card--span-5,
+  .control-card--span-6,
+  .control-card--span-7,
+  .control-card--span-8,
+  .control-card--span-12 {
+    grid-column: span 12;
   }
 }
 

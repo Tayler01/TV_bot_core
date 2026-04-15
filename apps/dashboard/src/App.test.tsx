@@ -1027,6 +1027,9 @@ describe("App", () => {
     expect(await screen.findByText("Safety review")).toBeInTheDocument();
     expect(await screen.findAllByText("Paper")).not.toHaveLength(0);
     expect(await screen.findAllByText("paper-primary")).not.toHaveLength(0);
+    expect(await screen.findByText("Runtime posture and operator entry controls")).toBeInTheDocument();
+    expect(await screen.findByText("Library workflow and runtime configuration")).toBeInTheDocument();
+    expect(await screen.findByText("Warmup, arming, and manual operator actions")).toBeInTheDocument();
     expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(2);
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
     expect(await screen.findByText("Validation passed")).toBeInTheDocument();

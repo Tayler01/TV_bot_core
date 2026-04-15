@@ -982,6 +982,31 @@ function Panel({
   );
 }
 
+function ControlCluster({
+  eyebrow,
+  title,
+  detail,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  detail?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="control-cluster">
+      <div className="control-cluster__header">
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <h3>{title}</h3>
+        </div>
+        {detail ? <p className="control-cluster__detail">{detail}</p> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function Pill({
   label,
   tone,
@@ -1840,13 +1865,19 @@ function App() {
       {snapshot ? (
         <div className="dashboard-grid">
           <Panel
-            className="panel--full"
+            className="panel--full panel--command-center"
             eyebrow="Control Center"
             title="Lifecycle commands through /runtime/commands"
             detail={`Current mode: ${formatMode(snapshot.status.mode)} | Dispatch: ${snapshot.status.command_dispatch_detail}`}
           >
-            <div className="control-grid">
-              <section className="control-card">
+            <div className="control-shell">
+              <ControlCluster
+                eyebrow="Mode and gating"
+                title="Runtime posture and operator entry controls"
+                detail="High-frequency controls for mode selection and fresh-entry gating stay grouped together."
+              >
+                <div className="control-grid">
+                  <section className="control-card control-card--span-4">
                 <p className="control-card__title">Mode</p>
                 <div className="action-row">
                   <button
@@ -1895,7 +1926,7 @@ function App() {
                 </div>
               </section>
 
-              <section className="control-card">
+                  <section className="control-card control-card--span-8">
                 <p className="control-card__title">New entry gate</p>
                 <div className="pill-row">
                   <Pill
@@ -1955,9 +1986,18 @@ function App() {
                   This gate blocks fresh entry requests through the runtime host while still
                   leaving flatten, close, and cancel actions available on existing exposure.
                 </p>
-              </section>
+                  </section>
+                </div>
+              </ControlCluster>
 
-              <section className="control-card control-card--wide">
+              <ControlCluster
+                eyebrow="Strategy and settings"
+                title="Library workflow and runtime configuration"
+                detail="Strategy selection, upload, validation, and settings edits stay backend-owned."
+              >
+                <div className="control-grid">
+
+                  <section className="control-card control-card--span-7">
                 <p className="control-card__title">Strategy Library</p>
                 <div className="strategy-toolbar">
                   <label className="field field--wide">
@@ -2173,7 +2213,7 @@ function App() {
                 </p>
               </section>
 
-              <section className="control-card control-card--wide">
+                  <section className="control-card control-card--span-5">
                 <p className="control-card__title">Runtime settings</p>
                 <div className="pill-row">
                   <Pill
@@ -2333,9 +2373,18 @@ function App() {
                   />
                 </dl>
                 <p className="control-card__note">{snapshot.settings.detail}</p>
-              </section>
+                  </section>
+                </div>
+              </ControlCluster>
 
-              <section className="control-card">
+              <ControlCluster
+                eyebrow="Execution controls"
+                title="Warmup, arming, and manual operator actions"
+                detail="Execution-facing controls stay separate from strategy and settings work."
+              >
+                <div className="control-grid">
+
+                  <section className="control-card control-card--span-4">
                 <p className="control-card__title">Warmup</p>
                 <div className="action-row">
                   <button
@@ -2356,9 +2405,9 @@ function App() {
                   Strategy loaded: {snapshot.status.strategy_loaded ? "Yes" : "No"} | Warmup:{" "}
                   {formatMode(snapshot.status.warmup_status)}
                 </p>
-              </section>
+                  </section>
 
-              <section className="control-card">
+                  <section className="control-card control-card--span-4">
                 <p className="control-card__title">Arming</p>
                 <div className="action-row">
                   <button
@@ -2403,9 +2452,9 @@ function App() {
                   Arm state: {formatMode(snapshot.status.arm_state)} | Override required:{" "}
                   {snapshot.readiness.report.hard_override_required ? "Yes" : "No"}
                 </p>
-              </section>
+                  </section>
 
-              <section className="control-card">
+                  <section className="control-card control-card--span-4">
                 <p className="control-card__title">Flow Control</p>
                 <div className="action-row">
                   <button
@@ -2430,12 +2479,12 @@ function App() {
                 <p className="control-card__note">
                   Use pause to stop new entries without changing the selected trading mode.
                 </p>
-              </section>
+                  </section>
 
-              <section className="control-card control-card--wide">
+                  <section className="control-card control-card--span-12">
                 <p className="control-card__title">Operator actions</p>
                 <div className="control-grid">
-                  <section className="control-card control-card--wide">
+                  <section className="control-card control-card--span-7">
                     <p className="control-card__title">Manual entry</p>
                     <form
                       className="flatten-form"
@@ -2464,7 +2513,7 @@ function App() {
                           );
 
                           if (result?.httpStatus === 200) {
-                            setManualEntryReason("dashboard manual entry");
+                            setManualEntryReason("manual entry");
                           }
                         })();
                       }}
@@ -2557,7 +2606,7 @@ function App() {
                     </p>
                   </section>
 
-                  <section className="control-card control-card--wide">
+                  <section className="control-card control-card--span-5">
                     <p className="control-card__title">Flatten current position</p>
                     <form
                       className="flatten-form"
@@ -2582,7 +2631,7 @@ function App() {
                           );
 
                           if (result?.httpStatus === 200) {
-                            setClosePositionReason("dashboard flatten position request");
+                            setClosePositionReason("flatten position");
                           }
                         })();
                       }}
@@ -2613,7 +2662,7 @@ function App() {
                     </p>
                   </section>
 
-                  <section className="control-card control-card--wide">
+                  <section className="control-card control-card--span-5">
                     <p className="control-card__title">Cancel working orders</p>
                     <form
                       className="flatten-form"
@@ -2637,9 +2686,7 @@ function App() {
                           );
 
                           if (result?.httpStatus === 200) {
-                            setCancelWorkingOrdersReason(
-                              "dashboard cancel working orders request",
-                            );
+                            setCancelWorkingOrdersReason("cancel working orders");
                           }
                         })();
                       }}
@@ -2663,6 +2710,10 @@ function App() {
                         Cancel working orders
                       </button>
                     </form>
+                    <p className="control-card__note">
+                      Cancel routes only the current market&apos;s working orders through the
+                      audited backend path.
+                    </p>
                   </section>
                 </div>
                 <p className="control-card__note">
@@ -2671,7 +2722,9 @@ function App() {
                   contract automatically when there is a single live position, and cancel routes
                   only the current market&apos;s working orders through the audited backend path.
                 </p>
-              </section>
+                  </section>
+                </div>
+              </ControlCluster>
             </div>
           </Panel>
 
