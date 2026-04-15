@@ -5,7 +5,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health, while final dashboard polish, the tracked production UI redesign, and release acceptance are still incomplete.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with initial control/monitoring hierarchy and component extraction in place, while final polish and release acceptance are still incomplete.
 - Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
 - Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
 
@@ -89,7 +89,7 @@ tests/
 
 ## Still Required For V1
 
-- Final dashboard control-center polish, dark-mode-first production UI work, and operator ergonomics
+- Final dashboard production polish, remaining component/layout cleanup, and operator ergonomics
 - Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
 - Cross-platform packaging and final release hardening
 
