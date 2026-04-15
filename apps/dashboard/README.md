@@ -61,4 +61,17 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 
 ## Follow-up Note
 
-Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, but the broader paper-mode acceptance sweep still remains before calling the dashboard and paper campaign complete.
+Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.
+The remaining dashboard work is now mostly production UI polish plus the final hands-on paper/demo release verification pass.
+
+## Production UI Follow-Up
+
+The dashboard is functionally broad now, but it is still not visually production-ready.
+The tracked redesign plan for the dark-first, responsive, operator-grade interface lives in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>).
+
+That plan is the current source of truth for:
+
+- dark-mode-first visual redesign
+- layout hierarchy and control-center restructuring
+- overflow and responsive hardening
+- component decomposition and frontend QA gates
