@@ -185,6 +185,13 @@ export function ControlCenterPanel({
   onCancelWorkingOrdersReasonChange,
   onCancelWorkingOrdersSubmit,
 }: ControlCenterPanelProps) {
+  const modePillTone: BannerTone =
+    snapshot.status.mode === "live"
+      ? "danger"
+      : snapshot.status.mode === "paper"
+        ? "warning"
+        : "info";
+
   return (
     <Panel
       className="panel--full panel--command-center"
@@ -192,6 +199,33 @@ export function ControlCenterPanel({
       title="Lifecycle commands through /runtime/commands"
       detail={`Current mode: ${formatMode(snapshot.status.mode)} | Dispatch: ${snapshot.status.command_dispatch_detail}`}
     >
+      <div className="control-overview" aria-label="Command center summary">
+        <Pill label={`Mode ${formatMode(snapshot.status.mode)}`} tone={modePillTone} />
+        <Pill
+          label={snapshot.status.strategy_loaded ? "Strategy loaded" : "Strategy missing"}
+          tone={snapshot.status.strategy_loaded ? "healthy" : "warning"}
+        />
+        <Pill
+          label={
+            snapshot.status.command_dispatch_ready ? "Dispatch ready" : "Dispatch blocked"
+          }
+          tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
+        />
+        <Pill
+          label={
+            snapshot.status.operator_new_entries_enabled
+              ? "Entries enabled"
+              : "Entries blocked"
+          }
+          tone={snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"}
+        />
+        <Pill
+          label={
+            snapshot.status.arm_state === "armed" ? "Runtime armed" : "Runtime disarmed"
+          }
+          tone={snapshot.status.arm_state === "armed" ? "healthy" : "info"}
+        />
+      </div>
       <div className="control-shell">
         <ControlCluster
           eyebrow="Mode and gating"
@@ -201,7 +235,7 @@ export function ControlCenterPanel({
           <div className="control-grid">
             <section className="control-card control-card--span-4">
               <p className="control-card__title">Mode</p>
-              <div className="action-row">
+              <div className="action-row action-row--segmented">
                 <button
                   className="command-button"
                   type="button"
@@ -265,7 +299,7 @@ export function ControlCenterPanel({
                   }}
                 />
               </label>
-              <div className="action-row">
+                  <div className="action-row action-row--compact">
                 <button
                   className="command-button command-button--danger"
                   type="button"
@@ -341,7 +375,7 @@ export function ControlCenterPanel({
                     }}
                   />
                 </label>
-                <div className="action-row">
+                <div className="action-row action-row--compact">
                   <button
                     className="command-button"
                     type="button"
@@ -589,7 +623,7 @@ export function ControlCenterPanel({
                   />
                 </label>
               </div>
-              <div className="action-row">
+              <div className="action-row action-row--compact">
                 <button
                   className="command-button"
                   type="button"
@@ -634,7 +668,7 @@ export function ControlCenterPanel({
           <div className="control-grid">
             <section className="control-card control-card--span-4">
               <p className="control-card__title">Warmup</p>
-              <div className="action-row">
+              <div className="action-row action-row--compact">
                 <button
                   className="command-button"
                   type="button"
@@ -652,7 +686,7 @@ export function ControlCenterPanel({
 
             <section className="control-card control-card--span-4">
               <p className="control-card__title">Arming</p>
-              <div className="action-row">
+              <div className="action-row action-row--compact">
                 <button
                   className={
                     snapshot.status.arm_state === "armed"
@@ -674,7 +708,7 @@ export function ControlCenterPanel({
 
             <section className="control-card control-card--span-4">
               <p className="control-card__title">Flow Control</p>
-              <div className="action-row">
+              <div className="action-row action-row--compact">
                 <button
                   className="command-button"
                   type="button"
@@ -970,7 +1004,7 @@ export function SafetyPanel({
               }}
             />
           </label>
-          <div className="action-row">
+          <div className="action-row action-row--compact">
             <button
               className="command-button"
               type="button"
@@ -1022,7 +1056,7 @@ export function SafetyPanel({
               }}
             />
           </label>
-          <div className="action-row">
+          <div className="action-row action-row--compact">
             <button
               className="command-button command-button--danger"
               type="button"

@@ -343,13 +343,20 @@ select {
 
 .control-shell {
   display: grid;
-  gap: 18px;
+  gap: 16px;
+}
+
+.control-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
 }
 
 .control-cluster {
   display: grid;
-  gap: 16px;
-  padding: 18px;
+  gap: 14px;
+  padding: 16px;
   border-radius: 24px;
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.03);
@@ -377,9 +384,9 @@ select {
 .control-card {
   grid-column: span 3;
   display: grid;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
-  padding: 16px;
+  padding: 14px;
   border-radius: 20px;
   border: 1px solid var(--border-soft);
   background: var(--bg-surface-soft);
@@ -437,13 +444,33 @@ select {
   min-width: 0;
 }
 
+.action-row--compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+}
+
+.action-row--compact > * {
+  width: 100%;
+}
+
+.action-row--segmented {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+}
+
+.action-row--segmented > * {
+  width: 100%;
+}
+
 .command-button {
   border: 1px solid rgba(88, 192, 255, 0.18);
   border-radius: 14px;
-  padding: 12px 14px;
+  min-height: 44px;
+  padding: 11px 14px;
   background: rgba(88, 192, 255, 0.08);
   color: var(--text-strong);
   cursor: pointer;
+  font-weight: 500;
   transition:
     transform 120ms ease,
     background-color 120ms ease,
@@ -476,13 +503,13 @@ select {
 
 .strategy-toolbar {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
 
 .field {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1071,5 +1098,11 @@ select {
 
   .action-row > * {
     flex: 1 1 100%;
+  }
+
+  .action-row--compact,
+  .action-row--segmented,
+  .control-overview {
+    grid-template-columns: 1fr;
   }
 }
