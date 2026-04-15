@@ -192,6 +192,12 @@ interface JournalSummaryViewModel {
   categories: JournalCategoryCount[];
 }
 
+interface HeadlineSummary {
+  headline: string;
+  count: number;
+  tone: BannerTone;
+}
+
 interface LatencyStageViewModel {
   key: string;
   label: string;
@@ -916,6 +922,28 @@ function summarizeJournalRecords(records: EventJournalRecord[]): JournalSummaryV
   };
 }
 
+function summarizeRecentEvents(events: EventFeedItem[]): HeadlineSummary[] {
+  const summary = new Map<string, HeadlineSummary>();
+
+  for (const event of events) {
+    const existing = summary.get(event.headline);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+
+    summary.set(event.headline, {
+      headline: event.headline,
+      count: 1,
+      tone: event.tone,
+    });
+  }
+
+  return [...summary.values()]
+    .sort((left, right) => right.count - left.count || left.headline.localeCompare(right.headline))
+    .slice(0, 4);
+}
+
 function latestPnlSnapshot(snapshot: DashboardSnapshot): PnlSnapshotRecord | null {
   return snapshot.history.projection.latest_pnl_snapshot;
 }
@@ -1001,6 +1029,30 @@ function ControlCluster({
           <h3>{title}</h3>
         </div>
         {detail ? <p className="control-cluster__detail">{detail}</p> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SectionBlock({
+  title,
+  note,
+  children,
+  className,
+}: {
+  title: string;
+  note?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  const sectionClassName = className ? `section-block ${className}` : "section-block";
+
+  return (
+    <section className={sectionClassName}>
+      <div className="section-block__header">
+        <p className="control-card__title">{title}</p>
+        {note ? <p className="section-block__note">{note}</p> : null}
       </div>
       {children}
     </section>
@@ -1204,7 +1256,7 @@ function App() {
       );
 
       if (result?.httpStatus === 200) {
-        setReconnectReason("dashboard reconnect review resolution");
+      setReconnectReason("resolve reconnect review");
       }
     },
   );
@@ -1230,7 +1282,7 @@ function App() {
       );
 
       if (result?.httpStatus === 200) {
-        setShutdownReason("dashboard shutdown review decision");
+      setShutdownReason("resolve shutdown review");
       }
     },
   );
@@ -1644,6 +1696,7 @@ function App() {
   const pnlChartPathData = pnlChart ? pnlChartPath(pnlChart.points) : "";
   const perTradePnl = snapshot ? perTradePnlForProjection(snapshot) : [];
   const journalSummary = summarizeJournalRecords(journalRecords);
+  const eventHeadlineSummary = summarizeRecentEvents(eventFeed.recentEvents);
   const latencyBreakdown = snapshot ? latencyStages(snapshot.health.latest_trade_latency) : [];
   const slowestLatencyStage = latencyBreakdown.reduce<LatencyStageViewModel | null>(
     (slowest, stage) => {
@@ -3112,8 +3165,12 @@ function App() {
                 }
               />
             </dl>
-            <section className="review-card review-card--wide">
-              <p className="control-card__title">Real-time P&amp;L chart</p>
+            <div className="section-grid section-grid--wide">
+              <SectionBlock
+                title="Real-time P&L chart"
+                note="Projected from host-tracked trade summaries and the latest floating P&L snapshot."
+                className="section-block--span-7"
+              >
               {pnlChart && pnlChart.points.length ? (
                 <div className="pnl-chart">
                   <div className="pnl-chart__canvas-wrap">
@@ -3167,8 +3224,8 @@ function App() {
                   </div>
                 </div>
               ) : (
-                <p className="panel__footnote">
-                  The runtime host has not projected enough history to draw the real-time P&amp;L chart yet.
+                <p className="section-block__empty">
+                  Waiting on enough projected trade history to draw the real-time P&amp;L chart.
                 </p>
               )}
               <div className="subgrid">
@@ -3205,12 +3262,12 @@ function App() {
                   value={formatInteger(tradePerformance?.openCount)}
                 />
               </div>
-              <p className="control-card__note">
-                This chart is derived from the projected trade summaries plus the latest persisted floating P&amp;L snapshot that come through the local `/history` endpoint.
-              </p>
-            </section>
-            <section className="review-card review-card--wide">
-              <p className="control-card__title">Per-trade P&amp;L</p>
+              </SectionBlock>
+              <SectionBlock
+                title="Per-trade P&L"
+                note="Per-trade cards come directly from the host-projected trade summaries."
+                className="section-block--span-5"
+              >
               {perTradePnl.length ? (
                 <div className="per-trade-pnl-grid">
                   {perTradePnl.map((trade) => (
@@ -3240,17 +3297,14 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <p className="panel__footnote">
-                  No trade summaries are projected yet, so per-trade P&amp;L is unavailable.
+                <p className="section-block__empty">
+                  Per-trade P&amp;L appears once projected trade summaries are available.
                 </p>
               )}
-              <p className="control-card__note">
-                Each per-trade card is rendered from the host-projected trade summary instead of frontend-calculated outcomes.
-              </p>
-            </section>
-            <div className="subgrid">
-              <section className="review-card">
-                <p className="control-card__title">Open working orders</p>
+              </SectionBlock>
+            </div>
+            <div className="section-grid section-grid--wide">
+              <SectionBlock title="Open working orders" className="section-block--span-4">
                 {openWorkingOrders.length ? (
                   <ul className="event-list">
                     {openWorkingOrders.map((order) => (
@@ -3266,11 +3320,10 @@ function App() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="panel__footnote">No working broker orders are currently projected.</p>
+                  <p className="section-block__empty">No working broker orders are projected right now.</p>
                 )}
-              </section>
-              <section className="review-card">
-                <p className="control-card__title">Recent fills</p>
+              </SectionBlock>
+              <SectionBlock title="Recent fills" className="section-block--span-4">
                 {recentFills.length ? (
                   <ul className="event-list">
                     {recentFills.map((fill) => (
@@ -3286,11 +3339,10 @@ function App() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="panel__footnote">No broker fills have been recorded yet.</p>
+                  <p className="section-block__empty">No broker fills have been recorded yet.</p>
                 )}
-              </section>
-              <section className="review-card">
-                <p className="control-card__title">Trade ledger</p>
+              </SectionBlock>
+              <SectionBlock title="Trade ledger" className="section-block--span-4">
                 {recentTrades.length ? (
                   <ul className="event-list">
                     {recentTrades.map((trade) => (
@@ -3321,11 +3373,9 @@ function App() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="panel__footnote">
-                    No trade summaries are projected yet.
-                  </p>
+                  <p className="section-block__empty">No trade summaries are projected yet.</p>
                 )}
-              </section>
+              </SectionBlock>
             </div>
             {projectedPnlSnapshot ? (
               <p className="panel__footnote">
@@ -3381,9 +3431,12 @@ function App() {
                 }
               />
             </dl>
-            <div className="subgrid subgrid--wide">
-              <section className="review-card">
-                <p className="control-card__title">Latency stage breakdown</p>
+            <div className="section-grid section-grid--wide">
+              <SectionBlock
+                title="Latency stage breakdown"
+                note="Each stage bar is normalized against the slowest stage in the latest recorded path."
+                className="section-block--span-7"
+              >
                 {latencyBreakdown.some((stage) => stage.value !== null) ? (
                   <ul className="latency-list">
                     {latencyBreakdown.map((stage) => (
@@ -3402,13 +3455,16 @@ function App() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="panel__footnote">
-                    The runtime has not published a trade-path latency record yet.
+                  <p className="section-block__empty">
+                    Waiting for the runtime to publish its first trade-path latency record.
                   </p>
                 )}
-              </section>
-              <section className="review-card">
-                <p className="control-card__title">Latency and host correlation</p>
+              </SectionBlock>
+              <SectionBlock
+                title="Latency and host correlation"
+                note="Correlates the latest trade path with host write lag and reconnect pressure."
+                className="section-block--span-5"
+              >
                 <div className="subgrid">
                   <MiniMetric
                     label="Signal"
@@ -3451,7 +3507,7 @@ function App() {
                     }
                   />
                 </dl>
-              </section>
+              </SectionBlock>
             </div>
           </Panel>
 
@@ -3509,7 +3565,7 @@ function App() {
                   <span>Reason</span>
                   <input
                     aria-label="Reconnect review reason"
-                    placeholder="dashboard reconnect review resolution"
+                    placeholder="resolve reconnect review"
                     value={reconnectReason}
                     onChange={(event) => {
                       setReconnectReason(event.target.value);
@@ -3561,7 +3617,7 @@ function App() {
                   <span>Reason</span>
                   <input
                     aria-label="Shutdown review reason"
-                    placeholder="dashboard shutdown review decision"
+                    placeholder="resolve shutdown review"
                     value={shutdownReason}
                     onChange={(event) => {
                       setShutdownReason(event.target.value);
@@ -3598,8 +3654,8 @@ function App() {
             ) : null}
             <p className="panel__footnote">
               Reconnect hardening now covers startup and reconnect review decisions through the real
-              runtime host. The remaining safety work is the broader paper-mode regression sweep and
-              final operator polish.
+              runtime host. The remaining work here is final operator polish and hands-on release
+              verification.
             </p>
           </Panel>
 
@@ -3617,40 +3673,61 @@ function App() {
                 value={formatInteger(journalSummary.dashboardCount)}
               />
             </div>
-            {journalSummary.categories.length ? (
-              <div className="pill-row">
-                {journalSummary.categories.map((entry) => (
-                  <Pill
-                    key={entry.category}
-                    label={`${entry.category} ${formatInteger(entry.count)}`}
-                    tone="info"
-                  />
-                ))}
-              </div>
-            ) : null}
-            {journalRecords.length ? (
-              <ul className="event-list">
-                {journalRecords.map((record) => (
-                  <li key={record.event_id} className="event-list__item">
-                    <div className="event-list__header">
-                      <strong>{`${record.category}:${record.action}`}</strong>
+            <div className="section-grid section-grid--wide">
+              <SectionBlock
+                title="Journal summary"
+                note="Top categories and source breakdown from the persisted event journal."
+                className="section-block--span-4"
+              >
+                <div className="pill-row">
+                  <Pill label={`Dashboard ${formatInteger(journalSummary.dashboardCount)}`} tone="info" />
+                  <Pill label={`System ${formatInteger(journalSummary.systemCount)}`} tone="healthy" />
+                  <Pill label={`CLI ${formatInteger(journalSummary.cliCount)}`} tone="warning" />
+                </div>
+                {journalSummary.categories.length ? (
+                  <div className="pill-row">
+                    {journalSummary.categories.map((entry) => (
                       <Pill
-                        label={formatDateTime(record.occurred_at)}
-                        tone={journalRecordTone(record)}
+                        key={entry.category}
+                        label={`${entry.category} ${formatInteger(entry.count)}`}
+                        tone="info"
                       />
-                    </div>
-                    <p className="event-list__meta">
-                      {`Source ${formatMode(record.source)} | Severity ${formatMode(record.severity)}`}
-                    </p>
-                    <pre className="payload-block">{prettyJson(record.payload)}</pre>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="panel__footnote">
-                No persisted journal records are available through the local runtime host yet.
-              </p>
-            )}
+                    ))}
+                  </div>
+                ) : (
+                  <p className="section-block__empty">No categorized journal activity yet.</p>
+                )}
+              </SectionBlock>
+              <SectionBlock
+                title="Recent audit records"
+                note="Newest journal records first, including persisted payloads."
+                className="section-block--span-8"
+              >
+                {journalRecords.length ? (
+                  <ul className="event-list">
+                    {journalRecords.map((record) => (
+                      <li key={record.event_id} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{`${record.category}:${record.action}`}</strong>
+                          <Pill
+                            label={formatDateTime(record.occurred_at)}
+                            tone={journalRecordTone(record)}
+                          />
+                        </div>
+                        <p className="event-list__meta">
+                          {`Source ${formatMode(record.source)} | Severity ${formatMode(record.severity)}`}
+                        </p>
+                        <pre className="payload-block">{prettyJson(record.payload)}</pre>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="section-block__empty">
+                    No persisted journal records are available through the local runtime host yet.
+                  </p>
+                )}
+              </SectionBlock>
+            </div>
           </Panel>
 
           <Panel
@@ -3679,24 +3756,53 @@ function App() {
               />
             </div>
             {eventFeed.error ? <p className="panel__footnote">{eventFeed.error}</p> : null}
-            {eventFeed.recentEvents.length ? (
-              <ul className="event-list">
-                {eventFeed.recentEvents.map((event) => (
-                  <li key={event.id} className="event-list__item">
-                    <div className="event-list__header">
-                      <strong>{event.headline}</strong>
-                      <Pill label={formatDateTime(event.occurredAt)} tone={event.tone} />
-                    </div>
-                    <p>{event.detail}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="panel__footnote">
-                The dashboard is connected to the local runtime event hub and will render journal,
-                readiness, command, health, and history updates here.
-              </p>
-            )}
+            <div className="section-grid section-grid--wide">
+              <SectionBlock
+                title="Recent event mix"
+                note="Summarizes the most frequent event headlines in the active stream window."
+                className="section-block--span-4"
+              >
+                {eventHeadlineSummary.length ? (
+                  <div className="pill-row">
+                    {eventHeadlineSummary.map((entry) => (
+                      <Pill
+                        key={entry.headline}
+                        label={`${entry.headline} ${formatInteger(entry.count)}`}
+                        tone={entry.tone}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="section-block__empty">
+                    Waiting for the local event stream to publish recent activity.
+                  </p>
+                )}
+              </SectionBlock>
+              <SectionBlock
+                title="Recent operator feed"
+                note="Newest events first from the local runtime event hub."
+                className="section-block--span-8"
+              >
+                {eventFeed.recentEvents.length ? (
+                  <ul className="event-list">
+                    {eventFeed.recentEvents.map((event) => (
+                      <li key={event.id} className="event-list__item">
+                        <div className="event-list__header">
+                          <strong>{event.headline}</strong>
+                          <Pill label={formatDateTime(event.occurredAt)} tone={event.tone} />
+                        </div>
+                        <p>{event.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="section-block__empty">
+                    The dashboard will render journal, readiness, command, health, and history
+                    updates here once the local event stream starts flowing.
+                  </p>
+                )}
+              </SectionBlock>
+            </div>
           </Panel>
         </div>
       ) : null}

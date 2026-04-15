@@ -1038,6 +1038,8 @@ describe("App", () => {
     expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
     expect(await screen.findByText("Per-trade P&L")).toBeInTheDocument();
+    expect(await screen.findByText("Recent event mix")).toBeInTheDocument();
+    expect(await screen.findByText("Journal summary")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
     expect(await screen.findByText("Recent fills")).toBeInTheDocument();
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
