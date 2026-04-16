@@ -20,7 +20,9 @@ Current state as of 2026-04-15:
 - The planning and architectural recommendation in this document are complete.
 - Phase 1 `chart control-plane foundation` is now materially in place in [apps/runtime/src/host.rs](</C:/repos/TV_bot_core/apps/runtime/src/host.rs>) and [crates/control_api/src/lib.rs](</C:/repos/TV_bot_core/crates/control_api/src/lib.rs>) through `GET /chart/config`, `GET /chart/snapshot`, `GET /chart/history`, and `GET /chart/stream`.
 - The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
-- The actual dashboard chart renderer and chart-specific frontend hook or adapter work have not started yet.
+- Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
+- Phase 3 is partially in place: active-position context and recent fill markers now render on the chart, while working orders are currently summarized beside the chart rather than drawn as exact price bands because the current `BrokerOrderUpdate` wire model does not expose working-order price levels.
+- The remaining work is polish and deeper overlay fidelity rather than first delivery.
 
 ## Scope Guardrails
 

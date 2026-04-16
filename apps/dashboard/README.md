@@ -42,10 +42,11 @@ The current dashboard now covers:
 - history and PnL drill-downs including an explicit real-time P&L chart, per-trade P&L cards, richer trade ledger, working-order/fill views, and floating snapshot context
 - persisted journal audit-trail drill-downs with severity/category summaries and formatted payloads
 - latency detail views including per-stage trade-path timing and host-correlation context
+- a live contract chart backed only by `/chart/config`, `/chart/snapshot`, `/chart/history`, and `/chart/stream`, with timeframe switching, load-older paging, active-position context, recent fill markers, and a working-order summary rail for the currently loaded contract
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
-The dashboard does **not** yet include a real live contract-chart surface for the currently loaded strategy contract.
-The runtime host now exposes the chart control-plane foundation for that work through `/chart/config`, `/chart/snapshot`, `/chart/history`, and `/chart/stream`, and the dashboard rendering work remains tracked in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+The chart now renders the currently loaded strategy contract through the local control plane and does not call Databento or Tradovate directly.
+The remaining chart work is polish rather than first delivery: fit/live-follow UX, richer on-chart order-price overlays once the host exposes those levels, and final production sign-off tracked in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
 ## Local Development
 
@@ -74,7 +75,7 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 ## Follow-up Note
 
 Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.
-The remaining dashboard work is now centered on the live contract-chart feature in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>), the last production UI sign-off items, and the final hands-on paper/demo release verification pass.
+The remaining dashboard work is now centered on final chart/operator polish in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>), the last production UI sign-off items, and the final hands-on paper/demo release verification pass.
 
 ## Production UI Follow-Up
 
@@ -90,4 +91,4 @@ That plan is the current source of truth for:
 
 The tracked plan for the live contract-chart surface itself lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
-The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the latest browser QA pass cleared page-level overflow at `390px`, `768px`, `1024px`, and `1440px` while the broader component/layout cleanup remains ongoing.
+The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the live contract-chart renderer now mounts below the control center with runtime-host-backed timeframe switching, chart-stream updates, buffered history paging, active-position context, and recent fill overlays, while the remaining work is polish and deeper overlay fidelity rather than first delivery.

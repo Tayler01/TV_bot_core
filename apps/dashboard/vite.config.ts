@@ -5,6 +5,9 @@ const HTTP_ENDPOINTS = [
   "/health",
   "/status",
   "/readiness",
+  "/chart/config",
+  "/chart/snapshot",
+  "/chart/history",
   "/history",
   "/journal",
   "/settings",
@@ -37,6 +40,11 @@ export default defineConfig(({ mode }) => {
           ]),
         ),
         "/events": {
+          target: controlApiWebSocketProxyTarget,
+          ws: true,
+          changeOrigin: true,
+        },
+        "/chart/stream": {
           target: controlApiWebSocketProxyTarget,
           ws: true,
           changeOrigin: true,

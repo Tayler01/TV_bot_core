@@ -1,4 +1,5 @@
 export type DecimalValue = number | string;
+export type Timeframe = "1s" | "1m" | "5m";
 
 export type ActionSource = "dashboard" | "cli" | "system";
 export type EventSeverity = "info" | "warning" | "error";
@@ -350,6 +351,104 @@ export interface RuntimeJournalSnapshot {
   total_records: number;
   records: EventJournalRecord[];
 }
+
+export interface BrokerOrderUpdate {
+  broker_order_id: string;
+  account_id: string | null;
+  symbol: string;
+  side: "buy" | "sell" | null;
+  quantity: number | null;
+  order_type: string | null;
+  status: string;
+  filled_quantity: number;
+  average_fill_price: DecimalValue | null;
+  updated_at: string;
+}
+
+export interface BrokerPositionSnapshot {
+  account_id: string | null;
+  symbol: string;
+  quantity: number;
+  average_price: DecimalValue | null;
+  realized_pnl: DecimalValue | null;
+  unrealized_pnl: DecimalValue | null;
+  protective_orders_present: boolean;
+  captured_at: string;
+}
+
+export interface BrokerFillUpdate {
+  fill_id: string;
+  broker_order_id: string | null;
+  account_id: string | null;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: number;
+  price: DecimalValue;
+  fee: DecimalValue | null;
+  commission: DecimalValue | null;
+  occurred_at: string;
+}
+
+export interface RuntimeChartInstrumentSummary {
+  strategy_id: string;
+  strategy_name: string;
+  market_family: string;
+  market_display_name: string | null;
+  tradovate_symbol: string | null;
+  canonical_symbol: string | null;
+  databento_symbols: string[];
+  summary: string;
+}
+
+export interface RuntimeChartConfigResponse {
+  available: boolean;
+  detail: string;
+  instrument: RuntimeChartInstrumentSummary | null;
+  supported_timeframes: Timeframe[];
+  default_timeframe: Timeframe | null;
+  market_data_connection_state: string | null;
+  market_data_health: string | null;
+  replay_caught_up: boolean;
+  trade_ready: boolean;
+}
+
+export interface RuntimeChartBar {
+  timeframe: Timeframe;
+  open: DecimalValue;
+  high: DecimalValue;
+  low: DecimalValue;
+  close: DecimalValue;
+  volume: number;
+  closed_at: string;
+}
+
+export interface RuntimeChartSnapshot {
+  config: RuntimeChartConfigResponse;
+  timeframe: Timeframe;
+  requested_limit: number;
+  bars: RuntimeChartBar[];
+  latest_price: DecimalValue | null;
+  latest_closed_at: string | null;
+  active_position: BrokerPositionSnapshot | null;
+  working_orders: BrokerOrderUpdate[];
+  recent_fills: BrokerFillUpdate[];
+  can_load_older_history: boolean;
+}
+
+export interface RuntimeChartHistoryResponse {
+  config: RuntimeChartConfigResponse;
+  timeframe: Timeframe;
+  requested_limit: number;
+  before: string | null;
+  bars: RuntimeChartBar[];
+  can_load_older_history: boolean;
+}
+
+export type RuntimeChartStreamEvent = {
+  kind: "snapshot";
+  snapshot: RuntimeChartSnapshot;
+  occurred_at: string;
+};
 
 export type RuntimeStrategyIssueSeverity = "error" | "warning";
 

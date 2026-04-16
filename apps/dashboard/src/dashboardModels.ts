@@ -1,8 +1,11 @@
 import type { DashboardSnapshot } from "./lib/api";
 import type {
+  RuntimeChartConfigResponse,
+  RuntimeChartSnapshot,
   RuntimeMode,
   RuntimeStrategyLibraryResponse,
   RuntimeStrategyValidationResponse,
+  Timeframe,
   TradeSummaryRecord,
 } from "./types/controlApi";
 
@@ -51,6 +54,18 @@ export interface EventFeedViewModel {
   recentEvents: EventFeedItem[];
   lastEventAt: string | null;
   error: string | null;
+}
+
+export interface ChartViewModel {
+  config: RuntimeChartConfigResponse | null;
+  snapshot: RuntimeChartSnapshot | null;
+  selectedTimeframe: Timeframe | null;
+  loadState: LoadState;
+  historyState: LoadState;
+  streamState: EventConnectionState;
+  error: string | null;
+  historyError: string | null;
+  lastStreamedAt: string | null;
 }
 
 export interface RuntimeSettingsDraft {

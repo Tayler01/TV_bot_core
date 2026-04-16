@@ -37,9 +37,11 @@ import {
   ControlCenterPanel,
   SafetyPanel,
 } from "./components/dashboardControlPanels";
+import { LiveChartPanel } from "./components/dashboardLiveChart";
 import { SignalTile } from "./components/dashboardPrimitives";
 import type { LatencyStageViewModel } from "./dashboardModels";
 import { useDashboardController } from "./hooks/useDashboardController";
+import { useDashboardChart } from "./hooks/useDashboardChart";
 
 function App() {
   const {
@@ -95,6 +97,12 @@ function App() {
     handleClosePositionSubmit,
     handleCancelWorkingOrdersSubmit,
   } = useDashboardController();
+  const {
+    chartViewModel,
+    setSelectedTimeframe,
+    refreshChart,
+    loadOlderHistory,
+  } = useDashboardChart(viewModel.snapshot);
 
   const snapshot = viewModel.snapshot;
   const selectedStrategyEntry =
@@ -431,6 +439,17 @@ function App() {
             onClosePositionSubmit={handleClosePositionSubmit}
             onCancelWorkingOrdersReasonChange={setCancelWorkingOrdersReason}
             onCancelWorkingOrdersSubmit={handleCancelWorkingOrdersSubmit}
+          />
+
+          <LiveChartPanel
+            chartViewModel={chartViewModel}
+            onSelectTimeframe={setSelectedTimeframe}
+            onLoadOlderHistory={() => {
+              void loadOlderHistory();
+            }}
+            onRefreshChart={() => {
+              void refreshChart();
+            }}
           />
 
           <RuntimeSummaryPanel snapshot={snapshot} />

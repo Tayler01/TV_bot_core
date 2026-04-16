@@ -1,5 +1,9 @@
 import type {
   ControlApiEvent,
+  RuntimeChartConfigResponse,
+  RuntimeChartHistoryResponse,
+  RuntimeChartSnapshot,
+  RuntimeChartStreamEvent,
   RuntimeHistorySnapshot,
   RuntimeHostHealthResponse,
   RuntimeJournalSnapshot,
@@ -15,6 +19,7 @@ import type {
   RuntimeStrategyValidationRequest,
   RuntimeStrategyValidationResponse,
   RuntimeStatusSnapshot,
+  Timeframe,
 } from "../types/controlApi";
 
 export interface DashboardSnapshot {
@@ -113,6 +118,53 @@ export async function loadDashboardSnapshot(
     settings,
     fetchedAt: new Date().toISOString(),
   };
+}
+
+function withQuery(
+  endpoint: string,
+  params: Record<string, string | number | null | undefined>,
+): string {
+  const query = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+
+    query.set(key, String(value));
+  }
+
+  const encoded = query.toString();
+  return encoded ? `${endpoint}?${encoded}` : endpoint;
+}
+
+export async function loadChartConfig(
+  signal?: AbortSignal,
+): Promise<RuntimeChartConfigResponse> {
+  return fetchJson<RuntimeChartConfigResponse>("/chart/config", signal);
+}
+
+export async function loadChartSnapshot(
+  timeframe: Timeframe,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<RuntimeChartSnapshot> {
+  return fetchJson<RuntimeChartSnapshot>(
+    withQuery("/chart/snapshot", { timeframe, limit }),
+    signal,
+  );
+}
+
+export async function loadChartHistory(
+  timeframe: Timeframe,
+  before: string | null,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<RuntimeChartHistoryResponse> {
+  return fetchJson<RuntimeChartHistoryResponse>(
+    withQuery("/chart/history", { timeframe, before, limit }),
+    signal,
+  );
 }
 
 export async function sendLifecycleCommand(
@@ -230,20 +282,35 @@ function defaultEventsUrl(): string {
   return `${protocol}//${window.location.host}/events`;
 }
 
-export function controlApiEventsUrl(): string {
+function controlApiWebSocketBaseUrl(): string {
   if (CONTROL_API_EVENTS_URL) {
-    return `${CONTROL_API_EVENTS_URL}/events`;
+    return CONTROL_API_EVENTS_URL;
   }
 
   if (CONTROL_API_BASE_URL) {
-    const url = new URL(`${CONTROL_API_BASE_URL}/events`, window.location.href);
+    const url = new URL(CONTROL_API_BASE_URL, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return url.toString();
   }
 
-  return defaultEventsUrl();
+  return defaultEventsUrl().replace(/\/events$/, "");
+}
+
+export function controlApiEventsUrl(): string {
+  return `${controlApiWebSocketBaseUrl()}/events`;
+}
+
+export function controlApiChartStreamUrl(timeframe: Timeframe, limit: number): string {
+  const url = new URL(`${controlApiWebSocketBaseUrl()}/chart/stream`);
+  url.searchParams.set("timeframe", timeframe);
+  url.searchParams.set("limit", String(limit));
+  return url.toString();
 }
 
 export function parseControlApiEvent(payload: string): ControlApiEvent {
   return JSON.parse(payload) as ControlApiEvent;
+}
+
+export function parseRuntimeChartStreamEvent(payload: string): RuntimeChartStreamEvent {
+  return JSON.parse(payload) as RuntimeChartStreamEvent;
 }

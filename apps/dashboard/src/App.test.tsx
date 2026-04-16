@@ -1,6 +1,59 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("lightweight-charts", () => {
+  const createPriceLine = vi.fn(() => ({
+    applyOptions: vi.fn(),
+    options: vi.fn(() => ({})),
+  }));
+  const removePriceLine = vi.fn();
+  const candleSeries = {
+    setData: vi.fn(),
+    createPriceLine,
+    removePriceLine,
+    priceLines: vi.fn(() => []),
+  };
+  const histogramSeries = {
+    setData: vi.fn(),
+  };
+
+  return {
+    createChart: vi.fn(() => ({
+      addSeries: vi.fn((definition: { type?: string }) => {
+        if (definition?.type === "Histogram") {
+          return histogramSeries;
+        }
+
+        return candleSeries;
+      }),
+      applyOptions: vi.fn(),
+      resize: vi.fn(),
+      remove: vi.fn(),
+      timeScale: vi.fn(() => ({
+        fitContent: vi.fn(),
+      })),
+    })),
+    createSeriesMarkers: vi.fn(() => ({
+      setMarkers: vi.fn(),
+      markers: vi.fn(() => []),
+      detach: vi.fn(),
+    })),
+    CandlestickSeries: { type: "Candlestick" },
+    HistogramSeries: { type: "Histogram" },
+    ColorType: {
+      Solid: "solid",
+    },
+    CrosshairMode: {
+      Normal: 0,
+    },
+    LineStyle: {
+      Solid: 0,
+      Dotted: 1,
+      Dashed: 2,
+    },
+  };
+});
+
 import App from "./App";
 import type {
   LoadedStrategySummary,
@@ -65,8 +118,12 @@ function installWebSocketMock() {
   vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
 
   return {
-    latest() {
-      return MockWebSocket.instances.at(-1) ?? null;
+    latest(path = "/events") {
+      return (
+        [...MockWebSocket.instances].reverse().find((instance) => instance.url.includes(path)) ??
+        MockWebSocket.instances.at(-1) ??
+        null
+      );
     },
   };
 }
@@ -481,6 +538,126 @@ function installFetchMock(snapshotOverrides?: {
       "settings edits are saved to the runtime config file for the next restart; environment overrides may still take precedence",
   };
 
+  const chartConfig = {
+    available: true,
+    detail: "charting GCM2026 from the loaded strategy contract",
+    instrument: {
+      strategy_id: "gold-breakout",
+      strategy_name: "Gold Breakout",
+      market_family: "metals",
+      market_display_name: "Gold",
+      tradovate_symbol: "GCM2026",
+      canonical_symbol: "GCM6",
+      databento_symbols: ["GCM6"],
+      summary: "Gold front month resolved to GCM2026 / GCM6",
+    },
+    supported_timeframes: ["1s", "1m", "5m"],
+    default_timeframe: "1m",
+    market_data_connection_state: "subscribed",
+    market_data_health: "healthy",
+    replay_caught_up: true,
+    trade_ready: true,
+  };
+
+  const chartBarsByTimeframe = {
+    "1s": [
+      {
+        timeframe: "1s",
+        open: "2411.80",
+        high: "2412.10",
+        low: "2411.60",
+        close: "2411.95",
+        volume: 18,
+        closed_at: "2026-04-12T20:10:58Z",
+      },
+      {
+        timeframe: "1s",
+        open: "2411.95",
+        high: "2412.30",
+        low: "2411.90",
+        close: "2412.20",
+        volume: 24,
+        closed_at: "2026-04-12T20:10:59Z",
+      },
+      {
+        timeframe: "1s",
+        open: "2412.20",
+        high: "2412.35",
+        low: "2412.00",
+        close: "2412.25",
+        volume: 16,
+        closed_at: "2026-04-12T20:11:00Z",
+      },
+    ],
+    "1m": [
+      {
+        timeframe: "1m",
+        open: "2408.40",
+        high: "2410.10",
+        low: "2407.80",
+        close: "2409.60",
+        volume: 140,
+        closed_at: "2026-04-12T20:07:00Z",
+      },
+      {
+        timeframe: "1m",
+        open: "2409.60",
+        high: "2411.20",
+        low: "2409.10",
+        close: "2410.80",
+        volume: 182,
+        closed_at: "2026-04-12T20:08:00Z",
+      },
+      {
+        timeframe: "1m",
+        open: "2410.80",
+        high: "2412.70",
+        low: "2410.20",
+        close: "2411.90",
+        volume: 210,
+        closed_at: "2026-04-12T20:09:00Z",
+      },
+      {
+        timeframe: "1m",
+        open: "2411.90",
+        high: "2413.10",
+        low: "2411.40",
+        close: "2412.40",
+        volume: 236,
+        closed_at: "2026-04-12T20:10:00Z",
+      },
+      {
+        timeframe: "1m",
+        open: "2412.40",
+        high: "2412.90",
+        low: "2411.70",
+        close: "2412.25",
+        volume: 148,
+        closed_at: "2026-04-12T20:11:00Z",
+      },
+    ],
+    "5m": [
+      {
+        timeframe: "5m",
+        open: "2404.10",
+        high: "2410.80",
+        low: "2403.60",
+        close: "2409.50",
+        volume: 620,
+        closed_at: "2026-04-12T20:00:00Z",
+      },
+      {
+        timeframe: "5m",
+        open: "2409.50",
+        high: "2413.10",
+        low: "2408.90",
+        close: "2412.25",
+        volume: 712,
+        closed_at: "2026-04-12T20:05:00Z",
+      },
+    ],
+  } as const;
+
   const strategyLibrary = {
     scanned_roots: ["strategies/uploads", "strategies/examples"],
     strategies: [
@@ -571,6 +748,11 @@ function installFetchMock(snapshotOverrides?: {
         : input instanceof URL
           ? input.pathname
           : input.url;
+    const parsedEndpoint = new URL(endpoint, "http://dashboard.test");
+    const chartTimeframe =
+      (parsedEndpoint.searchParams.get("timeframe") as "1s" | "1m" | "5m" | null) ?? "1m";
+    const chartLimit = Number.parseInt(parsedEndpoint.searchParams.get("limit") ?? "240", 10);
+    const chartBars = chartBarsByTimeframe[chartTimeframe];
 
     if (endpoint.endsWith("/status")) {
       return jsonResponse(status);
@@ -619,6 +801,77 @@ function installFetchMock(snapshotOverrides?: {
       return jsonResponse({
         message: "saved runtime settings for the next restart",
         settings,
+      });
+    }
+
+    if (parsedEndpoint.pathname === "/chart/config") {
+      return jsonResponse(chartConfig);
+    }
+
+    if (parsedEndpoint.pathname === "/chart/snapshot") {
+      return jsonResponse({
+        config: chartConfig,
+        timeframe: chartTimeframe,
+        requested_limit: chartLimit,
+        bars: chartBars.slice(Math.max(chartBars.length - chartLimit, 0)),
+        latest_price: chartBars.at(-1)?.close ?? null,
+        latest_closed_at: chartBars.at(-1)?.closed_at ?? null,
+        active_position: {
+          account_id: "paper-primary-id",
+          symbol: "GCM2026",
+          quantity: 1,
+          average_price: "2410.50",
+          realized_pnl: "0.00",
+          unrealized_pnl: "48.60",
+          protective_orders_present: true,
+          captured_at: "2026-04-12T20:11:03Z",
+        },
+        working_orders: [
+          {
+            broker_order_id: "8102",
+            account_id: "paper-primary-id",
+            symbol: "GCM2026",
+            side: "buy",
+            quantity: 1,
+            order_type: "limit",
+            status: "working",
+            filled_quantity: 0,
+            average_fill_price: null,
+            updated_at: "2026-04-12T20:11:03Z",
+          },
+        ],
+        recent_fills: [
+          {
+            fill_id: "fill-1",
+            broker_order_id: "8102",
+            account_id: "paper-primary-id",
+            symbol: "GCM2026",
+            side: "buy",
+            quantity: 1,
+            price: "2410.50",
+            fee: "1.25",
+            commission: "0.75",
+            occurred_at: "2026-04-12T20:11:03Z",
+          },
+        ],
+        can_load_older_history: chartTimeframe !== "1s",
+      });
+    }
+
+    if (parsedEndpoint.pathname === "/chart/history") {
+      const before = parsedEndpoint.searchParams.get("before");
+      const olderBars = before
+        ? chartBars.filter((bar) => bar.closed_at < before)
+        : chartBars;
+      const pagedBars = olderBars.slice(Math.max(olderBars.length - chartLimit, 0));
+
+      return jsonResponse({
+        config: chartConfig,
+        timeframe: chartTimeframe,
+        requested_limit: chartLimit,
+        before,
+        bars: pagedBars,
+        can_load_older_history: false,
       });
     }
 
@@ -1034,6 +1287,10 @@ describe("App", () => {
     expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
     expect(await screen.findByText("Validation passed")).toBeInTheDocument();
     expect(await screen.findByText("Grouped pre-arm checks")).toBeInTheDocument();
+    expect(await screen.findByText("Gold Breakout live contract chart")).toBeInTheDocument();
+    expect(await screen.findByText("Contract context")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Load older bars" })).toBeInTheDocument();
     expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
     expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
@@ -1041,7 +1298,7 @@ describe("App", () => {
     expect(await screen.findByText("Recent event mix")).toBeInTheDocument();
     expect(await screen.findByText("Journal summary")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
-    expect(await screen.findByText("Recent fills")).toBeInTheDocument();
+    expect(await screen.findAllByText("Recent fills")).toHaveLength(2);
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
     expect(await screen.findByText("Latency stage breakdown")).toBeInTheDocument();
     expect(await screen.findByText("Persisted operator journal and audit trail")).toBeInTheDocument();
@@ -1049,7 +1306,7 @@ describe("App", () => {
     expect(await screen.findByText("Config file backed")).toBeInTheDocument();
     expect(await screen.findByText("Floating now")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
-    expect(await screen.findByText(/Fill fill-1 \| order 8102/)).toBeInTheDocument();
+    expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(2);
     expect(await screen.findAllByText(/Trade trade-1/)).toHaveLength(2);
     expect(await screen.findByText("execution:dispatch_succeeded")).toBeInTheDocument();
     expect(
@@ -1077,6 +1334,113 @@ describe("App", () => {
     expect(
       await screen.findByText("shutdown blocked until open position is resolved"),
     ).toBeInTheDocument();
+  });
+
+  it("switches chart timeframes and loads older history through the chart control plane", async () => {
+    installWebSocketMock();
+    const { fetchSpy } = installFetchMock();
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "5m" }));
+
+    await waitFor(() => {
+      const snapshotCalls = fetchSpy.mock.calls.filter((call) => {
+        const target = call[0];
+        const endpoint =
+          typeof target === "string"
+            ? target
+            : target instanceof URL
+              ? target.pathname
+              : target.url;
+        return String(endpoint).includes("/chart/snapshot?timeframe=5m");
+      });
+
+      expect(snapshotCalls.length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load older bars" }));
+
+    await waitFor(() => {
+      const historyCalls = fetchSpy.mock.calls.filter((call) => {
+        const target = call[0];
+        const endpoint =
+          typeof target === "string"
+            ? target
+            : target instanceof URL
+              ? target.pathname
+              : target.url;
+        return String(endpoint).includes("/chart/history?timeframe=5m");
+      });
+
+      expect(historyCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("updates the contract chart summary when the dedicated chart stream publishes a new snapshot", async () => {
+    const websocket = installWebSocketMock();
+    installFetchMock();
+
+    render(<App />);
+
+    await screen.findByText("Latest price");
+
+    websocket.latest("/chart/stream")?.emitJson({
+      kind: "snapshot",
+      occurred_at: "2026-04-12T20:12:30Z",
+      snapshot: {
+        config: {
+          available: true,
+          detail: "charting GCM2026 from the loaded strategy contract",
+          instrument: {
+            strategy_id: "gold-breakout",
+            strategy_name: "Gold Breakout",
+            market_family: "metals",
+            market_display_name: "Gold",
+            tradovate_symbol: "GCM2026",
+            canonical_symbol: "GCM6",
+            databento_symbols: ["GCM6"],
+            summary: "Gold front month resolved to GCM2026 / GCM6",
+          },
+          supported_timeframes: ["1s", "1m", "5m"],
+          default_timeframe: "1m",
+          market_data_connection_state: "subscribed",
+          market_data_health: "healthy",
+          replay_caught_up: true,
+          trade_ready: true,
+        },
+        timeframe: "1m",
+        requested_limit: 240,
+        bars: [
+          {
+            timeframe: "1m",
+            open: "2412.40",
+            high: "2414.95",
+            low: "2412.10",
+            close: "2414.80",
+            volume: 276,
+            closed_at: "2026-04-12T20:12:00Z",
+          },
+        ],
+        latest_price: "2414.80",
+        latest_closed_at: "2026-04-12T20:12:00Z",
+        active_position: {
+          account_id: "paper-primary-id",
+          symbol: "GCM2026",
+          quantity: 1,
+          average_price: "2410.50",
+          realized_pnl: "0.00",
+          unrealized_pnl: "72.40",
+          protective_orders_present: true,
+          captured_at: "2026-04-12T20:12:30Z",
+        },
+        working_orders: [],
+        recent_fills: [],
+        can_load_older_history: false,
+      },
+    });
+
+    expect(await screen.findAllByText("2,414.80")).not.toHaveLength(0);
   });
 
   it("renders recent websocket operator events from the local runtime host", async () => {
