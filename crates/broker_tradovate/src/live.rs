@@ -845,6 +845,11 @@ fn parse_order_update(value: &Value, occurred_at: DateTime<Utc>) -> Option<Broke
             .or_else(|| value.get("cumQty"))
             .and_then(value_to_u32)
             .unwrap_or(0),
+        limit_price: value
+            .get("limitPrice")
+            .or_else(|| value.get("price"))
+            .and_then(value_to_decimal),
+        stop_price: value.get("stopPrice").and_then(value_to_decimal),
         average_fill_price: value
             .get("avgFillPrice")
             .or_else(|| value.get("fillPrice"))
@@ -1112,5 +1117,41 @@ fn assign_decimal(
 ) {
     if let Some(value) = value {
         *target = Some(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use rust_decimal::Decimal;
+    use serde_json::json;
+
+    use super::parse_order_update;
+    use tv_bot_core_types::EntryOrderType;
+
+    #[test]
+    fn parse_order_update_captures_limit_and_stop_levels() {
+        let order = parse_order_update(
+            &json!({
+                "id": 8102,
+                "accountId": 101,
+                "contractSymbol": "GCM6",
+                "action": "Buy",
+                "orderQty": 1,
+                "orderType": "StopLimit",
+                "status": "Working",
+                "fillQty": 0,
+                "price": "2412.25",
+                "stopPrice": "2408.75",
+                "timestamp": "2026-04-16T11:30:00Z"
+            }),
+            Utc::now(),
+        )
+        .expect("order snapshot should parse");
+
+        assert_eq!(order.order_type, Some(EntryOrderType::StopLimit));
+        assert_eq!(order.limit_price, Some(Decimal::new(241_225, 2)));
+        assert_eq!(order.stop_price, Some(Decimal::new(240_875, 2)));
+        assert_eq!(order.average_fill_price, Some(Decimal::new(241_225, 2)));
     }
 }

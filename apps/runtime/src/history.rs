@@ -1040,6 +1040,8 @@ mod tests {
                     order_type: Some(EntryOrderType::Limit),
                     status: BrokerOrderStatus::Working,
                     filled_quantity: 0,
+                    limit_price: Some(Decimal::new(241_275, 2)),
+                    stop_price: None,
                     average_fill_price: None,
                     updated_at: Utc::now(),
                 })

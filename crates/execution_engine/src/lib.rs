@@ -1745,6 +1745,8 @@ mod tests {
             order_type: Some(EntryOrderType::Limit),
             status: tv_bot_core_types::BrokerOrderStatus::Working,
             filled_quantity: 0,
+            limit_price: Some(Decimal::new(241_200, 2)),
+            stop_price: None,
             average_fill_price: None,
             updated_at: Utc::now(),
         }];

@@ -656,6 +656,8 @@ pub struct BrokerOrderUpdate {
     pub order_type: Option<EntryOrderType>,
     pub status: BrokerOrderStatus,
     pub filled_quantity: u32,
+    pub limit_price: Option<Decimal>,
+    pub stop_price: Option<Decimal>,
     pub average_fill_price: Option<Decimal>,
     pub updated_at: DateTime<Utc>,
 }

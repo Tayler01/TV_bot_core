@@ -403,6 +403,8 @@ fn snapshot_with_position(now: DateTime<Utc>) -> TradovateSyncSnapshot {
             order_type: Some(tv_bot_core_types::EntryOrderType::Limit),
             status: BrokerOrderStatus::Working,
             filled_quantity: 0,
+            limit_price: Some(Decimal::new(239_050, 2)),
+            stop_price: None,
             average_fill_price: None,
             updated_at: now,
         }],

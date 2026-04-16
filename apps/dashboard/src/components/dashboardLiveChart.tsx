@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -41,6 +41,7 @@ import {
 } from "./dashboardPrimitives";
 
 const CHART_HEIGHT = 420;
+const CHART_INITIAL_FIT_TOKEN = 0;
 
 function chartStreamTone(streamState: ChartViewModel["streamState"]) {
   switch (streamState) {
@@ -86,8 +87,12 @@ function timeframeButtonLabel(timeframe: Timeframe): string {
 
 function LiveChartCanvas({
   chartViewModel,
+  fitRequestToken,
+  liveFollowEnabled,
 }: {
   chartViewModel: ChartViewModel;
+  fitRequestToken: number;
+  liveFollowEnabled: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -95,6 +100,9 @@ function LiveChartCanvas({
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
   const fillMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const previousTimeframeRef = useRef<Timeframe | null>(null);
+  const previousLatestClosedAtRef = useRef<string | null>(null);
+  const previousBarCountRef = useRef(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -275,11 +283,63 @@ function LiveChartCanvas({
     }
 
     if (candles.length > 0) {
-      chart.timeScale().fitContent();
+      const timeframeChanged =
+        previousTimeframeRef.current !== chartViewModel.selectedTimeframe;
+      const firstRender = previousBarCountRef.current === 0;
+      const latestClosedAt = snapshot?.latest_closed_at ?? null;
+      const newTailBar =
+        latestClosedAt !== null && latestClosedAt !== previousLatestClosedAtRef.current;
+
+      if (timeframeChanged || firstRender) {
+        chart.timeScale().fitContent();
+      } else if (liveFollowEnabled && newTailBar) {
+        chart.timeScale().scrollToRealTime();
+      }
+
+      previousTimeframeRef.current = chartViewModel.selectedTimeframe;
+      previousLatestClosedAtRef.current = latestClosedAt;
+      previousBarCountRef.current = candles.length;
+    } else {
+      previousTimeframeRef.current = chartViewModel.selectedTimeframe;
+      previousLatestClosedAtRef.current = null;
+      previousBarCountRef.current = 0;
     }
-  }, [chartViewModel.snapshot]);
+  }, [chartViewModel.selectedTimeframe, chartViewModel.snapshot, liveFollowEnabled]);
+
+  useEffect(() => {
+    if (fitRequestToken === CHART_INITIAL_FIT_TOKEN) {
+      return;
+    }
+
+    chartRef.current?.timeScale().fitContent();
+  }, [fitRequestToken]);
+
+  useEffect(() => {
+    if (!liveFollowEnabled || !chartViewModel.snapshot?.bars.length) {
+      return;
+    }
+
+    chartRef.current?.timeScale().scrollToRealTime();
+  }, [chartViewModel.snapshot?.bars.length, liveFollowEnabled]);
 
   return <div ref={containerRef} className="live-chart__canvas" />;
+}
+
+function workingOrderLevelsSummary(order: {
+  limit_price: number | string | null;
+  stop_price: number | string | null;
+}) {
+  const levels: string[] = [];
+
+  if (order.limit_price !== null && order.limit_price !== undefined) {
+    levels.push(`limit ${formatDecimal(order.limit_price)}`);
+  }
+
+  if (order.stop_price !== null && order.stop_price !== undefined) {
+    levels.push(`stop ${formatDecimal(order.stop_price)}`);
+  }
+
+  return levels.length ? levels.join(" | ") : "working price unavailable";
 }
 
 export function LiveChartPanel({
@@ -316,6 +376,8 @@ export function LiveChartPanel({
 
     return snapshot.bars[snapshot.bars.length - 1];
   }, [snapshot]);
+  const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
+  const [fitRequestToken, setFitRequestToken] = useState(CHART_INITIAL_FIT_TOKEN);
 
   return (
     <Panel
@@ -348,6 +410,29 @@ export function LiveChartPanel({
           />
         </div>
         <div className="chart-toolbar__group chart-toolbar__group--actions">
+          <button
+            className={
+              liveFollowEnabled
+                ? "command-button command-button--active"
+                : "command-button"
+            }
+            type="button"
+            aria-pressed={liveFollowEnabled}
+            onClick={() => {
+              setLiveFollowEnabled((current) => !current);
+            }}
+          >
+            {liveFollowEnabled ? "Live follow on" : "Live follow off"}
+          </button>
+          <button
+            className="command-button"
+            type="button"
+            onClick={() => {
+              setFitRequestToken((current) => current + 1);
+            }}
+          >
+            Fit chart
+          </button>
           <button
             className="command-button"
             type="button"
@@ -391,6 +476,9 @@ export function LiveChartPanel({
           {chartViewModel.selectedTimeframe
             ? `Showing ${chartTimeframeLabel(chartViewModel.selectedTimeframe)} candles for the currently loaded strategy contract.`
             : config?.detail ?? "Load a strategy to chart its resolved contract."}
+          {config?.available
+            ? ` ${liveFollowEnabled ? "Live follow keeps the latest candle in view." : "Manual pan and zoom stay pinned until you refit or re-enable follow."}`
+            : ""}
         </p>
       </div>
 
@@ -415,7 +503,11 @@ export function LiveChartPanel({
           <section className="live-chart__stage">
             <div className="live-chart__frame">
               {snapshot?.bars.length ? (
-                <LiveChartCanvas chartViewModel={chartViewModel} />
+                <LiveChartCanvas
+                  chartViewModel={chartViewModel}
+                  fitRequestToken={fitRequestToken}
+                  liveFollowEnabled={liveFollowEnabled}
+                />
               ) : (
                 <div className="live-chart__empty">
                   <p>
@@ -556,7 +648,7 @@ export function LiveChartPanel({
 
             <SectionBlock
               title="Working orders"
-              note="Working orders are projected alongside the chart even when the backend does not yet expose exact working price levels."
+              note="Working orders are projected alongside the chart, and exact limit or stop levels are drawn when the broker snapshot exposes them."
             >
               {workingOrders.length ? (
                 <ul className="event-list event-list--compact">
@@ -567,7 +659,7 @@ export function LiveChartPanel({
                         <Pill label={order.status} tone="warning" />
                       </div>
                       <p>
-                        {`${order.side ?? "side?"} ${formatInteger(order.quantity)} | ${order.order_type ?? "type unavailable"} | filled ${formatInteger(order.filled_quantity)} | avg fill ${formatDecimal(order.average_fill_price)}`}
+                        {`${order.side ?? "side?"} ${formatInteger(order.quantity)} | ${order.order_type ?? "type unavailable"} | ${workingOrderLevelsSummary(order)} | filled ${formatInteger(order.filled_quantity)} | avg fill ${formatDecimal(order.average_fill_price)}`}
                       </p>
                     </li>
                   ))}

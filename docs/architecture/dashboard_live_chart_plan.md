@@ -20,9 +20,9 @@ Current state as of 2026-04-15:
 - The planning and architectural recommendation in this document are complete.
 - Phase 1 `chart control-plane foundation` is now materially in place in [apps/runtime/src/host.rs](</C:/repos/TV_bot_core/apps/runtime/src/host.rs>) and [crates/control_api/src/lib.rs](</C:/repos/TV_bot_core/crates/control_api/src/lib.rs>) through `GET /chart/config`, `GET /chart/snapshot`, `GET /chart/history`, and `GET /chart/stream`.
 - The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
-- Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
-- Phase 3 is partially in place: active-position context and recent fill markers now render on the chart, while working orders are currently summarized beside the chart rather than drawn as exact price bands because the current `BrokerOrderUpdate` wire model does not expose working-order price levels.
-- The remaining work is polish and deeper overlay fidelity rather than first delivery.
+- Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
+- Phase 3 is now substantially in place: active-position context, exact working-order price overlays, and recent fill markers render on the chart from the shared runtime-host projection.
+  - The remaining work is polish and higher-signal chart-state treatment rather than first delivery.
 
 ## Scope Guardrails
 
@@ -47,11 +47,9 @@ The repository already has several important building blocks:
 
 What is still missing:
 
-- a chart-specific control-plane snapshot endpoint
-- a chart-specific history pagination endpoint
-- a chart-specific live stream that does not flood the operator event feed
-- a dashboard contract-chart component and controller hook
-- runtime-backed overlays for active positions, working orders, fills, and chart health state
+- degraded/reconnect-state treatment that is as visually strong as the rest of the operator console
+- final operator polish for toolbar density, chart readouts, and workflow ergonomics
+- any future advanced overlays that depend on richer broker/runtime projection than V1 currently needs
 
 ## Research Snapshot
 
@@ -353,8 +351,8 @@ The live chart work is not done unless all of the following are true:
 1. Define the chart control-plane contract in `crates/control_api`.
 2. Add runtime-host chart routes and chart-stream tests.
 3. Add the dashboard chart hook plus Lightweight Charts shell.
-4. Add overlays for active positions, working orders, and fills.
-5. Add load-more history, responsive QA, and final operator polish.
+4. Tighten degraded/reconnect chart states and final operator readouts.
+5. Keep responsive QA and final production sign-off aligned with the operator-console checklist.
 
 ## Documentation Follow-Up
 

@@ -520,6 +520,12 @@ select {
   box-shadow: 0 10px 24px rgba(1, 10, 18, 0.22);
 }
 
+.command-button--active {
+  border-color: rgba(126, 225, 163, 0.28);
+  background: rgba(126, 225, 163, 0.12);
+  color: #effcf4;
+}
+
 .command-button:disabled {
   cursor: not-allowed;
   opacity: 0.56;

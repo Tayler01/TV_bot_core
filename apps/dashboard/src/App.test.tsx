@@ -15,6 +15,9 @@ vi.mock("lightweight-charts", () => {
   };
   const histogramSeries = {
     setData: vi.fn(),
+    priceScale: vi.fn(() => ({
+      applyOptions: vi.fn(),
+    })),
   };
 
   return {
@@ -31,6 +34,7 @@ vi.mock("lightweight-charts", () => {
       remove: vi.fn(),
       timeScale: vi.fn(() => ({
         fitContent: vi.fn(),
+        scrollToRealTime: vi.fn(),
       })),
     })),
     createSeriesMarkers: vi.fn(() => ({
@@ -826,20 +830,22 @@ function installFetchMock(snapshotOverrides?: {
           protective_orders_present: true,
           captured_at: "2026-04-12T20:11:03Z",
         },
-        working_orders: [
-          {
-            broker_order_id: "8102",
-            account_id: "paper-primary-id",
-            symbol: "GCM2026",
-            side: "buy",
-            quantity: 1,
-            order_type: "limit",
-            status: "working",
-            filled_quantity: 0,
-            average_fill_price: null,
-            updated_at: "2026-04-12T20:11:03Z",
-          },
-        ],
+          working_orders: [
+            {
+              broker_order_id: "8102",
+              account_id: "paper-primary-id",
+              symbol: "GCM2026",
+              side: "buy",
+              quantity: 1,
+              order_type: "limit",
+              status: "working",
+              filled_quantity: 0,
+              limit_price: "2412.25",
+              stop_price: "2408.75",
+              average_fill_price: null,
+              updated_at: "2026-04-12T20:11:03Z",
+            },
+          ],
         recent_fills: [
           {
             fill_id: "fill-1",
@@ -1290,7 +1296,10 @@ describe("App", () => {
     expect(await screen.findByText("Gold Breakout live contract chart")).toBeInTheDocument();
     expect(await screen.findByText("Contract context")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Live follow on" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Fit chart" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Load older bars" })).toBeInTheDocument();
+    expect(await screen.findByText(/limit 2,412\.25 \| stop 2,408\.75/)).toBeInTheDocument();
     expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
     expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
@@ -1375,6 +1384,17 @@ describe("App", () => {
 
       expect(historyCalls.length).toBeGreaterThan(0);
     });
+  });
+
+  it("toggles live follow in the contract chart toolbar", async () => {
+    installWebSocketMock();
+    installFetchMock();
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Live follow on" }));
+
+    expect(await screen.findByRole("button", { name: "Live follow off" })).toBeInTheDocument();
   });
 
   it("updates the contract chart summary when the dedicated chart stream publishes a new snapshot", async () => {
@@ -1624,8 +1644,12 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.change(await screen.findByLabelText("Runtime startup mode"), {
-      target: { value: "paper" },
+    const startupModeField = await screen.findByLabelText("Runtime startup mode");
+
+    (startupModeField as HTMLSelectElement).value = "paper";
+    fireEvent.change(startupModeField);
+    await waitFor(() => {
+      expect(startupModeField).toHaveValue("paper");
     });
     fireEvent.change(await screen.findByLabelText("Default strategy path"), {
       target: { value: "strategies/uploads/next-run.md" },

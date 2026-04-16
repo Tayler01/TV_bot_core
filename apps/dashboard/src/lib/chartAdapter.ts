@@ -1,12 +1,8 @@
-import type {
-  CandlestickData,
-  HistogramData,
-  SeriesMarker,
-  UTCTimestamp,
-} from "lightweight-charts";
+import { LineStyle, type CandlestickData, type HistogramData, type SeriesMarker, type UTCTimestamp } from "lightweight-charts";
 
 import type {
   BrokerFillUpdate,
+  BrokerOrderUpdate,
   RuntimeChartBar,
   RuntimeChartSnapshot,
   Timeframe,
@@ -155,29 +151,69 @@ function fillMarkerForSnapshotFill(
 export function chartPriceLines(
   snapshot: RuntimeChartSnapshot | null,
 ): ChartPriceLineDescriptor[] {
-  if (!snapshot?.active_position) {
+  if (!snapshot) {
     return [];
   }
 
-  const averagePrice = decimalToNumber(snapshot.active_position.average_price);
+  const lines: ChartPriceLineDescriptor[] = [];
+  const activePosition = snapshot.active_position;
+  const averagePrice = decimalToNumber(activePosition?.average_price);
 
-  if (averagePrice === null) {
-    return [];
-  }
-
-  return [
-    {
+  if (activePosition && averagePrice !== null) {
+    lines.push({
       key: "active-position",
       price: averagePrice,
       color: "#58c0ff",
       title:
-        snapshot.active_position.quantity > 0
-          ? `Long ${snapshot.active_position.quantity}`
-          : `Short ${Math.abs(snapshot.active_position.quantity)}`,
+        activePosition.quantity > 0
+          ? `Long ${activePosition.quantity}`
+          : `Short ${Math.abs(activePosition.quantity)}`,
       axisLabelColor: "#0f2437",
       axisLabelTextColor: "#edf4ff",
-    },
-  ];
+    });
+  }
+
+  for (const order of snapshot.working_orders) {
+    lines.push(...workingOrderPriceLines(order));
+  }
+
+  return lines;
+}
+
+function workingOrderPriceLines(order: BrokerOrderUpdate): ChartPriceLineDescriptor[] {
+  const lines: ChartPriceLineDescriptor[] = [];
+  const limitPrice = decimalToNumber(order.limit_price);
+  const stopPrice = decimalToNumber(order.stop_price);
+  const sideLabel =
+    order.side === "buy" ? "Buy" : order.side === "sell" ? "Sell" : "Order";
+  const limitColor = order.side === "sell" ? "#ff8f7f" : "#7ee1a3";
+  const stopColor = order.side === "sell" ? "#ffb454" : "#ffc56d";
+
+  if (limitPrice !== null) {
+    lines.push({
+      key: `${order.broker_order_id}:limit`,
+      price: limitPrice,
+      color: limitColor,
+      title: `${sideLabel} LMT`,
+      lineStyle: LineStyle.Solid,
+      axisLabelColor: "rgba(20, 47, 36, 0.96)",
+      axisLabelTextColor: "#effcf4",
+    });
+  }
+
+  if (stopPrice !== null) {
+    lines.push({
+      key: `${order.broker_order_id}:stop`,
+      price: stopPrice,
+      color: stopColor,
+      title: `${sideLabel} STP`,
+      lineStyle: LineStyle.Dotted,
+      axisLabelColor: "rgba(58, 32, 7, 0.96)",
+      axisLabelTextColor: "#fff5de",
+    });
+  }
+
+  return lines;
 }
 
 export function mergeChartBars(

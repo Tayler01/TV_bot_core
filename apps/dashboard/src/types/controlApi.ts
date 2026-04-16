@@ -361,6 +361,8 @@ export interface BrokerOrderUpdate {
   order_type: string | null;
   status: string;
   filled_quantity: number;
+  limit_price: DecimalValue | null;
+  stop_price: DecimalValue | null;
   average_fill_price: DecimalValue | null;
   updated_at: string;
 }
