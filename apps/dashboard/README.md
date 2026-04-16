@@ -7,6 +7,9 @@ The dashboard consumes only the local control plane:
 - `GET /health`
 - `GET /status`
 - `GET /readiness`
+- `GET /chart/config`
+- `GET /chart/snapshot`
+- `GET /chart/history`
 - `GET /history`
 - `GET /journal`
 - `GET /settings`
@@ -16,6 +19,7 @@ The dashboard consumes only the local control plane:
 - `POST /settings`
 - `POST /runtime/commands`
 - `GET /events`
+- `GET /chart/stream` (WebSocket)
 
 ## Current Slice
 
@@ -41,7 +45,7 @@ The current dashboard now covers:
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
 The dashboard does **not** yet include a real live contract-chart surface for the currently loaded strategy contract.
-That work is tracked separately in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+The runtime host now exposes the chart control-plane foundation for that work through `/chart/config`, `/chart/snapshot`, `/chart/history`, and `/chart/stream`, and the dashboard rendering work remains tracked in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
 ## Local Development
 

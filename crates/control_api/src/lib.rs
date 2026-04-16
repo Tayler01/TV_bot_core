@@ -14,13 +14,14 @@ use tv_bot_broker_tradovate::{
     TradovateSessionManager, TradovateSyncApi,
 };
 use tv_bot_core_types::{
-    ActionSource, ArmReadinessReport, ArmState, BrokerStatusSnapshot, EventJournalRecord,
-    InstrumentMapping, RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot,
-    TradePathLatencyRecord, TradeSide, WarmupStatus,
+    ActionSource, ArmReadinessReport, ArmState, BrokerFillUpdate, BrokerOrderUpdate,
+    BrokerPositionSnapshot, BrokerStatusSnapshot, EventJournalRecord, InstrumentMapping,
+    RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot, Timeframe, TradePathLatencyRecord,
+    TradeSide, WarmupStatus,
 };
 use tv_bot_execution_engine::{ExecutionDispatchError, ExecutionEngineError};
 use tv_bot_journal::EventJournal;
-use tv_bot_market_data::MarketDataServiceSnapshot;
+use tv_bot_market_data::{MarketDataConnectionState, MarketDataHealth, MarketDataServiceSnapshot};
 use tv_bot_runtime_kernel::{
     RuntimeCommand, RuntimeCommandError, RuntimeCommandOutcome, RuntimeControlLoop,
     RuntimeExecutionError, RuntimeExecutionRequest,
@@ -179,6 +180,80 @@ pub struct RuntimeHistorySnapshot {
 pub struct RuntimeJournalSnapshot {
     pub total_records: usize,
     pub records: Vec<EventJournalRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeChartInstrumentSummary {
+    pub strategy_id: String,
+    pub strategy_name: String,
+    pub market_family: String,
+    pub market_display_name: Option<String>,
+    pub tradovate_symbol: Option<String>,
+    pub canonical_symbol: Option<String>,
+    pub databento_symbols: Vec<String>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeChartConfigResponse {
+    pub available: bool,
+    pub detail: String,
+    pub instrument: Option<RuntimeChartInstrumentSummary>,
+    pub supported_timeframes: Vec<Timeframe>,
+    pub default_timeframe: Option<Timeframe>,
+    pub market_data_connection_state: Option<MarketDataConnectionState>,
+    pub market_data_health: Option<MarketDataHealth>,
+    pub replay_caught_up: bool,
+    pub trade_ready: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeChartBar {
+    pub timeframe: Timeframe,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: u64,
+    pub closed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeChartSnapshot {
+    pub config: RuntimeChartConfigResponse,
+    pub timeframe: Timeframe,
+    pub requested_limit: usize,
+    pub bars: Vec<RuntimeChartBar>,
+    pub latest_price: Option<Decimal>,
+    pub latest_closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub active_position: Option<BrokerPositionSnapshot>,
+    pub working_orders: Vec<BrokerOrderUpdate>,
+    pub recent_fills: Vec<BrokerFillUpdate>,
+    pub can_load_older_history: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeChartHistoryResponse {
+    pub config: RuntimeChartConfigResponse,
+    pub timeframe: Timeframe,
+    pub requested_limit: usize,
+    pub before: Option<chrono::DateTime<chrono::Utc>>,
+    pub bars: Vec<RuntimeChartBar>,
+    pub can_load_older_history: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeChartStreamEvent {
+    Snapshot {
+        snapshot: RuntimeChartSnapshot,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

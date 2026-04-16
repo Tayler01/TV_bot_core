@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -40,22 +40,23 @@ use tv_bot_config::{
 use tv_bot_control_api::ControlApiCommand;
 use tv_bot_control_api::{
     ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest, HttpCommandResponse,
-    HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi,
-    RuntimeCommandDispatcher, RuntimeEditableSettings, RuntimeHistorySnapshot,
-    RuntimeJournalSnapshot, RuntimeJournalStatus, RuntimeKernelCommandDispatcher,
-    RuntimeLifecycleCommand, RuntimeLifecycleRequest, RuntimeLifecycleResponse,
-    RuntimeReadinessSnapshot, RuntimeReconnectDecision, RuntimeReconnectReviewStatus,
-    RuntimeSettingsPersistenceMode, RuntimeSettingsSnapshot, RuntimeSettingsUpdateRequest,
-    RuntimeSettingsUpdateResponse, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
-    RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, RuntimeStrategyCatalogEntry,
-    RuntimeStrategyIssue, RuntimeStrategyIssueSeverity, RuntimeStrategyLibraryResponse,
-    RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
+    HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi, RuntimeChartBar,
+    RuntimeChartConfigResponse, RuntimeChartHistoryResponse, RuntimeChartInstrumentSummary,
+    RuntimeChartSnapshot, RuntimeChartStreamEvent, RuntimeCommandDispatcher,
+    RuntimeEditableSettings, RuntimeHistorySnapshot, RuntimeJournalSnapshot, RuntimeJournalStatus,
+    RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
+    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
+    RuntimeReconnectReviewStatus, RuntimeSettingsPersistenceMode, RuntimeSettingsSnapshot,
+    RuntimeSettingsUpdateRequest, RuntimeSettingsUpdateResponse, RuntimeShutdownDecision,
+    RuntimeShutdownReviewStatus, RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus,
+    RuntimeStrategyCatalogEntry, RuntimeStrategyIssue, RuntimeStrategyIssueSeverity,
+    RuntimeStrategyLibraryResponse, RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
     RuntimeStrategyValidationResponse, WebSocketEventHub, WebSocketEventHubError,
     WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
-    ActionSource, EventJournalRecord, EventSeverity, SystemHealthSnapshot, TradePathLatencyRecord,
-    TradePathTimestamps,
+    ActionSource, EventJournalRecord, EventSeverity, MarketEvent, SystemHealthSnapshot, Timeframe,
+    TradePathLatencyRecord, TradePathTimestamps,
 };
 #[cfg(test)]
 use tv_bot_core_types::{BrokerStatusSnapshot, RuntimeMode};
@@ -91,6 +92,10 @@ const HISTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_REVIEW_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const JOURNAL_ROUTE_LIMIT: usize = 50;
+const CHART_DEFAULT_LIMIT: usize = 300;
+const CHART_MAX_LIMIT: usize = 1_000;
+const CHART_RECENT_FILL_LIMIT: usize = 20;
+const CHART_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -131,6 +136,7 @@ enum RuntimeMarketDataState {
     SnapshotOverride {
         snapshot: MarketDataServiceSnapshot,
         detail: Option<String>,
+        chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
     },
 }
 
@@ -567,6 +573,58 @@ impl RuntimeMarketDataManager {
         }
     }
 
+    fn current_view(&self) -> RuntimeMarketDataView {
+        match &self.state {
+            RuntimeMarketDataState::Active { last_snapshot, .. } => RuntimeMarketDataView {
+                snapshot: last_snapshot.clone(),
+                detail: None,
+            },
+            RuntimeMarketDataState::Unconfigured { detail }
+            | RuntimeMarketDataState::PendingStrategy { detail }
+            | RuntimeMarketDataState::StrategyBlocked { detail } => RuntimeMarketDataView {
+                snapshot: None,
+                detail: Some(detail.clone()),
+            },
+            #[cfg(test)]
+            RuntimeMarketDataState::SnapshotOverride {
+                snapshot, detail, ..
+            } => RuntimeMarketDataView {
+                snapshot: Some(snapshot.clone()),
+                detail: detail.clone(),
+            },
+        }
+    }
+
+    fn chart_bars(
+        &self,
+        timeframe: Timeframe,
+        before: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> (Vec<RuntimeChartBar>, bool) {
+        let bars = match &self.state {
+            RuntimeMarketDataState::Active { service, .. } => service
+                .session()
+                .coordinator()
+                .buffer(timeframe)
+                .map(|buffer| {
+                    buffer
+                        .iter()
+                        .filter_map(runtime_chart_bar_from_market_event)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            RuntimeMarketDataState::Unconfigured { .. }
+            | RuntimeMarketDataState::PendingStrategy { .. }
+            | RuntimeMarketDataState::StrategyBlocked { .. } => Vec::new(),
+            #[cfg(test)]
+            RuntimeMarketDataState::SnapshotOverride { chart_bars, .. } => {
+                chart_bars.get(&timeframe).cloned().unwrap_or_default()
+            }
+        };
+
+        paginate_chart_bars(bars, before, limit)
+    }
+
     async fn refresh(&mut self, now: chrono::DateTime<Utc>) -> RuntimeMarketDataView {
         match &mut self.state {
             RuntimeMarketDataState::Active {
@@ -639,12 +697,12 @@ impl RuntimeMarketDataManager {
                 detail: Some(detail.clone()),
             },
             #[cfg(test)]
-            RuntimeMarketDataState::SnapshotOverride { snapshot, detail } => {
-                RuntimeMarketDataView {
-                    snapshot: Some(snapshot.clone()),
-                    detail: detail.clone(),
-                }
-            }
+            RuntimeMarketDataState::SnapshotOverride {
+                snapshot, detail, ..
+            } => RuntimeMarketDataView {
+                snapshot: Some(snapshot.clone()),
+                detail: detail.clone(),
+            },
         }
     }
 }
@@ -730,6 +788,13 @@ pub struct RuntimeHostHealthResponse {
     pub status: String,
     pub system_health: Option<SystemHealthSnapshot>,
     pub latest_trade_latency: Option<TradePathLatencyRecord>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RuntimeChartQuery {
+    timeframe: Option<Timeframe>,
+    limit: Option<usize>,
+    before: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error)]
@@ -940,6 +1005,9 @@ pub fn build_http_router(state: RuntimeHostState) -> Router {
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/readiness", get(readiness_handler))
+        .route("/chart/config", get(chart_config_handler))
+        .route("/chart/snapshot", get(chart_snapshot_handler))
+        .route("/chart/history", get(chart_history_handler))
         .route("/history", get(history_handler))
         .route("/journal", get(journal_handler))
         .route(
@@ -958,6 +1026,7 @@ pub fn build_websocket_router(state: RuntimeHostState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .route("/events", get(websocket_handler))
+        .route("/chart/stream", get(chart_websocket_handler))
         .with_state(state)
 }
 
@@ -1062,6 +1131,129 @@ fn build_runtime_host_state_with_config_path(
         shutdown_signal,
         shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
     })
+}
+
+fn normalize_chart_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(CHART_DEFAULT_LIMIT)
+        .clamp(1, CHART_MAX_LIMIT)
+}
+
+fn runtime_chart_bar_from_market_event(event: &MarketEvent) -> Option<RuntimeChartBar> {
+    match event {
+        MarketEvent::Bar {
+            timeframe,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            closed_at,
+            ..
+        } => Some(RuntimeChartBar {
+            timeframe: *timeframe,
+            open: *open,
+            high: *high,
+            low: *low,
+            close: *close,
+            volume: *volume,
+            closed_at: *closed_at,
+        }),
+        _ => None,
+    }
+}
+
+fn paginate_chart_bars(
+    bars: Vec<RuntimeChartBar>,
+    before: Option<DateTime<Utc>>,
+    limit: usize,
+) -> (Vec<RuntimeChartBar>, bool) {
+    let filtered = if let Some(before) = before {
+        bars.into_iter()
+            .filter(|bar| bar.closed_at < before)
+            .collect::<Vec<_>>()
+    } else {
+        bars
+    };
+
+    let total_available = filtered.len();
+    if total_available <= limit {
+        return (filtered, false);
+    }
+
+    let start = total_available.saturating_sub(limit);
+    (filtered[start..].to_vec(), true)
+}
+
+fn parse_preferred_chart_timeframe(value: &str) -> Option<Timeframe> {
+    match value.trim() {
+        "1s" => Some(Timeframe::OneSecond),
+        "1m" => Some(Timeframe::OneMinute),
+        "5m" => Some(Timeframe::FiveMinute),
+        _ => None,
+    }
+}
+
+fn supported_chart_timeframes(strategy: &tv_bot_core_types::CompiledStrategy) -> Vec<Timeframe> {
+    let mut supported = strategy
+        .data_requirements
+        .timeframes
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    supported.extend(strategy.warmup.bars_required.keys().copied());
+
+    if supported.is_empty() {
+        supported.insert(Timeframe::OneMinute);
+    }
+
+    supported.into_iter().collect()
+}
+
+fn default_chart_timeframe(
+    strategy: &tv_bot_core_types::CompiledStrategy,
+    supported_timeframes: &[Timeframe],
+) -> Option<Timeframe> {
+    strategy
+        .dashboard_display
+        .preferred_chart_timeframe
+        .as_deref()
+        .and_then(parse_preferred_chart_timeframe)
+        .filter(|timeframe| supported_timeframes.contains(timeframe))
+        .or_else(|| supported_timeframes.first().copied())
+}
+
+fn chart_instrument_summary(
+    seed: &crate::operator::LoadedStrategyMarketDataSeed,
+) -> RuntimeChartInstrumentSummary {
+    let mapping = seed.instrument_mapping.as_ref();
+
+    RuntimeChartInstrumentSummary {
+        strategy_id: seed.strategy.metadata.strategy_id.clone(),
+        strategy_name: seed.strategy.metadata.name.clone(),
+        market_family: seed.strategy.market.market.clone(),
+        market_display_name: mapping.map(|value| value.market_display_name.clone()),
+        tradovate_symbol: mapping.map(|value| value.tradovate_symbol.clone()),
+        canonical_symbol: mapping.map(|value| value.resolved_contract.canonical_symbol.clone()),
+        databento_symbols: mapping
+            .map(|value| {
+                value
+                    .databento_symbols
+                    .iter()
+                    .map(|instrument| instrument.symbol.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        summary: mapping
+            .map(|value| value.summary.clone())
+            .or_else(|| seed.instrument_resolution_error.clone())
+            .unwrap_or_else(|| {
+                format!(
+                    "loaded strategy `{}` for market `{}`",
+                    seed.strategy.metadata.strategy_id, seed.strategy.market.market
+                )
+            }),
+    }
 }
 
 fn discover_strategy_library_roots(config: &AppConfig) -> Vec<PathBuf> {
@@ -1193,6 +1385,9 @@ async fn root_handler() -> Json<serde_json::Value> {
             "/health",
             "/status",
             "/readiness",
+            "/chart/config",
+            "/chart/snapshot",
+            "/chart/history",
             "/history",
             "/journal",
             "/settings",
@@ -1201,7 +1396,8 @@ async fn root_handler() -> Json<serde_json::Value> {
             "/strategies/validate",
             "/runtime/commands",
             "/commands",
-            "/events"
+            "/events",
+            "/chart/stream"
         ]
     }))
 }
@@ -1220,6 +1416,32 @@ async fn readiness_handler(
     let context = status_context(&state, true).await;
     let operator = state.operator_state.lock().await;
     Json(operator.readiness_snapshot(&context))
+}
+
+async fn chart_config_handler(
+    State(state): State<RuntimeHostState>,
+) -> Json<RuntimeChartConfigResponse> {
+    Json(build_chart_config(&state).await)
+}
+
+async fn chart_snapshot_handler(
+    State(state): State<RuntimeHostState>,
+    Query(query): Query<RuntimeChartQuery>,
+) -> Response {
+    match build_chart_snapshot(&state, query).await {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(message) => json_message_response(StatusCode::BAD_REQUEST, message),
+    }
+}
+
+async fn chart_history_handler(
+    State(state): State<RuntimeHostState>,
+    Query(query): Query<RuntimeChartQuery>,
+) -> Response {
+    match build_chart_history_response(&state, query).await {
+        Ok(history) => Json(history).into_response(),
+        Err(message) => json_message_response(StatusCode::BAD_REQUEST, message),
+    }
 }
 
 async fn history_handler(State(state): State<RuntimeHostState>) -> Response {
@@ -2170,6 +2392,14 @@ async fn websocket_handler(
     upgrade.on_upgrade(move |socket| websocket_event_loop(socket, stream))
 }
 
+async fn chart_websocket_handler(
+    State(state): State<RuntimeHostState>,
+    Query(query): Query<RuntimeChartQuery>,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    upgrade.on_upgrade(move |socket| chart_websocket_loop(socket, state, query))
+}
+
 async fn websocket_event_loop(
     mut socket: WebSocket,
     mut stream: tv_bot_control_api::WebSocketEventStream,
@@ -2194,6 +2424,46 @@ async fn websocket_event_loop(
             }
             Err(WebSocketEventStreamError::Closed) => break,
         }
+    }
+}
+
+async fn chart_websocket_loop(
+    mut socket: WebSocket,
+    state: RuntimeHostState,
+    query: RuntimeChartQuery,
+) {
+    let mut interval = tokio::time::interval(CHART_STREAM_INTERVAL);
+    let mut last_snapshot: Option<RuntimeChartSnapshot> = None;
+
+    loop {
+        let snapshot = match build_chart_snapshot(&state, query.clone()).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                error!(?error, "failed to build chart websocket snapshot");
+                break;
+            }
+        };
+
+        if last_snapshot.as_ref() != Some(&snapshot) {
+            let payload = match serde_json::to_string(&RuntimeChartStreamEvent::Snapshot {
+                snapshot: snapshot.clone(),
+                occurred_at: Utc::now(),
+            }) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    error!(?error, "failed to serialize chart websocket snapshot");
+                    break;
+                }
+            };
+
+            if socket.send(Message::Text(payload.into())).await.is_err() {
+                break;
+            }
+
+            last_snapshot = Some(snapshot);
+        }
+
+        interval.tick().await;
     }
 }
 
@@ -2455,6 +2725,190 @@ async fn status_context(
         reconnect_review,
         shutdown_review,
     }
+}
+
+async fn build_chart_config(state: &RuntimeHostState) -> RuntimeChartConfigResponse {
+    let seed = {
+        let operator = state.operator_state.lock().await;
+        operator.market_data_seed().ok()
+    };
+    let market_data_view = {
+        let market_data = state.market_data.lock().await;
+        market_data.current_view()
+    };
+
+    let market_data_connection_state = market_data_view
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.session.market_data.connection_state);
+    let market_data_health = market_data_view
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.session.market_data.health);
+    let replay_caught_up = market_data_view
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.replay_caught_up)
+        .unwrap_or(false);
+    let trade_ready = market_data_view
+        .snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.trade_ready)
+        .unwrap_or(false);
+
+    match seed {
+        None => RuntimeChartConfigResponse {
+            available: false,
+            detail: "load a strategy to chart the resolved contract".to_owned(),
+            instrument: None,
+            supported_timeframes: Vec::new(),
+            default_timeframe: None,
+            market_data_connection_state,
+            market_data_health,
+            replay_caught_up,
+            trade_ready,
+        },
+        Some(seed) => {
+            let supported_timeframes = supported_chart_timeframes(&seed.strategy);
+            let default_timeframe = default_chart_timeframe(&seed.strategy, &supported_timeframes);
+            let instrument = chart_instrument_summary(&seed);
+            let available = seed.instrument_mapping.is_some();
+            let detail = if available {
+                format!(
+                    "charting the loaded strategy contract `{}`",
+                    instrument
+                        .tradovate_symbol
+                        .as_deref()
+                        .unwrap_or("unresolved symbol")
+                )
+            } else {
+                seed.instrument_resolution_error.unwrap_or_else(|| {
+                    "instrument resolution must succeed before the live contract chart is available"
+                        .to_owned()
+                })
+            };
+
+            RuntimeChartConfigResponse {
+                available,
+                detail,
+                instrument: Some(instrument),
+                supported_timeframes,
+                default_timeframe,
+                market_data_connection_state,
+                market_data_health,
+                replay_caught_up,
+                trade_ready,
+            }
+        }
+    }
+}
+
+fn resolved_chart_timeframe(
+    config: &RuntimeChartConfigResponse,
+    requested: Option<Timeframe>,
+) -> Result<Timeframe, String> {
+    if !config.available {
+        return Ok(requested
+            .or(config.default_timeframe)
+            .unwrap_or(Timeframe::OneMinute));
+    }
+
+    let timeframe = requested
+        .or(config.default_timeframe)
+        .ok_or_else(|| "chart timeframe is unavailable until the strategy exposes at least one supported timeframe".to_owned())?;
+
+    if !config.supported_timeframes.contains(&timeframe) {
+        return Err(format!(
+            "timeframe `{}` is not supported for the loaded strategy contract",
+            serde_json::to_string(&timeframe)
+                .unwrap_or_else(|_| "\"unknown\"".to_owned())
+                .trim_matches('"')
+        ));
+    }
+
+    Ok(timeframe)
+}
+
+async fn build_chart_snapshot(
+    state: &RuntimeHostState,
+    query: RuntimeChartQuery,
+) -> Result<RuntimeChartSnapshot, String> {
+    let config = build_chart_config(state).await;
+    let timeframe = resolved_chart_timeframe(&config, query.timeframe)?;
+    let requested_limit = normalize_chart_limit(query.limit);
+    let dispatch_snapshot = current_dispatch_snapshot(state).await;
+    let (bars, can_load_older_history) = {
+        let market_data = state.market_data.lock().await;
+        market_data.chart_bars(timeframe, query.before, requested_limit)
+    };
+    let symbol = config
+        .instrument
+        .as_ref()
+        .and_then(|instrument| instrument.tradovate_symbol.as_deref());
+    let active_position = symbol.and_then(|symbol| {
+        dispatch_snapshot
+            .open_positions
+            .iter()
+            .find(|position| position.symbol == symbol && position.quantity != 0)
+            .cloned()
+    });
+    let working_orders = match symbol {
+        Some(symbol) => dispatch_snapshot
+            .working_orders
+            .iter()
+            .filter(|order| order.symbol == symbol)
+            .cloned()
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    let mut recent_fills = match symbol {
+        Some(symbol) => dispatch_snapshot
+            .fills
+            .iter()
+            .filter(|fill| fill.symbol == symbol)
+            .cloned()
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    recent_fills.sort_by_key(|fill| fill.occurred_at);
+    if recent_fills.len() > CHART_RECENT_FILL_LIMIT {
+        recent_fills = recent_fills[recent_fills.len() - CHART_RECENT_FILL_LIMIT..].to_vec();
+    }
+
+    Ok(RuntimeChartSnapshot {
+        config,
+        timeframe,
+        requested_limit,
+        latest_price: bars.last().map(|bar| bar.close),
+        latest_closed_at: bars.last().map(|bar| bar.closed_at),
+        bars,
+        active_position,
+        working_orders,
+        recent_fills,
+        can_load_older_history,
+    })
+}
+
+async fn build_chart_history_response(
+    state: &RuntimeHostState,
+    query: RuntimeChartQuery,
+) -> Result<RuntimeChartHistoryResponse, String> {
+    let config = build_chart_config(state).await;
+    let timeframe = resolved_chart_timeframe(&config, query.timeframe)?;
+    let requested_limit = normalize_chart_limit(query.limit);
+    let (bars, can_load_older_history) = {
+        let market_data = state.market_data.lock().await;
+        market_data.chart_bars(timeframe, query.before, requested_limit)
+    };
+
+    Ok(RuntimeChartHistoryResponse {
+        config,
+        timeframe,
+        requested_limit,
+        before: query.before,
+        bars,
+        can_load_older_history,
+    })
 }
 
 fn reconnect_review_status(
@@ -4740,13 +5194,51 @@ mod tests {
         }
     }
 
+    fn sample_chart_bar(
+        timeframe: Timeframe,
+        closed_at: DateTime<Utc>,
+        open: i64,
+        high: i64,
+        low: i64,
+        close: i64,
+        volume: u64,
+    ) -> RuntimeChartBar {
+        RuntimeChartBar {
+            timeframe,
+            open: Decimal::new(open, 2),
+            high: Decimal::new(high, 2),
+            low: Decimal::new(low, 2),
+            close: Decimal::new(close, 2),
+            volume,
+            closed_at,
+        }
+    }
+
     async fn set_test_market_data_snapshot(
         state: &RuntimeHostState,
         snapshot: MarketDataServiceSnapshot,
         detail: Option<String>,
     ) {
         let mut market_data = state.market_data.lock().await;
-        market_data.state = RuntimeMarketDataState::SnapshotOverride { snapshot, detail };
+        market_data.state = RuntimeMarketDataState::SnapshotOverride {
+            snapshot,
+            detail,
+            chart_bars: BTreeMap::new(),
+        };
+    }
+
+    async fn set_test_market_data_snapshot_with_chart_bars(
+        state: &RuntimeHostState,
+        snapshot: MarketDataServiceSnapshot,
+        detail: Option<String>,
+        chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
+    ) {
+        let mut market_data = state.market_data.lock().await;
+        market_data.state = RuntimeMarketDataState::SnapshotOverride {
+            snapshot,
+            detail,
+            chart_bars,
+        };
     }
 
     fn sample_strategy() -> CompiledStrategy {
@@ -5422,6 +5914,16 @@ selection:
             .expect("routes should be an array")
             .iter()
             .any(|entry| entry == "/events"));
+        assert!(payload["routes"]
+            .as_array()
+            .expect("routes should be an array")
+            .iter()
+            .any(|entry| entry == "/chart/config"));
+        assert!(payload["routes"]
+            .as_array()
+            .expect("routes should be an array")
+            .iter()
+            .any(|entry| entry == "/chart/stream"));
     }
 
     #[tokio::test]
@@ -9326,6 +9828,366 @@ selection:
                 .map(|record| record.symbol.as_str()),
             Some("GCM2026")
         );
+    }
+
+    #[tokio::test]
+    async fn chart_config_route_reports_loaded_contract_and_supported_timeframes() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart config load strategy",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        set_test_market_data_snapshot(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+        )
+        .await;
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/chart/config")
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart config route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let config: RuntimeChartConfigResponse =
+            serde_json::from_slice(&body).expect("chart config json should parse");
+
+        assert!(config.available);
+        assert_eq!(
+            config
+                .instrument
+                .as_ref()
+                .and_then(|instrument| instrument.tradovate_symbol.as_deref()),
+            Some("GCM2026")
+        );
+        assert_eq!(
+            config
+                .instrument
+                .as_ref()
+                .map(|instrument| instrument.databento_symbols.clone()),
+            Some(vec!["GCM6".to_owned()])
+        );
+        assert_eq!(
+            config.supported_timeframes,
+            vec![
+                Timeframe::OneSecond,
+                Timeframe::OneMinute,
+                Timeframe::FiveMinute
+            ]
+        );
+        assert_eq!(config.default_timeframe, Some(Timeframe::OneSecond));
+        assert_eq!(
+            config.market_data_health,
+            Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+    }
+
+    #[tokio::test]
+    async fn chart_snapshot_route_returns_requested_bars_and_active_overlays() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart snapshot load strategy",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let base_time = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        set_test_market_data_snapshot_with_chart_bars(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+            BTreeMap::from([(
+                Timeframe::OneMinute,
+                vec![
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time,
+                        238_400,
+                        238_450,
+                        238_350,
+                        238_425,
+                        12,
+                    ),
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time + ChronoDuration::minutes(1),
+                        238_425,
+                        238_500,
+                        238_400,
+                        238_475,
+                        18,
+                    ),
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time + ChronoDuration::minutes(2),
+                        238_475,
+                        238_550,
+                        238_450,
+                        238_525,
+                        21,
+                    ),
+                ],
+            )]),
+        )
+        .await;
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/chart/snapshot?timeframe=1m&limit=2")
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart snapshot route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let snapshot: RuntimeChartSnapshot =
+            serde_json::from_slice(&body).expect("chart snapshot json should parse");
+
+        assert_eq!(snapshot.timeframe, Timeframe::OneMinute);
+        assert_eq!(snapshot.requested_limit, 2);
+        assert_eq!(snapshot.bars.len(), 2);
+        assert_eq!(
+            snapshot.bars[0].closed_at,
+            base_time + ChronoDuration::minutes(1)
+        );
+        assert_eq!(
+            snapshot.bars[1].closed_at,
+            base_time + ChronoDuration::minutes(2)
+        );
+        assert_eq!(snapshot.latest_price, Some(Decimal::new(238_525, 2)));
+        assert!(snapshot.can_load_older_history);
+        assert_eq!(
+            snapshot
+                .active_position
+                .as_ref()
+                .map(|position| position.symbol.as_str()),
+            Some("GCM2026")
+        );
+        assert_eq!(snapshot.working_orders.len(), 1);
+        assert_eq!(snapshot.recent_fills.len(), 1);
+        assert!(snapshot.config.available);
+    }
+
+    #[tokio::test]
+    async fn chart_history_route_pages_older_buffered_bars() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart history load strategy",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let base_time = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        set_test_market_data_snapshot_with_chart_bars(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+            BTreeMap::from([(
+                Timeframe::OneMinute,
+                vec![
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time,
+                        238_400,
+                        238_450,
+                        238_350,
+                        238_425,
+                        12,
+                    ),
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time + ChronoDuration::minutes(1),
+                        238_425,
+                        238_500,
+                        238_400,
+                        238_475,
+                        18,
+                    ),
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time + ChronoDuration::minutes(2),
+                        238_475,
+                        238_550,
+                        238_450,
+                        238_525,
+                        21,
+                    ),
+                ],
+            )]),
+        )
+        .await;
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri(&format!(
+                    "/chart/history?timeframe=1m&before={}&limit=1",
+                    (base_time + ChronoDuration::minutes(2))
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                ))
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart history route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let history_response: RuntimeChartHistoryResponse =
+            serde_json::from_slice(&body).expect("chart history json should parse");
+
+        assert_eq!(history_response.timeframe, Timeframe::OneMinute);
+        assert_eq!(history_response.requested_limit, 1);
+        assert_eq!(history_response.bars.len(), 1);
+        assert_eq!(
+            history_response.bars[0].closed_at,
+            base_time + ChronoDuration::minutes(1)
+        );
+        assert!(history_response.can_load_older_history);
     }
 
     #[tokio::test]

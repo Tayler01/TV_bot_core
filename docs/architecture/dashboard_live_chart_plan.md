@@ -13,6 +13,15 @@ The chart must:
 
 This plan covers both the frontend charting surface and the backend chart-data/control-plane work required to support it cleanly.
 
+## Progress Snapshot
+
+Current state as of 2026-04-15:
+
+- The planning and architectural recommendation in this document are complete.
+- Phase 1 `chart control-plane foundation` is now materially in place in [apps/runtime/src/host.rs](</C:/repos/TV_bot_core/apps/runtime/src/host.rs>) and [crates/control_api/src/lib.rs](</C:/repos/TV_bot_core/crates/control_api/src/lib.rs>) through `GET /chart/config`, `GET /chart/snapshot`, `GET /chart/history`, and `GET /chart/stream`.
+- The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
+- The actual dashboard chart renderer and chart-specific frontend hook or adapter work have not started yet.
+
 ## Scope Guardrails
 
 These rules are fixed for V1:
