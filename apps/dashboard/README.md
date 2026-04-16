@@ -40,6 +40,9 @@ The current dashboard now covers:
 - latency detail views including per-stage trade-path timing and host-correlation context
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
+The dashboard does **not** yet include a real live contract-chart surface for the currently loaded strategy contract.
+That work is tracked separately in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+
 ## Local Development
 
 From [apps/dashboard](</C:/repos/TV_bot_core/apps/dashboard>):
@@ -67,7 +70,7 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 ## Follow-up Note
 
 Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.
-The remaining dashboard work is now mostly production UI polish plus the final hands-on paper/demo release verification pass.
+The remaining dashboard work is now centered on the live contract-chart feature in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>), the last production UI sign-off items, and the final hands-on paper/demo release verification pass.
 
 ## Production UI Follow-Up
 
@@ -80,5 +83,7 @@ That plan is the current source of truth for:
 - layout hierarchy and control-center restructuring
 - overflow and responsive hardening
 - component decomposition and frontend QA gates
+
+The tracked plan for the live contract-chart surface itself lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
 The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the latest browser QA pass cleared page-level overflow at `390px`, `768px`, `1024px`, and `1440px` while the broader component/layout cleanup remains ongoing.

@@ -5,6 +5,8 @@
 The dashboard is now functionally broad, but it is not yet visually production-ready.
 This plan defines the work needed to turn the current local operator interface into a polished, dark-first, responsive control surface without violating the control-plane and safety boundaries in `AGENTS.md`.
 
+The separate functional plan for adding a real live contract-chart surface lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+
 ## Audit Snapshot
 
 Audit date: 2026-04-15
@@ -183,3 +185,4 @@ Keep these docs aligned while the redesign lands:
 - [README.md](</C:/repos/TV_bot_core/README.md>)
 - [apps/dashboard/README.md](</C:/repos/TV_bot_core/apps/dashboard/README.md>)
 - [docs/architecture/current_status.md](</C:/repos/TV_bot_core/docs/architecture/current_status.md>)
+- [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>)

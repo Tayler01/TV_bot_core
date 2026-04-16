@@ -5,7 +5,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, while final release acceptance is still incomplete.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, while a real live contract-chart surface is still planned in `docs/architecture/dashboard_live_chart_plan.md` and final release acceptance is still incomplete.
 - Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
 - Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
 
@@ -83,13 +83,13 @@ tests/
 - Runtime-host `/history` projection and background broker-history sync in `apps/runtime`
 - Runtime-host system-health and latency projection through `/health`, `/status`, and WebSocket events in `apps/runtime`
 - Runtime-host `/readiness` release-gate coverage for broker/account/data/storage surfacing and fallback override warnings in `apps/runtime`
-- Dashboard operator surfaces for lifecycle control, strategy upload/validation, settings, manual entry, close/cancel, explicit real-time PnL and per-trade drill-downs, journal/history, event streaming, and health in `apps/dashboard`
+- Dashboard operator surfaces for lifecycle control, strategy upload/validation, settings, manual entry, close/cancel, explicit real-time PnL and per-trade drill-downs, journal/history, event streaming, and health in `apps/dashboard`, with the live contract-chart feature tracked separately in `docs/architecture/dashboard_live_chart_plan.md`
 - Host-level paper acceptance coverage for explicit arm enforcement, repeated manual entries, operator/degraded no-new-entry safety gates, scale-in, flatten, startup/reconnect review decisions, and a broader paper release-sweep regression in `apps/runtime`
 - CLI launch, lifecycle, reconnect-review, shutdown-review, and history commands in `apps/cli`
 
 ## Still Required For V1
 
-- Final dashboard production sign-off, remaining component/layout cleanup, and operator ergonomics
+- Final dashboard live contract-chart implementation, dashboard production sign-off, remaining component/layout cleanup, and operator ergonomics
 - Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
 - Cross-platform packaging and final release hardening
 
@@ -138,5 +138,6 @@ For the release-hardening path, the repository now includes:
 - `docs/architecture/phase_0_phase_1_foundations.md`
 - `docs/architecture/current_status.md`
 - `docs/architecture/dashboard_production_ui_plan.md`
+- `docs/architecture/dashboard_live_chart_plan.md`
 - `docs/ops/README.md`
 - `docs/ops/release_readiness_review.md`
