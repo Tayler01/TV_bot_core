@@ -4,10 +4,11 @@ Review date: 2026-04-15
 
 ## Candidate
 
-- Candidate branch: `main`
-- Candidate commit: `19d39bf`
+- Reviewed runtime/dashboard candidate branch: `main`
+- Reviewed runtime/dashboard candidate commit: `19d39bf`
+- Follow-up release-readiness/docs commit: `62a6047`
 - Latest CI run: [GitHub Actions run 24484408061](https://github.com/Tayler01/TV_bot_core/actions/runs/24484408061)
-- CI result: success on the candidate commit
+- CI result: success on the reviewed runtime/dashboard candidate commit
 
 ## Current Verdict
 
@@ -16,8 +17,8 @@ The repository is now close to V1 release-ready from a code, dashboard, CI, and 
 Current state:
 
 - code and host/dashboard acceptance coverage are broadly in place
-- cross-platform CI is green on the candidate commit
-- local Windows packaging can be produced for the candidate commit
+- cross-platform CI is green on the reviewed runtime/dashboard candidate commit
+- local Windows packaging can be produced for the reviewed runtime/dashboard candidate commit
 - final hands-on paper/demo verification is still blocked in this workspace by missing Tradovate demo credentials and paper account selection
 - final release sign-off is still waiting on that external verification pass
 
