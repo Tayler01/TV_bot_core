@@ -1442,6 +1442,9 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("Latest price");
+    await waitFor(() => {
+      expect(websocket.latest("/chart/stream")).not.toBeNull();
+    });
 
     websocket.latest("/chart/stream")?.emitJson({
       kind: "snapshot",

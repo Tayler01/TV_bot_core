@@ -212,29 +212,31 @@ function LiveChartCanvas({
     volumeSeriesRef.current = volumeSeries;
     fillMarkersRef.current = markers;
 
+    let resizeFrame = 0;
     const resizeChart = () => {
       const nextWidth = Math.max(container.clientWidth, 320);
       chart.resize(nextWidth, CHART_HEIGHT);
     };
+    const scheduleResize = () => {
+      if (resizeFrame !== 0) {
+        return;
+      }
 
-    resizeChart();
-
-    let resizeObserver: ResizeObserver | null = null;
-
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(() => {
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = 0;
         resizeChart();
       });
-      resizeObserver.observe(container);
-    } else {
-      window.addEventListener("resize", resizeChart);
-    }
+    };
+
+    resizeChart();
+    window.addEventListener("resize", scheduleResize);
 
     return () => {
-      resizeObserver?.disconnect();
-      if (resizeObserver === null) {
-        window.removeEventListener("resize", resizeChart);
+      if (resizeFrame !== 0) {
+        window.cancelAnimationFrame(resizeFrame);
+        resizeFrame = 0;
       }
+      window.removeEventListener("resize", scheduleResize);
 
       chart.remove();
       chartRef.current = null;

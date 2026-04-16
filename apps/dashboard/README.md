@@ -46,7 +46,7 @@ The current dashboard now covers:
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
 The chart now renders the currently loaded strategy contract through the local control plane and does not call Databento or Tradovate directly.
-The chart module now also surfaces reconnect, shutdown, degraded-feed, chart-stream, and dispatch posture directly inside the chart itself, so the remaining chart work is final production sign-off and any last operator-copy or ergonomics polish tracked in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+The chart module now also surfaces reconnect, shutdown, degraded-feed, chart-stream, and dispatch posture directly inside the chart itself, and the latest browser sign-off sweep cleared the fresh-open local console path plus responsive width sweeps without page-level overflow. The remaining dashboard work is broader production sign-off rather than chart-first delivery, with status tracked in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
 ## Local Development
 
@@ -75,7 +75,7 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 ## Follow-up Note
 
 Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.
-The remaining dashboard work is now centered on final chart/operator production sign-off in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>), the last production UI sign-off items, and the final hands-on paper/demo release verification pass.
+The remaining dashboard work is now centered on the last production UI sign-off items outside the now-signed-off live chart module, plus the final hands-on paper/demo release verification pass.
 
 ## Production UI Follow-Up
 
@@ -91,4 +91,4 @@ That plan is the current source of truth for:
 
 The tracked plan for the live contract-chart surface itself lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
-The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the live contract-chart renderer now mounts below the control center with runtime-host-backed timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, active-position context, exact working-order price overlays, recent fill overlays, chart-side runtime alert banners, and operator readout strips, while the remaining work is final operator sign-off rather than first delivery.
+The first implementation slices of that plan are now in place: the dashboard shell is dark-first, the operator rail is more compact and scan-friendly, the control center is grouped into clearer operator modules with a denser summary strip, safer form-grid behavior, and tighter action groupings, the monitoring/audit deck has stronger hierarchy, the monitoring, control-center, and safety-review flows now live in dedicated component files, the dashboard polling/event/command orchestration is split across dedicated runtime-host, strategy-workflow, and settings-workflow hooks, the runtime-to-view-model shaping logic now lives in a dedicated projection module, and the live contract-chart renderer now mounts below the control center with runtime-host-backed timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, active-position context, exact working-order price overlays, recent fill overlays, chart-side runtime alert banners, operator readout strips, and a clean fresh-open browser sign-off pass, while the remaining work is broader dashboard production sign-off rather than first delivery.

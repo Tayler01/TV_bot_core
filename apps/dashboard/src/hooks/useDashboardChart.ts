@@ -314,6 +314,10 @@ export function useDashboardChart(
     let active = true;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let initialConnectTimer: number | null = window.setTimeout(() => {
+      initialConnectTimer = null;
+      connect();
+    }, 0);
 
     const connect = () => {
       if (!active || !chartViewModel.selectedTimeframe) {
@@ -400,10 +404,11 @@ export function useDashboardChart(
       };
     };
 
-    connect();
-
     return () => {
       active = false;
+      if (initialConnectTimer !== null) {
+        window.clearTimeout(initialConnectTimer);
+      }
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
       }

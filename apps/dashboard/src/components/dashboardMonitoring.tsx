@@ -971,8 +971,8 @@ export function EventsPanel({
         >
           {eventFeed.recentEvents.length ? (
             <ul className="event-list">
-              {eventFeed.recentEvents.map((event) => (
-                <li key={event.id} className="event-list__item">
+              {eventFeed.recentEvents.map((event, index) => (
+                <li key={`${event.id}-${event.occurredAt}-${index}`} className="event-list__item">
                   <div className="event-list__header">
                     <strong>{event.headline}</strong>
                     <Pill label={formatDateTime(event.occurredAt)} tone={event.tone} />

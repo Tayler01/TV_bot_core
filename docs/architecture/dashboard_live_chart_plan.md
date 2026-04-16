@@ -22,7 +22,8 @@ Current state as of 2026-04-16:
 - The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
 - Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
 - Phase 3 is now substantially in place: active-position context, exact working-order price overlays, recent fill markers, chart-side runtime alert banners, and operator readout strips render on the chart from the shared runtime-host projection.
-- The remaining work is final production sign-off, browser QA, and any last operator-copy or ergonomics polish rather than first delivery.
+- Phase 5 `operator polish and acceptance` is now materially in place too: the live chart has cleared fresh-open browser QA plus responsive overflow sweeps at `390px`, `768px`, `1024px`, and `1440px`, the dev stack no longer depends on stale release binaries to expose current chart routes, and the chart module comes up without the earlier startup WebSocket noise in the local sign-off path.
+- No V1-critical chart work remains beyond broader dashboard release sign-off and any future overlay expansion outside the current acceptance scope.
 
 ## Scope Guardrails
 
@@ -47,7 +48,6 @@ The repository already has several important building blocks:
 
 What is still missing:
 
-- final production sign-off for chart ergonomics, copy, and browser QA
 - any future advanced overlays that depend on richer broker/runtime projection than V1 currently needs
 
 ## Research Snapshot
@@ -350,8 +350,8 @@ The live chart work is not done unless all of the following are true:
 1. Define the chart control-plane contract in `crates/control_api`.
 2. Add runtime-host chart routes and chart-stream tests.
 3. Add the dashboard chart hook plus Lightweight Charts shell.
-4. Run final responsive/browser QA and operator sign-off on the live chart module.
-5. Keep remaining chart polish aligned with the operator-console checklist.
+4. Treat the chart module as signed off for current V1 scope and keep any follow-up changes aligned with the operator-console checklist.
+5. Return to broader dashboard and release verification work outside the chart module.
 
 ## Documentation Follow-Up
 

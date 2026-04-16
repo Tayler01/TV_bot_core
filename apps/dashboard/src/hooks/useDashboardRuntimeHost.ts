@@ -197,6 +197,10 @@ export function useDashboardRuntimeHost(): DashboardRuntimeHostController {
     let active = true;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let initialConnectTimer: number | null = window.setTimeout(() => {
+      initialConnectTimer = null;
+      connect();
+    }, 0);
 
     const connect = () => {
       if (!active) {
@@ -280,10 +284,11 @@ export function useDashboardRuntimeHost(): DashboardRuntimeHostController {
       };
     };
 
-    connect();
-
     return () => {
       active = false;
+      if (initialConnectTimer !== null) {
+        window.clearTimeout(initialConnectTimer);
+      }
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
       }

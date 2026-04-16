@@ -75,17 +75,17 @@ Then rerun:
 
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 
-if (-not (Test-Path $runtimeExe) -or -not (Test-Path $cliExe)) {
-    Push-Location $repoRoot
-    try {
-        cargo build --release -p tv-bot-runtime -p tv-bot-cli
-    } finally {
-        Pop-Location
-    }
-}
-
 Stop-ExistingProcess -ProcessName "tv-bot-runtime.exe" -CommandLineFragment $resolvedConfigPath
 Stop-ExistingProcess -ProcessName "node.exe" -CommandLineFragment "vite"
+
+# Always rebuild before launch so the observation stack cannot accidentally
+# run stale local binaries after dashboard or host control-plane changes.
+Push-Location $repoRoot
+try {
+    cargo build --release -p tv-bot-runtime -p tv-bot-cli
+} finally {
+    Pop-Location
+}
 
 Remove-Item $runtimeOutLog, $runtimeErrLog, $dashboardOutLog, $dashboardErrLog -ErrorAction SilentlyContinue
 
