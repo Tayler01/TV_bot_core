@@ -12,6 +12,8 @@ This directory now holds the operator runbooks and release-check materials for V
   Operator handling for reconnect and shutdown review-required states with active exposure.
 - `release_checklist.md`
   Final release verification checklist covering CI, paper acceptance, dashboard verification, and packaging follow-through.
+- `release_readiness_review.md`
+  Current candidate review showing what is done, what is still pending sign-off, and what is externally blocked in the active workspace.
 
 ## Packaging
 
@@ -19,6 +21,8 @@ Use the checked-in packaging scripts to build a release bundle from the workspac
 
 - Windows: `.\scripts\package_release.ps1`
 - Linux/macOS: `./scripts/package_release.sh`
+
+On Windows, stop any running local runtime or dashboard dev server before packaging so locked binaries or native Node modules do not interfere with the build.
 
 Both scripts produce release artifacts under `dist/releases/` and include:
 

@@ -23,6 +23,18 @@ function Get-WorkspaceVersion {
     return $match.Groups[1].Value
 }
 
+function Invoke-ExternalStep {
+    param(
+        [string]$Description,
+        [scriptblock]$Command
+    )
+
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description failed with exit code $LASTEXITCODE"
+    }
+}
+
 Push-Location $repoRoot
 try {
     $version = Get-WorkspaceVersion -ManifestPath $cargoToml
@@ -46,12 +58,18 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "docs/ops") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "strategies/examples") | Out-Null
 
-    cargo build --release -p tv-bot-runtime -p tv-bot-cli
+    Invoke-ExternalStep -Description "cargo build" -Command {
+        cargo build --release -p tv-bot-runtime -p tv-bot-cli
+    }
 
     Push-Location $dashboardDir
     try {
-        npm ci
-        npm run build
+        Invoke-ExternalStep -Description "npm ci" -Command {
+            npm ci
+        }
+        Invoke-ExternalStep -Description "npm run build" -Command {
+            npm run build
+        }
     }
     finally {
         Pop-Location

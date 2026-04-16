@@ -38,6 +38,7 @@ Use this checklist before calling V1 release-ready.
 - Build and archive the intended runtime and dashboard deliverables for the target release with:
   - Windows: `.\scripts\package_release.ps1`
   - Linux/macOS: `./scripts/package_release.sh`
+- On Windows, stop any running local runtime or dashboard dev server before packaging so locked binaries or native Node modules do not interfere with the build.
 - Verify the packaged config defaults do not imply live trading or silent fallback behavior.
 - Record the exact runtime config, strategy file, and candidate commit used for the validation session.
 

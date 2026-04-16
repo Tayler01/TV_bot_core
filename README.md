@@ -139,3 +139,4 @@ For the release-hardening path, the repository now includes:
 - `docs/architecture/current_status.md`
 - `docs/architecture/dashboard_production_ui_plan.md`
 - `docs/ops/README.md`
+- `docs/ops/release_readiness_review.md`
