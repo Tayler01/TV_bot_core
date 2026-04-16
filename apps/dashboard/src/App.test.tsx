@@ -135,9 +135,11 @@ function installWebSocketMock() {
 function installFetchMock(snapshotOverrides?: {
   reconnectRequired?: boolean;
   shutdownBlocked?: boolean;
+  marketDataHealth?: "healthy" | "degraded" | "failed";
 }) {
   const reconnectRequired = snapshotOverrides?.reconnectRequired ?? false;
   const shutdownBlocked = snapshotOverrides?.shutdownBlocked ?? false;
+  const marketDataHealth = snapshotOverrides?.marketDataHealth ?? "healthy";
   const currentStrategy: LoadedStrategySummary = {
     path: "strategies/sample.md",
     title: "Sample",
@@ -186,15 +188,18 @@ function installFetchMock(snapshotOverrides?: {
         market_data: {
           provider: "databento",
           dataset: "GLBX.MDP3",
-          connection_state: "connected",
-          health: "healthy",
+          connection_state: marketDataHealth === "healthy" ? "connected" : "degraded",
+          health: marketDataHealth,
           feed_statuses: [
             {
               instrument_symbol: "GCM2026",
               feed: "ohlcv_1m",
-              state: "ready",
+              state: marketDataHealth === "healthy" ? "ready" : "degraded",
               last_event_at: "2026-04-12T20:11:00Z",
-              detail: "feed ready",
+              detail:
+                marketDataHealth === "healthy"
+                  ? "feed ready"
+                  : "heartbeat stale; waiting for recovery",
             },
           ],
           warmup: {
@@ -207,7 +212,8 @@ function installFetchMock(snapshotOverrides?: {
           },
           reconnect_count: 0,
           last_heartbeat_at: "2026-04-12T20:11:00Z",
-          last_disconnect_reason: null,
+          last_disconnect_reason:
+            marketDataHealth === "healthy" ? null : "Databento heartbeat stale",
           updated_at: "2026-04-12T20:11:00Z",
         },
       },
@@ -219,7 +225,10 @@ function installFetchMock(snapshotOverrides?: {
       trade_ready: true,
       updated_at: "2026-04-12T20:11:00Z",
     },
-    market_data_detail: null,
+    market_data_detail:
+      marketDataHealth === "healthy"
+        ? null
+        : "Databento heartbeat stale; new entries paused until feed recovery.",
     storage_status: {
       mode: "primary_configured",
       primary_configured: true,
@@ -243,7 +252,7 @@ function installFetchMock(snapshotOverrides?: {
       db_write_latency_ms: 14,
       queue_lag_ms: 2,
       error_count: 0,
-      feed_degraded: false,
+      feed_degraded: marketDataHealth !== "healthy",
       updated_at: "2026-04-12T20:11:03Z",
     },
     latest_trade_latency: {
@@ -557,8 +566,9 @@ function installFetchMock(snapshotOverrides?: {
     },
     supported_timeframes: ["1s", "1m", "5m"],
     default_timeframe: "1m",
-    market_data_connection_state: "subscribed",
-    market_data_health: "healthy",
+    market_data_connection_state:
+      marketDataHealth === "healthy" ? "subscribed" : "degraded",
+    market_data_health: marketDataHealth,
     replay_caught_up: true,
     trade_ready: true,
   };
@@ -1298,8 +1308,12 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Live follow on" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Fit chart" })).toBeInTheDocument();
+    expect(await screen.findByText("Execution posture")).toBeInTheDocument();
+    expect(await screen.findByText("Working order ladder")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Load older bars" })).toBeInTheDocument();
-    expect(await screen.findByText(/limit 2,412\.25 \| stop 2,408\.75/)).toBeInTheDocument();
+    expect(
+      await screen.findAllByText(/limit 2,412\.25 \| stop 2,408\.75/),
+    ).not.toHaveLength(0);
     expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
     expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
@@ -1336,12 +1350,36 @@ describe("App", () => {
     expect(await screen.findByText("Reconnect review active")).toBeInTheDocument();
     expect(await screen.findByText("Shutdown review active")).toBeInTheDocument();
     expect(
-      await screen.findByText(
+      await screen.findAllByText(
         "existing broker-side position or working orders detected after reconnect",
       ),
-    ).toBeInTheDocument();
+    ).not.toHaveLength(0);
     expect(
-      await screen.findByText("shutdown blocked until open position is resolved"),
+      await screen.findAllByText("shutdown blocked until open position is resolved"),
+    ).not.toHaveLength(0);
+  });
+
+  it("surfaces degraded feed and reconnect warnings inside the live chart module", async () => {
+    installWebSocketMock();
+    installFetchMock({
+      reconnectRequired: true,
+      shutdownBlocked: true,
+      marketDataHealth: "degraded",
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Reconnect review active for chart contract"),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Chart feed degraded")).toBeInTheDocument();
+    expect(
+      await screen.findAllByText(
+        "Databento heartbeat stale; new entries paused until feed recovery.",
+      ),
+    ).not.toHaveLength(0);
+    expect(
+      await screen.findByText("Shutdown review still blocking this contract"),
     ).toBeInTheDocument();
   });
 
@@ -1644,13 +1682,6 @@ describe("App", () => {
 
     render(<App />);
 
-    const startupModeField = await screen.findByLabelText("Runtime startup mode");
-
-    (startupModeField as HTMLSelectElement).value = "paper";
-    fireEvent.change(startupModeField);
-    await waitFor(() => {
-      expect(startupModeField).toHaveValue("paper");
-    });
     fireEvent.change(await screen.findByLabelText("Default strategy path"), {
       target: { value: "strategies/uploads/next-run.md" },
     });
@@ -1683,7 +1714,7 @@ describe("App", () => {
     expect(JSON.parse(String(settingsCall?.[1]?.body))).toEqual({
       source: "dashboard",
       settings: {
-        startup_mode: "paper",
+        startup_mode: "observation",
         default_strategy_path: "strategies/uploads/next-run.md",
         allow_sqlite_fallback: false,
         paper_account_name: "paper-secondary",

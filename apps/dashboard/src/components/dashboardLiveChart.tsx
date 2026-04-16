@@ -28,9 +28,10 @@ import {
   formatDateTime,
   formatDecimal,
   formatInteger,
+  formatMode,
   formatSignedCurrency,
 } from "../lib/format";
-import type { Timeframe } from "../types/controlApi";
+import type { RuntimeStatusSnapshot, Timeframe } from "../types/controlApi";
 import {
   Definition,
   Metric,
@@ -42,6 +43,13 @@ import {
 
 const CHART_HEIGHT = 420;
 const CHART_INITIAL_FIT_TOKEN = 0;
+
+interface ChartOperationalAlert {
+  id: string;
+  tone: "healthy" | "warning" | "danger" | "info";
+  headline: string;
+  detail: string;
+}
 
 function chartStreamTone(streamState: ChartViewModel["streamState"]) {
   switch (streamState) {
@@ -342,13 +350,121 @@ function workingOrderLevelsSummary(order: {
   return levels.length ? levels.join(" | ") : "working price unavailable";
 }
 
+function activePositionSummary(
+  activePosition: {
+    quantity: number;
+    average_price: number | string | null;
+  } | null,
+) {
+  if (!activePosition) {
+    return "No active broker position";
+  }
+
+  const side = activePosition.quantity >= 0 ? "Long" : "Short";
+  return `${side} ${formatInteger(Math.abs(activePosition.quantity))} @ ${formatDecimal(activePosition.average_price)}`;
+}
+
+function workingOrderSummary(
+  workingOrders: Array<{
+    side: string | null;
+    quantity: number | null;
+    limit_price: number | string | null;
+    stop_price: number | string | null;
+  }>,
+) {
+  if (!workingOrders.length) {
+    return "No working orders";
+  }
+
+  const primaryOrder = workingOrders[0];
+  return `${workingOrders.length} active | ${primaryOrder.side ?? "side?"} ${formatInteger(primaryOrder.quantity)} | ${workingOrderLevelsSummary(primaryOrder)}`;
+}
+
+function chartOperationalAlerts(
+  runtimeStatus: RuntimeStatusSnapshot | null,
+  chartViewModel: ChartViewModel,
+): ChartOperationalAlert[] {
+  const alerts: ChartOperationalAlert[] = [];
+  const marketData = runtimeStatus?.market_data_status?.session.market_data ?? null;
+
+  if (runtimeStatus?.reconnect_review.required) {
+    alerts.push({
+      id: "reconnect-review",
+      tone: "warning",
+      headline: "Reconnect review active for chart contract",
+      detail:
+        runtimeStatus.reconnect_review.reason ??
+        `Operator review is required before normal execution resumes. Open positions: ${runtimeStatus.reconnect_review.open_position_count}; working orders: ${runtimeStatus.reconnect_review.working_order_count}.`,
+    });
+  }
+
+  if (runtimeStatus?.shutdown_review.blocked) {
+    alerts.push({
+      id: "shutdown-review",
+      tone: "warning",
+      headline: "Shutdown review still blocking this contract",
+      detail:
+        runtimeStatus.shutdown_review.reason ??
+        "Shutdown stays blocked until the operator resolves the open broker position state.",
+    });
+  }
+
+  if (
+    marketData?.health === "failed" ||
+    marketData?.health === "degraded" ||
+    runtimeStatus?.system_health?.feed_degraded
+  ) {
+    alerts.push({
+      id: "feed-degraded",
+      tone: marketData?.health === "failed" ? "danger" : "warning",
+      headline: "Chart feed degraded",
+      detail:
+        runtimeStatus?.market_data_detail ??
+        marketData?.last_disconnect_reason ??
+        "New entries stay blocked while the market-data session recovers; broker-protected positions remain untouched.",
+    });
+  }
+
+  if (chartViewModel.streamState === "error" || chartViewModel.streamState === "closed") {
+    alerts.push({
+      id: "chart-stream",
+      tone: chartViewModel.streamState === "error" ? "danger" : "warning",
+      headline: "Chart stream reconnecting",
+      detail:
+        chartViewModel.error ??
+        "The dedicated chart stream dropped and is reconnecting. Buffered history stays available and the chart can still be refreshed manually.",
+    });
+  } else if (chartViewModel.streamState === "connecting") {
+    alerts.push({
+      id: "chart-stream-connecting",
+      tone: "info",
+      headline: "Chart stream connecting",
+      detail:
+        "The dedicated chart stream is establishing. Snapshot data remains visible while live updates catch up.",
+    });
+  }
+
+  if (runtimeStatus && !runtimeStatus.command_dispatch_ready) {
+    alerts.push({
+      id: "dispatch-unavailable",
+      tone: "warning",
+      headline: "Runtime dispatch unavailable from chart context",
+      detail: runtimeStatus.command_dispatch_detail,
+    });
+  }
+
+  return alerts;
+}
+
 export function LiveChartPanel({
   chartViewModel,
+  runtimeStatus,
   onSelectTimeframe,
   onLoadOlderHistory,
   onRefreshChart,
 }: {
   chartViewModel: ChartViewModel;
+  runtimeStatus: RuntimeStatusSnapshot | null;
   onSelectTimeframe: (timeframe: Timeframe) => void;
   onLoadOlderHistory: () => void;
   onRefreshChart: () => void;
@@ -376,6 +492,10 @@ export function LiveChartPanel({
 
     return snapshot.bars[snapshot.bars.length - 1];
   }, [snapshot]);
+  const operationalAlerts = useMemo(
+    () => chartOperationalAlerts(runtimeStatus, chartViewModel),
+    [chartViewModel, runtimeStatus],
+  );
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
   const [fitRequestToken, setFitRequestToken] = useState(CHART_INITIAL_FIT_TOKEN);
 
@@ -494,6 +614,17 @@ export function LiveChartPanel({
         </div>
       ) : null}
 
+      {operationalAlerts.length ? (
+        <div className="live-chart__alerts" aria-label="Chart operational alerts">
+          {operationalAlerts.map((alert) => (
+            <div key={alert.id} className={`banner banner--${alert.tone}`}>
+              <strong>{alert.headline}</strong>
+              <span>{alert.detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {!config?.available ? (
         <div className="live-chart__unavailable">
           <p>{config?.detail ?? "Load a strategy to chart the resolved contract."}</p>
@@ -502,6 +633,46 @@ export function LiveChartPanel({
         <div className="live-chart">
           <section className="live-chart__stage">
             <div className="live-chart__frame">
+              <div className="live-chart__readout-strip" aria-label="Chart operator readouts">
+                <div className="live-chart__readout-card">
+                  <span>Execution posture</span>
+                  <strong>
+                    {runtimeStatus
+                      ? `${formatMode(runtimeStatus.mode)} | ${formatMode(runtimeStatus.arm_state)}`
+                      : "Waiting for runtime"}
+                  </strong>
+                  <p>
+                    {runtimeStatus?.command_dispatch_ready
+                      ? runtimeStatus.command_dispatch_detail
+                      : runtimeStatus?.command_dispatch_detail ?? "Dispatch unavailable"}
+                  </p>
+                </div>
+                <div className="live-chart__readout-card">
+                  <span>Latest candle</span>
+                  <strong>
+                    {latestBarSummary
+                      ? `O ${formatDecimal(latestBarSummary.open)} | H ${formatDecimal(latestBarSummary.high)} | L ${formatDecimal(latestBarSummary.low)} | C ${formatDecimal(latestBarSummary.close)}`
+                      : "Waiting for chart bars"}
+                  </strong>
+                  <p>{latestClosedAt ? formatDateTime(latestClosedAt) : "No candle closed yet"}</p>
+                </div>
+                <div className="live-chart__readout-card">
+                  <span>Position context</span>
+                  <strong>{activePositionSummary(activePosition)}</strong>
+                  <p>
+                    {activePosition?.protective_orders_present
+                      ? "Broker protections are present on the active position."
+                      : "Broker protections are not currently confirmed on the active position."}
+                  </p>
+                </div>
+                <div className="live-chart__readout-card">
+                  <span>Working order ladder</span>
+                  <strong>{workingOrderSummary(workingOrders)}</strong>
+                  <p>
+                    {`${formatInteger(recentFills.length)} recent fill(s) | stream ${chartViewModel.streamState}`}
+                  </p>
+                </div>
+              </div>
               {snapshot?.bars.length ? (
                 <LiveChartCanvas
                   chartViewModel={chartViewModel}
@@ -581,6 +752,14 @@ export function LiveChartPanel({
                   value={instrument?.databento_symbols.join(", ") || "Unavailable"}
                 />
                 <Definition label="Chart detail" value={config?.detail ?? "Unavailable"} />
+                <Definition
+                  label="Reconnect review"
+                  value={
+                    runtimeStatus?.reconnect_review.required
+                      ? runtimeStatus.reconnect_review.reason ?? "Review required"
+                      : "Clear"
+                  }
+                />
               </dl>
             </SectionBlock>
 

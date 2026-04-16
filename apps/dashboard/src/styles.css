@@ -957,8 +957,10 @@ select {
 .chart-toolbar,
 .chart-timeframes,
 .live-chart,
+.live-chart__alerts,
 .live-chart__sidebar,
-.live-chart__metrics {
+.live-chart__metrics,
+.live-chart__readout-strip {
   display: grid;
   gap: 12px;
 }
@@ -1027,6 +1029,14 @@ select {
   margin-bottom: 14px;
 }
 
+.live-chart__alerts {
+  margin-bottom: 14px;
+}
+
+.live-chart__alerts .banner {
+  margin-top: 0;
+}
+
 .live-chart__unavailable,
 .live-chart__empty {
   display: grid;
@@ -1060,6 +1070,43 @@ select {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     0 18px 44px rgba(1, 10, 18, 0.24);
+}
+
+.live-chart__readout-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.live-chart__readout-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(88, 192, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(18, 31, 47, 0.94), rgba(10, 20, 32, 0.96));
+}
+
+.live-chart__readout-card span {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+}
+
+.live-chart__readout-card strong {
+  font-size: 0.95rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.live-chart__readout-card p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .live-chart__canvas {
@@ -1319,7 +1366,8 @@ select {
   }
 
   .chart-toolbar,
-  .chart-toolbar--timeframes {
+  .chart-toolbar--timeframes,
+  .live-chart__readout-strip {
     grid-template-columns: 1fr;
   }
 

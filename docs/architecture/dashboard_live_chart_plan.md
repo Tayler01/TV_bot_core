@@ -15,14 +15,14 @@ This plan covers both the frontend charting surface and the backend chart-data/c
 
 ## Progress Snapshot
 
-Current state as of 2026-04-15:
+Current state as of 2026-04-16:
 
 - The planning and architectural recommendation in this document are complete.
 - Phase 1 `chart control-plane foundation` is now materially in place in [apps/runtime/src/host.rs](</C:/repos/TV_bot_core/apps/runtime/src/host.rs>) and [crates/control_api/src/lib.rs](</C:/repos/TV_bot_core/crates/control_api/src/lib.rs>) through `GET /chart/config`, `GET /chart/snapshot`, `GET /chart/history`, and `GET /chart/stream`.
 - The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
 - Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
-- Phase 3 is now substantially in place: active-position context, exact working-order price overlays, and recent fill markers render on the chart from the shared runtime-host projection.
-  - The remaining work is polish and higher-signal chart-state treatment rather than first delivery.
+- Phase 3 is now substantially in place: active-position context, exact working-order price overlays, recent fill markers, chart-side runtime alert banners, and operator readout strips render on the chart from the shared runtime-host projection.
+- The remaining work is final production sign-off, browser QA, and any last operator-copy or ergonomics polish rather than first delivery.
 
 ## Scope Guardrails
 
@@ -47,8 +47,7 @@ The repository already has several important building blocks:
 
 What is still missing:
 
-- degraded/reconnect-state treatment that is as visually strong as the rest of the operator console
-- final operator polish for toolbar density, chart readouts, and workflow ergonomics
+- final production sign-off for chart ergonomics, copy, and browser QA
 - any future advanced overlays that depend on richer broker/runtime projection than V1 currently needs
 
 ## Research Snapshot
@@ -351,8 +350,8 @@ The live chart work is not done unless all of the following are true:
 1. Define the chart control-plane contract in `crates/control_api`.
 2. Add runtime-host chart routes and chart-stream tests.
 3. Add the dashboard chart hook plus Lightweight Charts shell.
-4. Tighten degraded/reconnect chart states and final operator readouts.
-5. Keep responsive QA and final production sign-off aligned with the operator-console checklist.
+4. Run final responsive/browser QA and operator sign-off on the live chart module.
+5. Keep remaining chart polish aligned with the operator-console checklist.
 
 ## Documentation Follow-Up
 

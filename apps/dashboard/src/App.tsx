@@ -443,6 +443,7 @@ function App() {
 
           <LiveChartPanel
             chartViewModel={chartViewModel}
+            runtimeStatus={snapshot?.status ?? null}
             onSelectTimeframe={setSelectedTimeframe}
             onLoadOlderHistory={() => {
               void loadOlderHistory();
