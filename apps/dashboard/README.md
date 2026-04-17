@@ -43,7 +43,7 @@ The current dashboard now covers:
 - persisted journal audit-trail drill-downs with severity/category summaries and formatted payloads
 - latency detail views including per-stage trade-path timing and host-correlation context
 - a live contract chart backed only by `/chart/config`, `/chart/snapshot`, `/chart/history`, and `/chart/stream`, with timeframe switching, fit/live-follow controls, load-older paging, active-position context, exact working-order price overlays, recent fill markers, a working-order summary rail, chart-side runtime alert banners, and operator readout strips for the currently loaded contract
-- a clearly-labeled sample-candle fallback when live market data is unconfigured, so the chart workspace still renders cleanly during local setup or documentation/demo flows
+- a clearly-labeled sample-candle fallback when live market data is unavailable, including local setup and rejected market-data credentials, so the chart workspace still renders cleanly during documentation/demo flows and smoke tests
 - a chart-first shell where the right rail stays focused on mode, gating, warmup, arming, manual entry, flatten, cancel, and safety review while strategy-library and runtime-settings work now live in a dedicated lower-dock `Setup` tab
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 

@@ -135,12 +135,14 @@ enum RuntimeMarketDataState {
         service: MarketDataService<DatabentoLiveTransport>,
         last_snapshot: Option<MarketDataServiceSnapshot>,
         warmup_mode: DatabentoWarmupMode,
+        sample_chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
     },
     #[cfg(test)]
     SnapshotOverride {
         snapshot: MarketDataServiceSnapshot,
         detail: Option<String>,
         chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
+        sample_chart_active: bool,
     },
 }
 
@@ -274,6 +276,24 @@ fn sample_chart_bars_for_timeframe(
             }
         })
         .collect()
+}
+
+fn market_data_failure_sample_fallback_active(
+    snapshot: Option<&MarketDataServiceSnapshot>,
+    live_bar_count: usize,
+    sample_bars_available: bool,
+) -> bool {
+    sample_bars_available
+        && live_bar_count == 0
+        && snapshot.is_some_and(|snapshot| {
+            matches!(
+                snapshot.session.market_data.connection_state,
+                MarketDataConnectionState::Failed
+            ) || matches!(
+                snapshot.session.market_data.health,
+                tv_bot_market_data::MarketDataHealth::Failed
+            )
+        })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -584,6 +604,8 @@ impl RuntimeMarketDataManager {
             return;
         };
 
+        let sample_chart_bars = sample_chart_bars_for_strategy(&seed, now);
+
         let Some(mapping) = seed.instrument_mapping else {
             self.state = RuntimeMarketDataState::StrategyBlocked {
                 detail: seed.instrument_resolution_error.unwrap_or_else(|| {
@@ -612,6 +634,7 @@ impl RuntimeMarketDataManager {
                     service,
                     last_snapshot: Some(snapshot),
                     warmup_mode,
+                    sample_chart_bars,
                 };
             }
             Err(error) => {
@@ -631,6 +654,7 @@ impl RuntimeMarketDataManager {
                 service,
                 last_snapshot,
                 warmup_mode,
+                ..
             } => service
                 .start_warmup(warmup_mode.clone(), now)
                 .await
@@ -672,11 +696,27 @@ impl RuntimeMarketDataManager {
 
     fn current_view(&self) -> RuntimeMarketDataView {
         match &self.state {
-            RuntimeMarketDataState::Active { last_snapshot, .. } => RuntimeMarketDataView {
-                snapshot: last_snapshot.clone(),
-                detail: None,
-                sample_chart_active: false,
-            },
+            RuntimeMarketDataState::Active {
+                service,
+                last_snapshot,
+                sample_chart_bars,
+                ..
+            } => {
+                let live_bar_count: usize = sample_chart_bars
+                    .keys()
+                    .filter_map(|timeframe| service.session().coordinator().buffer(*timeframe))
+                    .map(tv_bot_market_data::RollingBuffer::len)
+                    .sum();
+                RuntimeMarketDataView {
+                    snapshot: last_snapshot.clone(),
+                    detail: None,
+                    sample_chart_active: market_data_failure_sample_fallback_active(
+                        last_snapshot.as_ref(),
+                        live_bar_count,
+                        !sample_chart_bars.is_empty(),
+                    ),
+                }
+            }
             RuntimeMarketDataState::Unconfigured { detail, chart_bars } => RuntimeMarketDataView {
                 snapshot: None,
                 detail: Some(detail.clone()),
@@ -690,11 +730,14 @@ impl RuntimeMarketDataManager {
             },
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride {
-                snapshot, detail, ..
+                snapshot,
+                detail,
+                sample_chart_active,
+                ..
             } => RuntimeMarketDataView {
                 snapshot: Some(snapshot.clone()),
                 detail: detail.clone(),
-                sample_chart_active: false,
+                sample_chart_active: *sample_chart_active,
             },
         }
     }
@@ -706,17 +749,37 @@ impl RuntimeMarketDataManager {
         limit: usize,
     ) -> (Vec<RuntimeChartBar>, bool) {
         let bars = match &self.state {
-            RuntimeMarketDataState::Active { service, .. } => service
-                .session()
-                .coordinator()
-                .buffer(timeframe)
-                .map(|buffer| {
-                    buffer
-                        .iter()
-                        .filter_map(runtime_chart_bar_from_market_event)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
+            RuntimeMarketDataState::Active {
+                service,
+                last_snapshot,
+                sample_chart_bars,
+                ..
+            } => {
+                let live_bars = service
+                    .session()
+                    .coordinator()
+                    .buffer(timeframe)
+                    .map(|buffer| {
+                        buffer
+                            .iter()
+                            .filter_map(runtime_chart_bar_from_market_event)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let fallback_bars = sample_chart_bars
+                    .get(&timeframe)
+                    .cloned()
+                    .unwrap_or_default();
+                if market_data_failure_sample_fallback_active(
+                    last_snapshot.as_ref(),
+                    live_bars.len(),
+                    !fallback_bars.is_empty(),
+                ) {
+                    fallback_bars
+                } else {
+                    live_bars
+                }
+            }
             RuntimeMarketDataState::Unconfigured { chart_bars, .. } => {
                 chart_bars.get(&timeframe).cloned().unwrap_or_default()
             }
@@ -736,6 +799,7 @@ impl RuntimeMarketDataManager {
             RuntimeMarketDataState::Active {
                 service,
                 last_snapshot,
+                sample_chart_bars,
                 ..
             } => {
                 let is_connected = !matches!(
@@ -794,7 +858,17 @@ impl RuntimeMarketDataManager {
                 RuntimeMarketDataView {
                     snapshot: Some(snapshot),
                     detail,
-                    sample_chart_active: false,
+                    sample_chart_active: market_data_failure_sample_fallback_active(
+                        last_snapshot.as_ref(),
+                        sample_chart_bars
+                            .keys()
+                            .filter_map(|timeframe| {
+                                service.session().coordinator().buffer(*timeframe)
+                            })
+                            .map(tv_bot_market_data::RollingBuffer::len)
+                            .sum(),
+                        !sample_chart_bars.is_empty(),
+                    ),
                 }
             }
             RuntimeMarketDataState::Unconfigured { detail, chart_bars } => RuntimeMarketDataView {
@@ -810,11 +884,14 @@ impl RuntimeMarketDataManager {
             },
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride {
-                snapshot, detail, ..
+                snapshot,
+                detail,
+                sample_chart_active,
+                ..
             } => RuntimeMarketDataView {
                 snapshot: Some(snapshot.clone()),
                 detail: detail.clone(),
-                sample_chart_active: false,
+                sample_chart_active: *sample_chart_active,
             },
         }
     }
@@ -5352,6 +5429,7 @@ mod tests {
             snapshot,
             detail,
             chart_bars: BTreeMap::new(),
+            sample_chart_active: false,
         };
     }
 
@@ -5366,6 +5444,22 @@ mod tests {
             snapshot,
             detail,
             chart_bars,
+            sample_chart_active: false,
+        };
+    }
+
+    async fn set_test_market_data_snapshot_with_sample_chart_bars(
+        state: &RuntimeHostState,
+        snapshot: MarketDataServiceSnapshot,
+        detail: Option<String>,
+        chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
+    ) {
+        let mut market_data = state.market_data.lock().await;
+        market_data.state = RuntimeMarketDataState::SnapshotOverride {
+            snapshot,
+            detail,
+            chart_bars,
+            sample_chart_active: true,
         };
     }
 
@@ -10145,6 +10239,146 @@ selection:
                 .detail
                 .contains("illustrative sample candles"),
             "expected sample-data detail, got: {}",
+            snapshot.config.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn chart_snapshot_route_returns_sample_bars_when_market_data_auth_fails() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart auth failure snapshot load strategy",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let base_time = Utc
+            .with_ymd_and_hms(2026, 4, 15, 15, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        let mut failed_snapshot =
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Failed);
+        failed_snapshot.session.market_data.connection_state =
+            tv_bot_market_data::MarketDataConnectionState::Failed;
+        failed_snapshot.session.market_data.feed_statuses = vec![tv_bot_market_data::FeedStatus {
+            instrument_symbol: "GCM2026".to_owned(),
+            feed: tv_bot_core_types::FeedType::Trades,
+            state: tv_bot_market_data::FeedReadinessState::Degraded,
+            last_event_at: Some(base_time),
+            detail: "Databento authentication failed".to_owned(),
+        }];
+        failed_snapshot.session.market_data.warmup.buffers =
+            vec![tv_bot_market_data::BufferStatus {
+                symbol: "GCM2026".to_owned(),
+                timeframe: Timeframe::OneMinute,
+                available_bars: 0,
+                required_bars: 10,
+                capacity: 10,
+                ready: false,
+            }];
+        failed_snapshot.trade_ready = false;
+
+        set_test_market_data_snapshot_with_sample_chart_bars(
+            &state,
+            failed_snapshot,
+            Some("market-data service polling failed: Databento transport operation `connect` failed: authentication failed: Authentication failed.".to_owned()),
+            BTreeMap::from([(
+                Timeframe::OneMinute,
+                vec![
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time,
+                        238_100,
+                        238_160,
+                        238_040,
+                        238_140,
+                        80,
+                    ),
+                    sample_chart_bar(
+                        Timeframe::OneMinute,
+                        base_time + ChronoDuration::minutes(1),
+                        238_140,
+                        238_220,
+                        238_110,
+                        238_200,
+                        92,
+                    ),
+                ],
+            )]),
+        )
+        .await;
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/chart/snapshot?timeframe=1m&limit=20")
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart auth failure snapshot route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let snapshot: RuntimeChartSnapshot =
+            serde_json::from_slice(&body).expect("chart snapshot json should parse");
+
+        assert_eq!(snapshot.timeframe, Timeframe::OneMinute);
+        assert_eq!(snapshot.bars.len(), 2);
+        assert!(snapshot.config.sample_data_active);
+        assert_eq!(
+            snapshot.config.market_data_connection_state,
+            Some(tv_bot_market_data::MarketDataConnectionState::Failed)
+        );
+        assert_eq!(
+            snapshot.config.market_data_health,
+            Some(tv_bot_market_data::MarketDataHealth::Failed)
+        );
+        assert!(
+            snapshot.config.detail.contains("authentication failed"),
+            "expected auth failure detail, got: {}",
             snapshot.config.detail
         );
     }

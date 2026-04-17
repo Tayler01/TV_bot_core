@@ -342,7 +342,7 @@ For a Databento-only observation smoke test on Windows, set `DATABENTO_API_KEY` 
 .\scripts\dev\start_databento_observation.ps1 -StartDashboard
 ```
 
-That observation path now rebuilds the release runtime and CLI before launch and starts warmup with a strategy-driven Databento historical replay window instead of waiting only on live bars, so local smoke tests stay aligned with current source and multi-timeframe warmup should catch up much faster when historical data is available. If the runtime still has no Databento API key, the chart now renders clearly-labeled illustrative sample candles so the dashboard layout stays readable instead of looking broken.
+That observation path now rebuilds the release runtime and CLI before launch, uses `runtime.default_strategy_path` from the config when you do not pass `-StrategyPath`, and promotes `DATABENTO_API_KEY` into the runtime env for that launch so an older saved `TV_BOT__MARKET_DATA__API_KEY` does not accidentally win. It also starts warmup with a strategy-driven Databento historical replay window instead of waiting only on live bars, so local smoke tests stay aligned with current source and multi-timeframe warmup should catch up much faster when historical data is available. If the runtime still has no usable Databento market-data session, including missing or rejected credentials, the chart now renders clearly-labeled illustrative sample candles so the dashboard layout stays readable instead of looking broken.
 
 For the release-hardening path, the repository now includes:
 

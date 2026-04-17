@@ -230,6 +230,13 @@ function LiveChartCanvas({
 
     resizeChart();
     window.addEventListener("resize", scheduleResize);
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            scheduleResize();
+          })
+        : null;
+    resizeObserver?.observe(container.parentElement ?? container);
 
     return () => {
       if (resizeFrame !== 0) {
@@ -237,6 +244,7 @@ function LiveChartCanvas({
         resizeFrame = 0;
       }
       window.removeEventListener("resize", scheduleResize);
+      resizeObserver?.disconnect();
 
       chart.remove();
       chartRef.current = null;

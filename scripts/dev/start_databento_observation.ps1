@@ -1,6 +1,6 @@
 param(
     [string]$ConfigPath = "config/runtime.local.toml",
-    [string]$StrategyPath = "strategies/examples/gc_momentum_fade_v1.md",
+    [string]$StrategyPath,
     [switch]$StartDashboard
 )
 
@@ -8,7 +8,6 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $resolvedConfigPath = (Resolve-Path (Join-Path $repoRoot $ConfigPath)).Path
-$resolvedStrategyPath = (Resolve-Path (Join-Path $repoRoot $StrategyPath)).Path
 $runtimeExe = Join-Path $repoRoot "target/release/tv-bot-runtime.exe"
 $cliExe = Join-Path $repoRoot "target/release/tv-bot-cli.exe"
 $logsDir = Join-Path $repoRoot "logs"
@@ -20,6 +19,24 @@ $healthUrl = "http://127.0.0.1:8080/health"
 $statusUrl = "http://127.0.0.1:8080/status"
 $readinessUrl = "http://127.0.0.1:8080/readiness"
 $dashboardUrl = "http://127.0.0.1:4173"
+
+function Resolve-StrategyPathFromConfig {
+    param(
+        [string]$ConfigFilePath
+    )
+
+    $match = Select-String -Path $ConfigFilePath -Pattern '^\s*default_strategy_path\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if (-not $match) {
+        return $null
+    }
+
+    $rawPath = $match.Matches[0].Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($rawPath)) {
+        return $null
+    }
+
+    return (Resolve-Path (Join-Path $repoRoot $rawPath)).Path
+}
 
 function Stop-ExistingProcess {
     param(
@@ -61,7 +78,7 @@ function Wait-ForUrl {
     throw "Timed out waiting for $Url"
 }
 
-if (-not $env:TV_BOT__MARKET_DATA__API_KEY -and $env:DATABENTO_API_KEY) {
+if ($env:DATABENTO_API_KEY) {
     $env:TV_BOT__MARKET_DATA__API_KEY = $env:DATABENTO_API_KEY
 }
 
@@ -78,6 +95,13 @@ or:
 Then rerun:
   .\scripts\dev\start_databento_observation.ps1
 "@
+}
+
+$resolvedStrategyPath = $null
+if ($StrategyPath) {
+    $resolvedStrategyPath = (Resolve-Path (Join-Path $repoRoot $StrategyPath)).Path
+} else {
+    $resolvedStrategyPath = Resolve-StrategyPathFromConfig -ConfigFilePath $resolvedConfigPath
 }
 
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
@@ -105,7 +129,9 @@ Start-Process `
 
 Wait-ForUrl -Url $healthUrl
 
-& $cliExe --config $resolvedConfigPath load $resolvedStrategyPath | Out-Host
+if ($resolvedStrategyPath) {
+    & $cliExe --config $resolvedConfigPath load $resolvedStrategyPath | Out-Host
+}
 & $cliExe --config $resolvedConfigPath warmup start | Out-Host
 
 if ($StartDashboard) {
