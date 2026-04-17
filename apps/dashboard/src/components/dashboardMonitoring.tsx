@@ -78,21 +78,26 @@ export function RuntimeSummaryPanel({
     : "No strategy loaded";
   const chartConfig = chartViewModel.config;
   const chartSnapshot = chartViewModel.snapshot;
+  const chartInstrument = chartConfig?.instrument ?? null;
   const latestBar = chartSnapshot?.bars.at(-1) ?? null;
   const databentoLabel =
-    chartConfig?.instrument?.databento_symbols.join(", ") ||
+    chartInstrument?.databento_symbols.join(", ") ||
     snapshot.status.market_data_status?.session.market_data.provider ||
     "Unavailable";
-  const chartStateLabel = chartConfig?.detail ?? "Chart context unavailable";
+  const marketRouteLabel = chartInstrument
+    ? `Tradovate ${chartInstrument.tradovate_symbol ?? "?"} | DB ${chartInstrument.databento_symbols.join(", ") || "?"}`
+    : snapshot.status.instrument_mapping?.summary ??
+      snapshot.status.instrument_resolution_error ??
+      "Instrument mapping unavailable";
   const latestCandleLabel = latestBar
     ? latestBar.is_complete
       ? formatDateTime(latestBar.closed_at)
-      : `Building until ${formatDateTime(latestBar.closed_at)}`
+      : `Build ${formatDateTime(latestBar.closed_at)}`
     : "Waiting";
-  const latestOhlcLabel =
-    latestBar != null
-      ? `O ${formatDecimal(latestBar.open)} | H ${formatDecimal(latestBar.high)} | L ${formatDecimal(latestBar.low)} | C ${formatDecimal(latestBar.close)}`
-      : "Waiting for bars";
+  const brokerRouteLabel =
+    snapshot.status.broker_status?.selected_account
+      ? `${snapshot.status.broker_status.selected_account.account_name} | ${snapshot.status.broker_status.selected_account.routing}`
+      : "Route unavailable";
   const openPositionCount = snapshot.history.projection.open_position_symbols.length;
   const workingOrderCount = snapshot.history.projection.working_order_ids.length;
 
@@ -140,14 +145,9 @@ export function RuntimeSummaryPanel({
       <dl className="definition-list">
         <Definition
           label="Market"
-          value={
-            snapshot.status.instrument_mapping?.summary ??
-            snapshot.status.instrument_resolution_error ??
-            "Instrument mapping unavailable"
-          }
+          value={marketRouteLabel}
         />
         <Definition label="Databento" value={databentoLabel} />
-        <Definition label="State" value={chartStateLabel} />
         <Definition
           label="Review"
           value={
@@ -157,15 +157,7 @@ export function RuntimeSummaryPanel({
           }
         />
         <Definition label="Candle" value={latestCandleLabel} />
-        <Definition label="OHLC" value={latestOhlcLabel} />
-        <Definition
-          label="Broker route"
-          value={
-            snapshot.status.broker_status?.selected_account
-              ? `${snapshot.status.broker_status.selected_account.account_name} (${snapshot.status.broker_status.selected_account.routing})`
-              : "Account routing unavailable"
-          }
-        />
+        <Definition label="Route" value={brokerRouteLabel} />
       </dl>
       <div className="rail-toolbelt">
         <section className="rail-tool-group">

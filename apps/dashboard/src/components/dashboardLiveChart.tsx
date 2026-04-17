@@ -43,6 +43,23 @@ interface ChartOperationalAlert {
   detail: string;
 }
 
+function chartStreamLabel(streamState: ChartViewModel["streamState"]) {
+  switch (streamState) {
+    case "open":
+      return "Live";
+    case "connecting":
+      return "Syncing";
+    case "unsupported":
+      return "Unsupported";
+    case "closed":
+      return "Offline";
+    case "error":
+      return "Error";
+    default:
+      return "Waiting";
+  }
+}
+
 function chartStreamTone(streamState: ChartViewModel["streamState"]) {
   switch (streamState) {
     case "open":
@@ -780,10 +797,10 @@ function chartOperationalAlerts(
     alerts.push({
       id: "reconnect-review",
       tone: "warning",
-      headline: "Reconnect review active for chart contract",
+      headline: "Reconnect review",
       detail:
         runtimeStatus.reconnect_review.reason ??
-        `Operator review is required before normal execution resumes. Open positions: ${runtimeStatus.reconnect_review.open_position_count}; working orders: ${runtimeStatus.reconnect_review.working_order_count}.`,
+        `${runtimeStatus.reconnect_review.open_position_count} pos | ${runtimeStatus.reconnect_review.working_order_count} orders need review before flow resumes.`,
     });
   }
 
@@ -791,10 +808,10 @@ function chartOperationalAlerts(
     alerts.push({
       id: "shutdown-review",
       tone: "warning",
-      headline: "Shutdown review still blocking this contract",
+      headline: "Shutdown review",
       detail:
         runtimeStatus.shutdown_review.reason ??
-        "Shutdown stays blocked until the operator resolves the open broker position state.",
+        "Resolve broker exposure before shutdown completes.",
     });
   }
 
@@ -806,11 +823,11 @@ function chartOperationalAlerts(
     alerts.push({
       id: "feed-degraded",
       tone: marketData?.health === "failed" ? "danger" : "warning",
-      headline: "Chart feed degraded",
+      headline: "Feed degraded",
       detail:
         runtimeStatus?.market_data_detail ??
         marketData?.last_disconnect_reason ??
-        "New entries stay blocked while the market-data session recovers; broker-protected positions remain untouched.",
+        "Entries stay blocked until the feed recovers.",
     });
   }
 
@@ -818,9 +835,8 @@ function chartOperationalAlerts(
     alerts.push({
       id: "sample-candles",
       tone: "info",
-      headline: "Illustrative sample candles active",
-      detail:
-        "Live market data is not configured, so the chart is showing sample candles to keep the workspace readable until a Databento API key is provided.",
+      headline: "Sample candles",
+      detail: "Showing sample candles until Databento is configured.",
     });
   }
 
@@ -828,18 +844,17 @@ function chartOperationalAlerts(
     alerts.push({
       id: "chart-stream",
       tone: chartViewModel.streamState === "error" ? "danger" : "warning",
-      headline: "Chart stream reconnecting",
+      headline: "Stream reconnecting",
       detail:
         chartViewModel.error ??
-        "The dedicated chart stream dropped and is reconnecting. Buffered history stays available and the chart can still be refreshed manually.",
+        "Buffered history stays visible while live updates reconnect.",
     });
   } else if (chartViewModel.streamState === "connecting") {
     alerts.push({
       id: "chart-stream-connecting",
       tone: "info",
-      headline: "Chart stream connecting",
-      detail:
-        "The dedicated chart stream is establishing. Snapshot data remains visible while live updates catch up.",
+      headline: "Stream connecting",
+      detail: "Snapshot data stays visible while live updates sync.",
     });
   }
 
@@ -847,7 +862,7 @@ function chartOperationalAlerts(
     alerts.push({
       id: "dispatch-unavailable",
       tone: "warning",
-      headline: "Runtime dispatch unavailable from chart context",
+      headline: "Dispatch off",
       detail: runtimeStatus.command_dispatch_detail,
     });
   }
@@ -886,7 +901,7 @@ export function LiveChartPanel({
   const latestBarBuilding = latestBarSummary ? !latestBarSummary.is_complete : false;
   const latestBarTimestampLabel = latestClosedAt
     ? latestBarBuilding
-      ? `Building until ${formatDateTime(latestClosedAt)}`
+      ? `Build ${formatDateTime(latestClosedAt)}`
       : formatDateTime(latestClosedAt)
     : "No candle closed yet";
   const operationalAlerts = useMemo(
@@ -923,14 +938,14 @@ export function LiveChartPanel({
             tone={config?.available ? healthTone(config?.market_data_health ?? null) : "warning"}
           />
           <Pill
-            label={`Stream ${chartViewModel.streamState}`}
+            label={`Stream ${chartStreamLabel(chartViewModel.streamState)}`}
             tone={chartStreamTone(chartViewModel.streamState)}
           />
           {config?.sample_data_active ? (
             <Pill label="Sample candles" tone="info" />
           ) : null}
           <Pill
-            label={config?.trade_ready ? "Trade ready" : "Warmup in progress"}
+            label={config?.trade_ready ? "Ready" : "Warming"}
             tone={config?.trade_ready ? "healthy" : "warning"}
           />
         </div>
@@ -947,7 +962,7 @@ export function LiveChartPanel({
               setLiveFollowEnabled((current) => !current);
             }}
           >
-            {liveFollowEnabled ? "Follow on" : "Follow off"}
+            {liveFollowEnabled ? "Auto" : "Manual"}
           </button>
           <button
             className="command-button"
@@ -963,7 +978,7 @@ export function LiveChartPanel({
             type="button"
             onClick={onRefreshChart}
           >
-            Refresh
+            Sync
           </button>
           <button
             className="command-button"
@@ -973,7 +988,7 @@ export function LiveChartPanel({
               !snapshot?.can_load_older_history || chartViewModel.historyState === "loading"
             }
           >
-            {chartViewModel.historyState === "loading" ? "Loading" : "More history"}
+            {chartViewModel.historyState === "loading" ? "Loading" : "Older"}
           </button>
         </div>
       </div>
@@ -1011,8 +1026,8 @@ export function LiveChartPanel({
               config?.sample_data_active
                 ? "Sample data"
                 : config?.replay_caught_up
-                  ? "History caught up"
-                  : "History loading"
+                  ? "Replay ok"
+                  : "Replay"
             }
             tone={config?.sample_data_active ? "info" : config?.replay_caught_up ? "healthy" : "warning"}
           />
@@ -1036,7 +1051,7 @@ export function LiveChartPanel({
           {operationalAlerts.map((alert) => (
             <div key={alert.id} className={`banner banner--${alert.tone}`}>
               <strong>{alert.headline}</strong>
-              <span>{alert.detail}</span>
+              <span title={alert.detail}>{alert.detail}</span>
             </div>
           ))}
         </div>
@@ -1052,20 +1067,20 @@ export function LiveChartPanel({
             <div className="live-chart__frame">
               <div className="live-chart__readout-strip" aria-label="Chart operator readouts">
                 <div className="live-chart__readout-card">
-                  <span>Posture</span>
+                  <span>Flow</span>
                   <strong>
                     {runtimeStatus
-                      ? `${formatMode(runtimeStatus.mode)} | ${formatMode(runtimeStatus.arm_state)}`
+                      ? `${formatMode(runtimeStatus.mode)} / ${formatMode(runtimeStatus.arm_state)}`
                       : "Waiting for runtime"}
                   </strong>
                   <p>
                     {runtimeStatus?.command_dispatch_ready
-                      ? runtimeStatus.command_dispatch_detail
-                      : runtimeStatus?.command_dispatch_detail ?? "Dispatch unavailable"}
+                      ? "Dispatch ok"
+                      : runtimeStatus?.command_dispatch_detail ?? "Dispatch off"}
                   </p>
                 </div>
                 <div className="live-chart__readout-card">
-                  <span>Latest candle</span>
+                  <span>Candle</span>
                   <strong>
                     {latestBarSummary
                       ? `O ${formatDecimal(latestBarSummary.open)} | H ${formatDecimal(latestBarSummary.high)} | L ${formatDecimal(latestBarSummary.low)} | C ${formatDecimal(latestBarSummary.close)}`
@@ -1074,19 +1089,19 @@ export function LiveChartPanel({
                   <p>{latestBarTimestampLabel}</p>
                 </div>
                 <div className="live-chart__readout-card">
-                  <span>Position</span>
+                  <span>Pos</span>
                   <strong>{activePositionSummary(activePosition)}</strong>
                   <p>
                     {activePosition?.protective_orders_present
-                      ? "Broker protections confirmed on the open position."
-                      : "Broker protections are not confirmed on the open position."}
+                      ? "Protections on"
+                      : "Protections unconfirmed"}
                   </p>
                 </div>
                 <div className="live-chart__readout-card">
                   <span>Orders</span>
                   <strong>{workingOrderSummary(workingOrders)}</strong>
                   <p>
-                    {`${formatInteger(recentFills.length)} recent fill(s) | stream ${chartViewModel.streamState}`}
+                    {`${formatInteger(recentFills.length)} fills | ${chartStreamLabel(chartViewModel.streamState)}`}
                   </p>
                 </div>
               </div>

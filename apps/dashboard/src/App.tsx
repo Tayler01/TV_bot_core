@@ -326,7 +326,7 @@ function App() {
                 void refreshSnapshot();
               }}
             >
-              Refresh
+              Sync
             </button>
             {showSafetyPanel ? (
               <p className="system-bar__timestamp">{activeReviewSummary}</p>
@@ -343,21 +343,21 @@ function App() {
 
       {viewModel.error ? (
         <section className="banner banner--warning" role="status">
-          <strong>Local control-plane read failed.</strong>
+          <strong>Control read failed.</strong>
           <span>{viewModel.error}</span>
         </section>
       ) : null}
 
       {commandFeedback ? (
         <section className={`banner banner--${commandFeedback.tone}`} role="status">
-          <strong>Operator action result.</strong>
+          <strong>Action result.</strong>
           <span>{commandFeedback.message}</span>
         </section>
       ) : null}
 
       {pendingAction ? (
         <section className="banner banner--info" role="status">
-          <strong>Action in progress.</strong>
+          <strong>Working.</strong>
           <span>{pendingAction}</span>
         </section>
       ) : null}

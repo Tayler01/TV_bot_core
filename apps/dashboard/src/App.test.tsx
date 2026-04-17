@@ -1327,11 +1327,11 @@ describe("App", () => {
     expect(await screen.findByRole("tab", { name: "Checks" })).toBeInTheDocument();
     expect(await screen.findByText("Databento")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Follow on" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Auto" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Fit" })).toBeInTheDocument();
     expect(await screen.findAllByText("Posture")).not.toHaveLength(0);
     expect(await screen.findAllByText("Orders")).not.toHaveLength(0);
-    expect(await screen.findByRole("button", { name: "More history" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Older" })).toBeInTheDocument();
     expect(
       await screen.findAllByText(/limit 2,412\.25 \| stop 2,408\.75/),
     ).not.toHaveLength(0);
@@ -1345,7 +1345,7 @@ describe("App", () => {
     expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(1);
     expect(await screen.findAllByText(/Trade trade-1/)).toHaveLength(2);
     expect(
-      await screen.findByText("Broker protections confirmed on the open position."),
+      await screen.findByText("Protections on"),
     ).toBeInTheDocument();
     expect(await screen.findByText("+$97.00")).toBeInTheDocument();
     expect(await screen.findAllByText("100.0%")).toHaveLength(2);
@@ -1402,17 +1402,17 @@ describe("App", () => {
     render(<App />);
 
     expect(
-      await screen.findByText("Reconnect review active for chart contract"),
-    ).toBeInTheDocument();
-    expect(await screen.findByText("Chart feed degraded")).toBeInTheDocument();
+      await screen.findAllByText("Reconnect review"),
+    ).not.toHaveLength(0);
+    expect(await screen.findAllByText("Feed degraded")).not.toHaveLength(0);
     expect(
       await screen.findAllByText(
         "Databento heartbeat stale; new entries paused until feed recovery.",
       ),
     ).not.toHaveLength(0);
     expect(
-      await screen.findByText("Shutdown review still blocking this contract"),
-    ).toBeInTheDocument();
+      await screen.findAllByText("Shutdown review"),
+    ).not.toHaveLength(0);
   });
 
   it("switches chart timeframes and loads older history through the chart control plane", async () => {
@@ -1438,7 +1438,7 @@ describe("App", () => {
       expect(snapshotCalls.length).toBeGreaterThan(0);
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "More history" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Older" }));
 
     await waitFor(() => {
       const historyCalls = fetchSpy.mock.calls.filter((call) => {
@@ -1462,9 +1462,9 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Follow on" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Auto" }));
 
-    expect(await screen.findByRole("button", { name: "Follow off" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Manual" })).toBeInTheDocument();
   });
 
   it("surfaces the sample-candle fallback when live market data is not configured", async () => {
@@ -1473,15 +1473,15 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Sample candles")).toBeInTheDocument();
+    expect(await screen.findAllByText("Sample candles")).not.toHaveLength(0);
     expect(
       await screen.findByText(
-        /Live market data is not configured, so the chart is showing sample candles to keep the workspace readable until a Databento API key is provided\./,
+        /Showing sample candles until Databento is configured\./,
       ),
     ).toBeInTheDocument();
     expect(
-      await screen.findByText("Illustrative sample candles active"),
-    ).toBeInTheDocument();
+      await screen.findAllByText("Sample candles"),
+    ).not.toHaveLength(0);
   });
 
   it("updates the contract chart summary when the dedicated chart stream publishes a new snapshot", async () => {
@@ -1490,7 +1490,7 @@ describe("App", () => {
 
     render(<App />);
 
-    await screen.findByText("Latest candle");
+    await screen.findAllByText("Candle");
     await waitFor(() => {
       expect(websocket.latest("/chart/stream")).not.toBeNull();
     });
@@ -1559,9 +1559,7 @@ describe("App", () => {
         ).length,
       ).toBeGreaterThan(0);
     });
-    expect(
-      (await screen.findAllByText(/Building until/i)).length,
-    ).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/Build /i)).length).toBeGreaterThan(0);
   });
 
   it("renders recent websocket operator events from the local runtime host", async () => {
