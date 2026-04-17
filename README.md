@@ -5,7 +5,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, and operator readout strips.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, and an initial chart-first shell reset with context/action rails plus a tabbed lower detail dock.
 - Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
 - Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
 
@@ -90,7 +90,7 @@ tests/
 
 ## Still Required For V1
 
-- Final chart-first dashboard/operator redesign and production sign-off around the now-real live chart module
+- Final chart-first dashboard/operator redesign and production sign-off around the now-real live chart module, now that the first shell reset is in place
 - Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
 - Final release checklist walkthrough and sign-off
 
@@ -103,6 +103,220 @@ tests/
 ```powershell
 cargo test -j 1
 ```
+
+## API Key And Credential Setup
+
+The runtime is designed to read secrets from environment variables instead of storing them in Git-tracked config files.
+At minimum, you usually need:
+
+- `TV_BOT__MARKET_DATA__API_KEY` for Databento
+- `TV_BOT__BROKER__USERNAME` for Tradovate
+- `TV_BOT__BROKER__PASSWORD` for Tradovate
+- `TV_BOT__BROKER__CID` for the Tradovate app/client id
+- `TV_BOT__BROKER__SEC` for the Tradovate app secret
+
+Common optional values:
+
+- `TV_BOT__BROKER__PAPER_ACCOUNT_NAME` to force a specific Tradovate paper account
+- `TV_BOT__BROKER__LIVE_ACCOUNT_NAME` to force a specific Tradovate live account
+- `TV_BOT__PERSISTENCE__PRIMARY_URL` if you want Postgres instead of SQLite fallback
+- `TV_BOT__MARKET_DATA__GATEWAY` only if you need a non-default Databento gateway
+
+Example values used below:
+
+```text
+TV_BOT__MARKET_DATA__API_KEY=db-live-abc123example
+TV_BOT__BROKER__USERNAME=your.tradovate.login
+TV_BOT__BROKER__PASSWORD=correct-horse-battery-staple
+TV_BOT__BROKER__CID=your-tradovate-app-cid
+TV_BOT__BROKER__SEC=your-tradovate-app-secret
+TV_BOT__BROKER__PAPER_ACCOUNT_NAME=SIM123456
+TV_BOT__PERSISTENCE__PRIMARY_URL=postgres://postgres:postgres@localhost:5432/tv_bot_core
+```
+
+### Windows PowerShell
+
+Use these commands if you want the variables only for the current terminal session:
+
+```powershell
+$env:TV_BOT__MARKET_DATA__API_KEY = "db-live-abc123example"
+$env:TV_BOT__BROKER__USERNAME = "your.tradovate.login"
+$env:TV_BOT__BROKER__PASSWORD = "correct-horse-battery-staple"
+$env:TV_BOT__BROKER__CID = "your-tradovate-app-cid"
+$env:TV_BOT__BROKER__SEC = "your-tradovate-app-secret"
+$env:TV_BOT__BROKER__PAPER_ACCOUNT_NAME = "SIM123456"
+$env:TV_BOT__PERSISTENCE__PRIMARY_URL = "postgres://postgres:postgres@localhost:5432/tv_bot_core"
+```
+
+Verify they are present in the current PowerShell session:
+
+```powershell
+Get-ChildItem Env:TV_BOT__*
+```
+
+If you want them to persist for future terminals, use `setx`. `setx` does not update the current shell, so open a new terminal after running it:
+
+```powershell
+setx TV_BOT__MARKET_DATA__API_KEY "db-live-abc123example"
+setx TV_BOT__BROKER__USERNAME "your.tradovate.login"
+setx TV_BOT__BROKER__PASSWORD "correct-horse-battery-staple"
+setx TV_BOT__BROKER__CID "your-tradovate-app-cid"
+setx TV_BOT__BROKER__SEC "your-tradovate-app-secret"
+setx TV_BOT__BROKER__PAPER_ACCOUNT_NAME "SIM123456"
+setx TV_BOT__PERSISTENCE__PRIMARY_URL "postgres://postgres:postgres@localhost:5432/tv_bot_core"
+```
+
+If you prefer classic Command Prompt for the current session:
+
+```cmd
+set TV_BOT__MARKET_DATA__API_KEY=db-live-abc123example
+set TV_BOT__BROKER__USERNAME=your.tradovate.login
+set TV_BOT__BROKER__PASSWORD=correct-horse-battery-staple
+set TV_BOT__BROKER__CID=your-tradovate-app-cid
+set TV_BOT__BROKER__SEC=your-tradovate-app-secret
+set TV_BOT__BROKER__PAPER_ACCOUNT_NAME=SIM123456
+set TV_BOT__PERSISTENCE__PRIMARY_URL=postgres://postgres:postgres@localhost:5432/tv_bot_core
+```
+
+### macOS
+
+For a temporary session in `zsh` or `bash`:
+
+```bash
+export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
+export TV_BOT__BROKER__USERNAME="your.tradovate.login"
+export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
+export TV_BOT__BROKER__CID="your-tradovate-app-cid"
+export TV_BOT__BROKER__SEC="your-tradovate-app-secret"
+export TV_BOT__BROKER__PAPER_ACCOUNT_NAME="SIM123456"
+export TV_BOT__PERSISTENCE__PRIMARY_URL="postgres://postgres:postgres@localhost:5432/tv_bot_core"
+```
+
+To make them persistent for future shells on macOS:
+
+For `zsh`:
+
+```bash
+cat <<'EOF' >> ~/.zshrc
+export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
+export TV_BOT__BROKER__USERNAME="your.tradovate.login"
+export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
+export TV_BOT__BROKER__CID="your-tradovate-app-cid"
+export TV_BOT__BROKER__SEC="your-tradovate-app-secret"
+export TV_BOT__BROKER__PAPER_ACCOUNT_NAME="SIM123456"
+export TV_BOT__PERSISTENCE__PRIMARY_URL="postgres://postgres:postgres@localhost:5432/tv_bot_core"
+EOF
+source ~/.zshrc
+```
+
+For `bash`:
+
+```bash
+cat <<'EOF' >> ~/.bashrc
+export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
+export TV_BOT__BROKER__USERNAME="your.tradovate.login"
+export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
+export TV_BOT__BROKER__CID="your-tradovate-app-cid"
+export TV_BOT__BROKER__SEC="your-tradovate-app-secret"
+export TV_BOT__BROKER__PAPER_ACCOUNT_NAME="SIM123456"
+export TV_BOT__PERSISTENCE__PRIMARY_URL="postgres://postgres:postgres@localhost:5432/tv_bot_core"
+EOF
+source ~/.bashrc
+```
+
+Verify:
+
+```bash
+env | grep '^TV_BOT__'
+```
+
+### Linux
+
+For a temporary session:
+
+```bash
+export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
+export TV_BOT__BROKER__USERNAME="your.tradovate.login"
+export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
+export TV_BOT__BROKER__CID="your-tradovate-app-cid"
+export TV_BOT__BROKER__SEC="your-tradovate-app-secret"
+export TV_BOT__BROKER__PAPER_ACCOUNT_NAME="SIM123456"
+export TV_BOT__PERSISTENCE__PRIMARY_URL="postgres://postgres:postgres@localhost:5432/tv_bot_core"
+```
+
+To make them persistent on Linux, add them to your shell startup file and reload it. For `bash`:
+
+```bash
+cat <<'EOF' >> ~/.bashrc
+export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
+export TV_BOT__BROKER__USERNAME="your.tradovate.login"
+export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
+export TV_BOT__BROKER__CID="your-tradovate-app-cid"
+export TV_BOT__BROKER__SEC="your-tradovate-app-secret"
+export TV_BOT__BROKER__PAPER_ACCOUNT_NAME="SIM123456"
+export TV_BOT__PERSISTENCE__PRIMARY_URL="postgres://postgres:postgres@localhost:5432/tv_bot_core"
+EOF
+source ~/.bashrc
+```
+
+For `zsh` on Linux, use the same pattern with `~/.zshrc` instead.
+
+Verify:
+
+```bash
+env | grep '^TV_BOT__'
+```
+
+### Recommended Minimal Setup
+
+If you only want enough to run observation mode with live Databento data, set just:
+
+```text
+TV_BOT__MARKET_DATA__API_KEY
+```
+
+If you want paper or live Tradovate execution flows to work, also set:
+
+```text
+TV_BOT__BROKER__USERNAME
+TV_BOT__BROKER__PASSWORD
+TV_BOT__BROKER__CID
+TV_BOT__BROKER__SEC
+```
+
+If you want the bot to target a specific account automatically, also set one of:
+
+```text
+TV_BOT__BROKER__PAPER_ACCOUNT_NAME
+TV_BOT__BROKER__LIVE_ACCOUNT_NAME
+```
+
+### Example Full Startup Flow
+
+After your environment variables are set, a typical Windows local run looks like:
+
+```powershell
+.\target\release\tv-bot-runtime.exe .\config\runtime.local.toml
+```
+
+On macOS or Linux:
+
+```bash
+./target/release/tv-bot-runtime ./config/runtime.local.toml
+```
+
+If you want to confirm the runtime is seeing your configuration, check the status endpoint after startup:
+
+```text
+http://127.0.0.1:8080/status
+```
+
+### Notes
+
+- Keep secrets out of Git-tracked TOML files. Environment variables are the intended path for credentials.
+- `config/runtime.local.toml` is the right place for non-secret local defaults such as startup mode or default strategy path.
+- On Windows, `setx` affects future terminals only. Use `$env:...` as well if you need the values immediately in the current shell.
+- If you rotate Databento or Tradovate credentials, restart the runtime after updating the environment.
 
 This workspace is now the primary local checkout, but Windows may still briefly file-lock generated test executables. If that happens, retrying targeted serial tests is usually enough.
 

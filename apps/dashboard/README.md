@@ -47,7 +47,7 @@ The current dashboard now covers:
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
 
 The chart now renders the currently loaded strategy contract through the local control plane and does not call Databento or Tradovate directly.
-The chart module now also surfaces reconnect, shutdown, degraded-feed, chart-stream, dispatch posture, and the no-market-data sample fallback directly inside the chart itself, and the latest browser sign-off sweep cleared the fresh-open local console path plus responsive width sweeps without page-level overflow. The remaining dashboard work is now centered on a chart-first redesign around that live chart rather than on first chart delivery itself, with status tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>) and [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
+The chart module now also surfaces reconnect, shutdown, degraded-feed, chart-stream, dispatch posture, and the no-market-data sample fallback directly inside the chart itself, and the latest browser sign-off sweep cleared the fresh-open local console path plus responsive width sweeps without page-level overflow. The first chart-first shell reset is now also in place: a slim system bar sits above a chart-centered workspace, the runtime/readiness context lives in a left rail, operator actions live in a right rail, and deeper monitoring/audit content moves through a tabbed lower detail dock. The remaining dashboard work is now centered on finishing that chart-first redesign around the live chart rather than on first chart delivery itself, with status tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>) and [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
 ## Local Development
 
@@ -76,7 +76,7 @@ If the event stream is served from a separate WebSocket origin instead of the sa
 ## Follow-up Note
 
 Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.
-The remaining dashboard work is now centered on the chart-first redesign and production sign-off around the live chart module, plus the final hands-on paper/demo release verification pass.
+The remaining dashboard work is now centered on finishing the chart-first redesign and production sign-off around the live chart module, plus the final hands-on paper/demo release verification pass.
 
 ## Production UI Follow-Up
 
@@ -87,6 +87,7 @@ That plan is the current source of truth for:
 
 - making the live contract chart the center of the workspace
 - reorganizing the page into chart-adjacent rails plus a lower detail dock
+  This first shell reset is already in place; the remaining work is deeper rail polish, copy tightening, and production sign-off.
 - dark-mode-first visual redesign
 - overflow and responsive hardening
 - component decomposition and frontend QA gates

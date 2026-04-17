@@ -359,6 +359,11 @@ This keeps the redesign focused and achievable while still moving clearly toward
 - Turn the existing top area into a slim system bar
 - Move the chart directly into the center of the default view
 
+Status:
+- Landed on `main` as an initial shell reset
+- Current implementation now has the top system bar, a chart-centered workspace stage, and a tabbed lower detail dock
+- Remaining work in this phase is refinement, not first delivery
+
 Likely file additions or refactors:
 
 - `apps/dashboard/src/components/layout/*`
@@ -467,9 +472,9 @@ The chart-first redesign is not complete unless all of the following are true:
 1. Treat this document as the new source of truth for dashboard Phase 5 redesign work.
 2. Freeze a chart-first content inventory:
    decide exactly which current widgets move into the left rail, right rail, and bottom dock.
-3. Build the new shell and rail composition around the existing live chart.
-4. Migrate the current control center into the right action rail.
-5. Migrate monitoring and audit depth into the lower dock.
+3. Refine the new shell and rail composition around the existing live chart.
+4. Continue tightening the current control center inside the right action rail.
+5. Continue tightening monitoring and audit depth inside the lower dock.
 6. Run the copy and responsive QA pass.
 
 ## Documentation Follow-Up

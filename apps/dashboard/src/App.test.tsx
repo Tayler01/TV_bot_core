@@ -1319,24 +1319,17 @@ describe("App", () => {
     expect(
       await screen.findAllByText(/limit 2,412\.25 \| stop 2,408\.75/),
     ).not.toHaveLength(0);
-    expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
-    expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
     expect(await screen.findByText("Per-trade P&L")).toBeInTheDocument();
-    expect(await screen.findByText("Recent event mix")).toBeInTheDocument();
-    expect(await screen.findByText("Journal summary")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
     expect(await screen.findAllByText("Recent fills")).toHaveLength(2);
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
-    expect(await screen.findByText("Latency stage breakdown")).toBeInTheDocument();
-    expect(await screen.findByText("Persisted operator journal and audit trail")).toBeInTheDocument();
     expect(await screen.findByText("Runtime settings")).toBeInTheDocument();
     expect(await screen.findByText("Config file backed")).toBeInTheDocument();
     expect(await screen.findByText("Floating now")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
     expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(2);
     expect(await screen.findAllByText(/Trade trade-1/)).toHaveLength(2);
-    expect(await screen.findByText("execution:dispatch_succeeded")).toBeInTheDocument();
     expect(
       await screen.findByText(
         "Protective brackets available and operator overrides are clear.",
@@ -1344,6 +1337,21 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("+$97.00")).toBeInTheDocument();
     expect(await screen.findAllByText("100.0%")).toHaveLength(2);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Health" }));
+    expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
+    expect(await screen.findByText("Feed and storage detail")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Latency" }));
+    expect(await screen.findByText("Latency stage breakdown")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Journal" }));
+    expect(await screen.findByText("Journal summary")).toBeInTheDocument();
+    expect(await screen.findByText("Persisted operator journal and audit trail")).toBeInTheDocument();
+    expect(await screen.findByText("execution:dispatch_succeeded")).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Events" }));
+    expect(await screen.findByText("Recent event mix")).toBeInTheDocument();
   });
 
   it("surfaces reconnect and shutdown review warnings when they are active", async () => {
@@ -1524,7 +1532,9 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findAllByText("2,414.80")).not.toHaveLength(0);
+    await waitFor(() => {
+      expect(screen.getAllByText("2,414.80").length).toBeGreaterThan(0);
+    });
   });
 
   it("renders recent websocket operator events from the local runtime host", async () => {
@@ -1533,6 +1543,7 @@ describe("App", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "Events" }));
     await screen.findByText("Local operator feed from /events");
     websocket.latest()?.emitJson({
       kind: "journal_record",
@@ -1549,7 +1560,7 @@ describe("App", () => {
       },
     });
 
-    expect(await screen.findAllByText("runtime:shutdown_blocked")).toHaveLength(2);
+    expect(await screen.findAllByText("runtime:shutdown_blocked")).toHaveLength(1);
     expect(
       await screen.findAllByText('{"reason":"shutdown blocked pending explicit review"}'),
     ).toHaveLength(1);

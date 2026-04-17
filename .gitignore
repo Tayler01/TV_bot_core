@@ -18,3 +18,4 @@ logs/
 *.db-shm
 *.db-wal
 .playwright-cli/
+strat_research/

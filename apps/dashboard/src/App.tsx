@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { latencyStages, reviewSummary } from "./lib/dashboardPresentation";
 import {
   dispatchTone,
@@ -42,6 +44,19 @@ import { SignalTile } from "./components/dashboardPrimitives";
 import type { LatencyStageViewModel } from "./dashboardModels";
 import { useDashboardController } from "./hooks/useDashboardController";
 import { useDashboardChart } from "./hooks/useDashboardChart";
+
+type WorkspaceDockSection = "health" | "history" | "latency" | "journal" | "events";
+
+const workspaceDockSections: ReadonlyArray<{
+  section: WorkspaceDockSection;
+  label: string;
+}> = [
+  { section: "history", label: "Trades" },
+  { section: "health", label: "Health" },
+  { section: "latency", label: "Latency" },
+  { section: "journal", label: "Journal" },
+  { section: "events", label: "Events" },
+];
 
 function App() {
   const {
@@ -103,6 +118,8 @@ function App() {
     refreshChart,
     loadOlderHistory,
   } = useDashboardChart(viewModel.snapshot);
+  const [activeDockSection, setActiveDockSection] =
+    useState<WorkspaceDockSection>("history");
 
   const snapshot = viewModel.snapshot;
   const selectedStrategyEntry =
@@ -209,24 +226,23 @@ function App() {
 
   return (
     <main className="shell">
-      <div className={`hero hero--${headlineTone}`}>
-        <div className="hero__content">
-          <div className="hero__copy">
+      <section className={`system-bar system-bar--${headlineTone}`}>
+        <div className="system-bar__intro">
+          <div className="system-bar__copy">
             <p className="eyebrow">TV Bot Operator Console</p>
             <h1>Local runtime command center</h1>
-            <p className="hero__summary">
-              Operate the runtime, watch the live safety posture, and resolve review-required
-              states from the local control plane without losing the backend as the source of
-              truth.
+            <p className="system-bar__summary">
+              The loaded contract chart is now the center of the workspace, with runtime posture,
+              contract context, and operator actions arranged around it.
             </p>
           </div>
-          <div className="hero__meta">
-            <div className="hero__mode-lockup">
-              <span className="hero__mode-label">Current mode</span>
+          <div className="system-bar__meta">
+            <div className="system-bar__mode-lockup">
+              <span className="system-bar__mode-label">Current mode</span>
               <strong>{snapshot ? formatMode(snapshot.status.mode) : "Waiting for runtime"}</strong>
-              <span className="hero__mode-detail">{activeReviewSummary}</span>
+              <span className="system-bar__mode-detail">{activeReviewSummary}</span>
             </div>
-            <div className="hero__actions">
+            <div className="system-bar__actions">
               <button
                 className="refresh-button"
                 type="button"
@@ -236,7 +252,7 @@ function App() {
               >
                 Refresh now
               </button>
-              <p className="hero__timestamp">
+              <p className="system-bar__timestamp">
                 Last sync{" "}
                 {snapshot
                   ? formatDateTime(snapshot.fetchedAt)
@@ -245,7 +261,7 @@ function App() {
             </div>
           </div>
         </div>
-        <div className="hero__rail" aria-label="Runtime posture">
+        <div className="system-bar__signals" aria-label="Runtime posture">
           <SignalTile
             label="Arm state"
             value={snapshot ? formatMode(snapshot.status.arm_state) : "Waiting"}
@@ -329,7 +345,7 @@ function App() {
             }
           />
         </div>
-      </div>
+      </section>
 
       {viewModel.error ? (
         <section className="banner banner--warning" role="status">
@@ -360,151 +376,210 @@ function App() {
       ) : null}
 
       {snapshot ? (
-        <div className="dashboard-grid">
-          <ControlCenterPanel
-            snapshot={snapshot}
-            pendingAction={pendingAction}
-            strategyViewModel={strategyViewModel}
-            selectedStrategyEntry={selectedStrategyEntry}
-            selectedStrategyUploadFile={selectedStrategyUploadFile}
-            strategyUploadInputRef={strategyUploadInputRef}
-            settingsDraft={settingsDraft}
-            settingsDirty={settingsDirty}
-            newEntriesReason={newEntriesReason}
-            closePositionReason={closePositionReason}
-            manualEntrySide={manualEntrySide}
-            manualEntryQuantity={manualEntryQuantity}
-            manualEntryTickSize={manualEntryTickSize}
-            manualEntryReferencePrice={manualEntryReferencePrice}
-            manualEntryTickValueUsd={manualEntryTickValueUsd}
-            manualEntryReason={manualEntryReason}
-            cancelWorkingOrdersReason={cancelWorkingOrdersReason}
-            armButtonLabel={armButtonLabel}
-            pauseButtonLabel={pauseButtonLabel}
-            canLoadSelectedStrategy={canLoadSelectedStrategy}
-            canUploadSelectedStrategyFile={canUploadSelectedStrategyFile}
-            canDisableNewEntries={canDisableNewEntries}
-            canEnableNewEntries={canEnableNewEntries}
-            canSaveSettings={canSaveSettings}
-            canManualEntry={canManualEntry}
-            canClosePosition={canClosePosition}
-            canCancelWorkingOrders={canCancelWorkingOrders}
-            onSetMode={handleSetMode}
-            onNewEntriesReasonChange={setNewEntriesReason}
-            onSetNewEntriesEnabled={(enabled) => {
-              void updateNewEntriesEnabled(enabled);
-            }}
-            onStrategyPathChange={handleStrategyPathChange}
-            onStrategyUploadFileChange={setSelectedStrategyUploadFile}
-            onUploadSelectedStrategyFile={() => {
-              void uploadSelectedStrategyFile();
-            }}
-            onRefreshStrategyLibrary={() => {
-              void refreshStrategyLibrary();
-            }}
-            onRefreshStrategyValidation={() => {
-              void refreshStrategyValidation(strategyViewModel.selectedPath);
-            }}
-            onLoadSelectedStrategy={handleLoadSelectedStrategy}
-            onSettingsStartupModeChange={(mode) => {
-              updateSettingsDraft((current) => ({ ...current, startupMode: mode }));
-            }}
-            onSettingsDefaultStrategyPathChange={(value) => {
-              updateSettingsDraft((current) => ({ ...current, defaultStrategyPath: value }));
-            }}
-            onSettingsAllowSqliteFallbackChange={(enabled) => {
-              updateSettingsDraft((current) => ({ ...current, allowSqliteFallback: enabled }));
-            }}
-            onSettingsPaperAccountNameChange={(value) => {
-              updateSettingsDraft((current) => ({ ...current, paperAccountName: value }));
-            }}
-            onSettingsLiveAccountNameChange={(value) => {
-              updateSettingsDraft((current) => ({ ...current, liveAccountName: value }));
-            }}
-            onSaveRuntimeSettings={() => {
-              void saveRuntimeSettings();
-            }}
-            onResetSettings={handleSettingsReset}
-            onStartWarmup={handleStartWarmup}
-            onArmToggle={handleArmToggle}
-            onPauseResume={handlePauseResume}
-            onManualEntrySideChange={setManualEntrySide}
-            onManualEntryQuantityChange={setManualEntryQuantity}
-            onManualEntryTickSizeChange={setManualEntryTickSize}
-            onManualEntryReferencePriceChange={setManualEntryReferencePrice}
-            onManualEntryTickValueUsdChange={setManualEntryTickValueUsd}
-            onManualEntryReasonChange={setManualEntryReason}
-            onManualEntrySubmit={handleManualEntrySubmit}
-            onClosePositionReasonChange={setClosePositionReason}
-            onClosePositionSubmit={handleClosePositionSubmit}
-            onCancelWorkingOrdersReasonChange={setCancelWorkingOrdersReason}
-            onCancelWorkingOrdersSubmit={handleCancelWorkingOrdersSubmit}
-          />
+        <div className="workspace-shell">
+          <div className="workspace-stage">
+            <aside className="workspace-stage__rail workspace-stage__rail--context">
+              <RuntimeSummaryPanel snapshot={snapshot} />
+              <ReadinessPanel snapshot={snapshot} readinessCounts={readinessCounts} />
+            </aside>
 
-          <LiveChartPanel
-            chartViewModel={chartViewModel}
-            runtimeStatus={snapshot?.status ?? null}
-            onSelectTimeframe={setSelectedTimeframe}
-            onLoadOlderHistory={() => {
-              void loadOlderHistory();
-            }}
-            onRefreshChart={() => {
-              void refreshChart();
-            }}
-          />
+            <section className="workspace-stage__chart">
+              <LiveChartPanel
+                chartViewModel={chartViewModel}
+                runtimeStatus={snapshot?.status ?? null}
+                onSelectTimeframe={setSelectedTimeframe}
+                onLoadOlderHistory={() => {
+                  void loadOlderHistory();
+                }}
+                onRefreshChart={() => {
+                  void refreshChart();
+                }}
+              />
+            </section>
 
-          <RuntimeSummaryPanel snapshot={snapshot} />
+            <aside className="workspace-stage__rail workspace-stage__rail--actions">
+              <ControlCenterPanel
+                snapshot={snapshot}
+                pendingAction={pendingAction}
+                strategyViewModel={strategyViewModel}
+                selectedStrategyEntry={selectedStrategyEntry}
+                selectedStrategyUploadFile={selectedStrategyUploadFile}
+                strategyUploadInputRef={strategyUploadInputRef}
+                settingsDraft={settingsDraft}
+                settingsDirty={settingsDirty}
+                newEntriesReason={newEntriesReason}
+                closePositionReason={closePositionReason}
+                manualEntrySide={manualEntrySide}
+                manualEntryQuantity={manualEntryQuantity}
+                manualEntryTickSize={manualEntryTickSize}
+                manualEntryReferencePrice={manualEntryReferencePrice}
+                manualEntryTickValueUsd={manualEntryTickValueUsd}
+                manualEntryReason={manualEntryReason}
+                cancelWorkingOrdersReason={cancelWorkingOrdersReason}
+                armButtonLabel={armButtonLabel}
+                pauseButtonLabel={pauseButtonLabel}
+                canLoadSelectedStrategy={canLoadSelectedStrategy}
+                canUploadSelectedStrategyFile={canUploadSelectedStrategyFile}
+                canDisableNewEntries={canDisableNewEntries}
+                canEnableNewEntries={canEnableNewEntries}
+                canSaveSettings={canSaveSettings}
+                canManualEntry={canManualEntry}
+                canClosePosition={canClosePosition}
+                canCancelWorkingOrders={canCancelWorkingOrders}
+                onSetMode={handleSetMode}
+                onNewEntriesReasonChange={setNewEntriesReason}
+                onSetNewEntriesEnabled={(enabled) => {
+                  void updateNewEntriesEnabled(enabled);
+                }}
+                onStrategyPathChange={handleStrategyPathChange}
+                onStrategyUploadFileChange={setSelectedStrategyUploadFile}
+                onUploadSelectedStrategyFile={() => {
+                  void uploadSelectedStrategyFile();
+                }}
+                onRefreshStrategyLibrary={() => {
+                  void refreshStrategyLibrary();
+                }}
+                onRefreshStrategyValidation={() => {
+                  void refreshStrategyValidation(strategyViewModel.selectedPath);
+                }}
+                onLoadSelectedStrategy={handleLoadSelectedStrategy}
+                onSettingsStartupModeChange={(mode) => {
+                  updateSettingsDraft((current) => ({ ...current, startupMode: mode }));
+                }}
+                onSettingsDefaultStrategyPathChange={(value) => {
+                  updateSettingsDraft((current) => ({ ...current, defaultStrategyPath: value }));
+                }}
+                onSettingsAllowSqliteFallbackChange={(enabled) => {
+                  updateSettingsDraft((current) => ({ ...current, allowSqliteFallback: enabled }));
+                }}
+                onSettingsPaperAccountNameChange={(value) => {
+                  updateSettingsDraft((current) => ({ ...current, paperAccountName: value }));
+                }}
+                onSettingsLiveAccountNameChange={(value) => {
+                  updateSettingsDraft((current) => ({ ...current, liveAccountName: value }));
+                }}
+                onSaveRuntimeSettings={() => {
+                  void saveRuntimeSettings();
+                }}
+                onResetSettings={handleSettingsReset}
+                onStartWarmup={handleStartWarmup}
+                onArmToggle={handleArmToggle}
+                onPauseResume={handlePauseResume}
+                onManualEntrySideChange={setManualEntrySide}
+                onManualEntryQuantityChange={setManualEntryQuantity}
+                onManualEntryTickSizeChange={setManualEntryTickSize}
+                onManualEntryReferencePriceChange={setManualEntryReferencePrice}
+                onManualEntryTickValueUsdChange={setManualEntryTickValueUsd}
+                onManualEntryReasonChange={setManualEntryReason}
+                onManualEntrySubmit={handleManualEntrySubmit}
+                onClosePositionReasonChange={setClosePositionReason}
+                onClosePositionSubmit={handleClosePositionSubmit}
+                onCancelWorkingOrdersReasonChange={setCancelWorkingOrdersReason}
+                onCancelWorkingOrdersSubmit={handleCancelWorkingOrdersSubmit}
+              />
 
-          <ReadinessPanel snapshot={snapshot} readinessCounts={readinessCounts} />
+              <SafetyPanel
+                snapshot={snapshot}
+                reconnectReason={reconnectReason}
+                shutdownReason={shutdownReason}
+                reviewActionsDisabled={reviewActionsDisabled}
+                reconnectCloseDisabled={reconnectCloseDisabled}
+                shutdownLeaveDisabled={shutdownLeaveDisabled}
+                shutdownFlattenDisabled={shutdownFlattenDisabled}
+                onReconnectReasonChange={setReconnectReason}
+                onShutdownReasonChange={setShutdownReason}
+                onReconnectDecision={(decision) => {
+                  void executeReconnectDecision(decision);
+                }}
+                onShutdownDecision={(decision) => {
+                  void executeShutdownDecision(decision);
+                }}
+              />
+            </aside>
+          </div>
 
-          <HealthPanel snapshot={snapshot} feedStatuses={feedStatuses} />
+          <section className="workspace-dock">
+            <div className="workspace-dock__header">
+              <div>
+                <p className="eyebrow">Detail Dock</p>
+                <h2>Monitoring, audit, and configuration depth</h2>
+                <p className="workspace-dock__summary">
+                  The chart stays in view while deeper runtime health, trade history, journal, and
+                  event detail move through focused dock tabs.
+                </p>
+              </div>
+              <div className="workspace-dock__tabs" role="tablist" aria-label="Workspace dock">
+                {workspaceDockSections.map(({ section, label }) => (
+                  <button
+                    key={section}
+                    className={
+                      activeDockSection === section
+                        ? "workspace-dock__tab workspace-dock__tab--active"
+                        : "workspace-dock__tab"
+                    }
+                    type="button"
+                    role="tab"
+                    id={`workspace-dock-tab-${section}`}
+                    aria-selected={activeDockSection === section}
+                    aria-controls={`workspace-dock-panel-${section}`}
+                    onClick={() => {
+                      setActiveDockSection(section);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          <HistoryPanel
-            snapshot={snapshot}
-            openWorkingOrders={openWorkingOrders}
-            recentFills={recentFills}
-            recentTrades={recentTrades}
-            tradePerformance={tradePerformance}
-            pnlChart={pnlChart}
-            pnlChartPathData={pnlChartPathData}
-            perTradePnl={perTradePnl}
-            projectedPnlSnapshot={projectedPnlSnapshot}
-          />
+            <div
+              className="workspace-dock__panel"
+              id={`workspace-dock-panel-${activeDockSection}`}
+              role="tabpanel"
+              aria-labelledby={`workspace-dock-tab-${activeDockSection}`}
+            >
+              {activeDockSection === "history" ? (
+                <HistoryPanel
+                  snapshot={snapshot}
+                  openWorkingOrders={openWorkingOrders}
+                  recentFills={recentFills}
+                  recentTrades={recentTrades}
+                  tradePerformance={tradePerformance}
+                  pnlChart={pnlChart}
+                  pnlChartPathData={pnlChartPathData}
+                  perTradePnl={perTradePnl}
+                  projectedPnlSnapshot={projectedPnlSnapshot}
+                />
+              ) : null}
 
-          <LatencyPanel
-            snapshot={snapshot}
-            latencyBreakdown={latencyBreakdown}
-            slowestLatencyStage={slowestLatencyStage}
-          />
+              {activeDockSection === "health" ? (
+                <HealthPanel snapshot={snapshot} feedStatuses={feedStatuses} />
+              ) : null}
 
-          <SafetyPanel
-            snapshot={snapshot}
-            reconnectReason={reconnectReason}
-            shutdownReason={shutdownReason}
-            reviewActionsDisabled={reviewActionsDisabled}
-            reconnectCloseDisabled={reconnectCloseDisabled}
-            shutdownLeaveDisabled={shutdownLeaveDisabled}
-            shutdownFlattenDisabled={shutdownFlattenDisabled}
-            onReconnectReasonChange={setReconnectReason}
-            onShutdownReasonChange={setShutdownReason}
-            onReconnectDecision={(decision) => {
-              void executeReconnectDecision(decision);
-            }}
-            onShutdownDecision={(decision) => {
-              void executeShutdownDecision(decision);
-            }}
-          />
+              {activeDockSection === "latency" ? (
+                <LatencyPanel
+                  snapshot={snapshot}
+                  latencyBreakdown={latencyBreakdown}
+                  slowestLatencyStage={slowestLatencyStage}
+                />
+              ) : null}
 
-          <JournalPanel
-            snapshot={snapshot}
-            journalSummary={journalSummary}
-            journalRecords={journalRecords}
-          />
+              {activeDockSection === "journal" ? (
+                <JournalPanel
+                  snapshot={snapshot}
+                  journalSummary={journalSummary}
+                  journalRecords={journalRecords}
+                />
+              ) : null}
 
-          <EventsPanel
-            eventFeed={eventFeed}
-            eventHeadlineSummary={eventHeadlineSummary}
-          />
+              {activeDockSection === "events" ? (
+                <EventsPanel
+                  eventFeed={eventFeed}
+                  eventHeadlineSummary={eventHeadlineSummary}
+                />
+              ) : null}
+            </div>
+          </section>
         </div>
       ) : null}
     </main>
