@@ -5,7 +5,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, and an initial chart-first shell reset with context/action rails plus a tabbed lower detail dock.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, and a chart-first workspace shell where the right rail stays focused on execution and safety while strategy/setup workflows move into a lower detail dock.
 - Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
 - Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
 
@@ -109,7 +109,7 @@ cargo test -j 1
 The runtime is designed to read secrets from environment variables instead of storing them in Git-tracked config files.
 At minimum, you usually need:
 
-- `TV_BOT__MARKET_DATA__API_KEY` for Databento
+- `DATABENTO_API_KEY` or `TV_BOT__MARKET_DATA__API_KEY` for Databento
 - `TV_BOT__BROKER__USERNAME` for Tradovate
 - `TV_BOT__BROKER__PASSWORD` for Tradovate
 - `TV_BOT__BROKER__CID` for the Tradovate app/client id
@@ -125,6 +125,7 @@ Common optional values:
 Example values used below:
 
 ```text
+DATABENTO_API_KEY=db-live-abc123example
 TV_BOT__MARKET_DATA__API_KEY=db-live-abc123example
 TV_BOT__BROKER__USERNAME=your.tradovate.login
 TV_BOT__BROKER__PASSWORD=correct-horse-battery-staple
@@ -139,6 +140,7 @@ TV_BOT__PERSISTENCE__PRIMARY_URL=postgres://postgres:postgres@localhost:5432/tv_
 Use these commands if you want the variables only for the current terminal session:
 
 ```powershell
+$env:DATABENTO_API_KEY = "db-live-abc123example"
 $env:TV_BOT__MARKET_DATA__API_KEY = "db-live-abc123example"
 $env:TV_BOT__BROKER__USERNAME = "your.tradovate.login"
 $env:TV_BOT__BROKER__PASSWORD = "correct-horse-battery-staple"
@@ -157,6 +159,7 @@ Get-ChildItem Env:TV_BOT__*
 If you want them to persist for future terminals, use `setx`. `setx` does not update the current shell, so open a new terminal after running it:
 
 ```powershell
+setx DATABENTO_API_KEY "db-live-abc123example"
 setx TV_BOT__MARKET_DATA__API_KEY "db-live-abc123example"
 setx TV_BOT__BROKER__USERNAME "your.tradovate.login"
 setx TV_BOT__BROKER__PASSWORD "correct-horse-battery-staple"
@@ -169,6 +172,7 @@ setx TV_BOT__PERSISTENCE__PRIMARY_URL "postgres://postgres:postgres@localhost:54
 If you prefer classic Command Prompt for the current session:
 
 ```cmd
+set DATABENTO_API_KEY=db-live-abc123example
 set TV_BOT__MARKET_DATA__API_KEY=db-live-abc123example
 set TV_BOT__BROKER__USERNAME=your.tradovate.login
 set TV_BOT__BROKER__PASSWORD=correct-horse-battery-staple
@@ -183,6 +187,7 @@ set TV_BOT__PERSISTENCE__PRIMARY_URL=postgres://postgres:postgres@localhost:5432
 For a temporary session in `zsh` or `bash`:
 
 ```bash
+export DATABENTO_API_KEY="db-live-abc123example"
 export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
 export TV_BOT__BROKER__USERNAME="your.tradovate.login"
 export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
@@ -198,6 +203,7 @@ For `zsh`:
 
 ```bash
 cat <<'EOF' >> ~/.zshrc
+export DATABENTO_API_KEY="db-live-abc123example"
 export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
 export TV_BOT__BROKER__USERNAME="your.tradovate.login"
 export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
@@ -213,6 +219,7 @@ For `bash`:
 
 ```bash
 cat <<'EOF' >> ~/.bashrc
+export DATABENTO_API_KEY="db-live-abc123example"
 export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
 export TV_BOT__BROKER__USERNAME="your.tradovate.login"
 export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
@@ -235,6 +242,7 @@ env | grep '^TV_BOT__'
 For a temporary session:
 
 ```bash
+export DATABENTO_API_KEY="db-live-abc123example"
 export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
 export TV_BOT__BROKER__USERNAME="your.tradovate.login"
 export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
@@ -248,6 +256,7 @@ To make them persistent on Linux, add them to your shell startup file and reload
 
 ```bash
 cat <<'EOF' >> ~/.bashrc
+export DATABENTO_API_KEY="db-live-abc123example"
 export TV_BOT__MARKET_DATA__API_KEY="db-live-abc123example"
 export TV_BOT__BROKER__USERNAME="your.tradovate.login"
 export TV_BOT__BROKER__PASSWORD="correct-horse-battery-staple"
@@ -272,7 +281,7 @@ env | grep '^TV_BOT__'
 If you only want enough to run observation mode with live Databento data, set just:
 
 ```text
-TV_BOT__MARKET_DATA__API_KEY
+DATABENTO_API_KEY or TV_BOT__MARKET_DATA__API_KEY
 ```
 
 If you want paper or live Tradovate execution flows to work, also set:
@@ -327,7 +336,7 @@ For a quick local smoke test on Windows:
 - open `http://127.0.0.1:4173`
 - use `http://127.0.0.1:8080/status` or the root API landing page at `http://127.0.0.1:8080/` instead of expecting a UI on the runtime port
 
-For a Databento-only observation smoke test on Windows, set `TV_BOT__MARKET_DATA__API_KEY` in the current PowerShell session and run:
+For a Databento-only observation smoke test on Windows, set `DATABENTO_API_KEY` or `TV_BOT__MARKET_DATA__API_KEY` in the current PowerShell session and run:
 
 ```powershell
 .\scripts\dev\start_databento_observation.ps1 -StartDashboard

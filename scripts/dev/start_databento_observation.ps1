@@ -61,11 +61,18 @@ function Wait-ForUrl {
     throw "Timed out waiting for $Url"
 }
 
+if (-not $env:TV_BOT__MARKET_DATA__API_KEY -and $env:DATABENTO_API_KEY) {
+    $env:TV_BOT__MARKET_DATA__API_KEY = $env:DATABENTO_API_KEY
+}
+
 if (-not $env:TV_BOT__MARKET_DATA__API_KEY) {
     throw @"
-TV_BOT__MARKET_DATA__API_KEY is not set.
+No Databento API key is set.
 
 Set it in this PowerShell session first, for example:
+  `$env:DATABENTO_API_KEY = "db-..."
+
+or:
   `$env:TV_BOT__MARKET_DATA__API_KEY = "db-..."
 
 Then rerun:

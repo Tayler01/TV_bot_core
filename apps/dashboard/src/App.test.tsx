@@ -1302,12 +1302,9 @@ describe("App", () => {
     expect(await screen.findAllByText("Paper")).not.toHaveLength(0);
     expect(await screen.findAllByText("paper-primary")).not.toHaveLength(0);
     expect(await screen.findByText("Runtime posture and operator entry controls")).toBeInTheDocument();
-    expect(await screen.findByText("Library workflow and runtime configuration")).toBeInTheDocument();
     expect(await screen.findByText("Warmup, arming, and manual operator actions")).toBeInTheDocument();
-    expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(2);
-    expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
-    expect(await screen.findByText("Validation passed")).toBeInTheDocument();
-    expect(await screen.findByText("Grouped pre-arm checks")).toBeInTheDocument();
+    expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(1);
+    expect(await screen.findByText("Pre-arm check groups")).toBeInTheDocument();
     expect(await screen.findByText("Gold Breakout live contract chart")).toBeInTheDocument();
     expect(await screen.findByText("Contract context")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
@@ -1324,8 +1321,6 @@ describe("App", () => {
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
     expect(await screen.findAllByText("Recent fills")).toHaveLength(2);
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
-    expect(await screen.findByText("Runtime settings")).toBeInTheDocument();
-    expect(await screen.findByText("Config file backed")).toBeInTheDocument();
     expect(await screen.findByText("Floating now")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
     expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(2);
@@ -1337,6 +1332,13 @@ describe("App", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("+$97.00")).toBeInTheDocument();
     expect(await screen.findAllByText("100.0%")).toHaveLength(2);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
+    expect(await screen.findByText("Strategy workspace and runtime configuration")).toBeInTheDocument();
+    expect(await screen.findByText("Validation passed")).toBeInTheDocument();
+    expect(await screen.findByText("Load selected strategy")).toBeInTheDocument();
+    expect(await screen.findByText("Runtime settings")).toBeInTheDocument();
+    expect(await screen.findByText("Config file backed")).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Health" }));
     expect(await screen.findByText("Connectivity clocks")).toBeInTheDocument();
@@ -1634,6 +1636,8 @@ describe("App", () => {
 
     render(<App />);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
+
     fireEvent.click(await screen.findByRole("button", { name: "Load selected strategy" }));
 
     expect(
@@ -1665,6 +1669,8 @@ describe("App", () => {
     const { fetchSpy } = installFetchMock();
 
     render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
 
     const uploadInput = (await screen.findByLabelText("Upload strategy file")) as HTMLInputElement;
     const uploadFile = new File(
@@ -1718,6 +1724,8 @@ describe("App", () => {
     const { fetchSpy } = installFetchMock();
 
     render(<App />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
 
     fireEvent.change(await screen.findByLabelText("Default strategy path"), {
       target: { value: "strategies/uploads/next-run.md" },

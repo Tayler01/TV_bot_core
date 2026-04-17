@@ -7,7 +7,7 @@ use databento::{
         PitSymbolMap, RType, Record, RecordRef, RecordRefEnum, SType, Schema, SymbolIndex,
         SystemCode,
     },
-    live::Subscription,
+    live::{SlowReaderBehavior, Subscription},
     LiveClient,
 };
 use rust_decimal::Decimal;
@@ -41,6 +41,12 @@ impl DatabentoLiveTransportConfig {
     pub fn with_gateway_address(mut self, gateway_address: impl Into<String>) -> Self {
         self.gateway_address = Some(gateway_address.into());
         self
+    }
+
+    fn sdk_slow_reader_behavior(&self) -> SlowReaderBehavior {
+        match self.slow_reader_policy {
+            DatabentoSlowReaderPolicy::MarkDegraded => SlowReaderBehavior::Warn,
+        }
     }
 }
 
@@ -82,7 +88,8 @@ impl DatabentoTransport for DatabentoLiveTransport {
                 operation: "connect",
                 message: error.to_string(),
             })?
-            .dataset(dataset);
+            .dataset(dataset)
+            .slow_reader_behavior(self.config.sdk_slow_reader_behavior());
 
         if let Some(address) = &self.config.gateway_address {
             builder = builder.addr(address).await.map_err(|error| {
@@ -458,5 +465,12 @@ mod tests {
                 occurred_at: Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap(),
             })
         );
+    }
+
+    #[test]
+    fn mark_degraded_policy_maps_to_warn_in_databento_client() {
+        let config = DatabentoLiveTransportConfig::new(SecretString::new("db-test".into()));
+
+        assert_eq!(config.sdk_slow_reader_behavior(), SlowReaderBehavior::Warn);
     }
 }

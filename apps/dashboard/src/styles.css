@@ -207,8 +207,8 @@ select {
 
 .workspace-stage {
   display: grid;
-  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.55fr) minmax(340px, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.95fr) minmax(300px, 0.95fr);
+  gap: 16px;
   align-items: start;
 }
 
@@ -222,6 +222,14 @@ select {
   display: grid;
   gap: 18px;
   align-content: start;
+}
+
+.workspace-stage__rail--context {
+  gap: 14px;
+}
+
+.workspace-stage__rail--actions {
+  gap: 14px;
 }
 
 .workspace-stage__rail .panel {
@@ -276,7 +284,7 @@ select {
 .workspace-dock__tabs {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(110px, max-content);
+  grid-auto-columns: minmax(92px, max-content);
   gap: 10px;
   align-items: center;
 }
@@ -462,6 +470,26 @@ select {
   line-height: 1.6;
 }
 
+.panel--context-compact .panel__heading {
+  margin-bottom: 14px;
+}
+
+.panel--context-compact .metric-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel--context-compact .definition-list {
+  margin-top: 14px;
+}
+
+.panel--context-compact .checklist {
+  gap: 10px;
+}
+
+.panel--context-compact .checklist__item {
+  padding: 12px 14px;
+}
+
 .panel__detail,
 .panel__footnote,
 .control-card__note,
@@ -516,7 +544,7 @@ select {
 
 .control-overview {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -688,6 +716,10 @@ select {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.panel--setup-dock .control-shell {
+  gap: 18px;
 }
 
 .field {

@@ -17,7 +17,6 @@ import {
   latestLatency,
   minutesBetween,
   prettyJson,
-  reviewSummary,
   statusTone,
   tradeTone,
 } from "../lib/dashboardPresentation";
@@ -50,8 +49,9 @@ import {
 export function RuntimeSummaryPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
   return (
     <Panel
-      eyebrow="Runtime"
-      title={reviewSummary(snapshot.status)}
+      className="panel--monitoring panel--context-compact"
+      eyebrow="Context"
+      title="Runtime posture"
       detail={`HTTP ${snapshot.status.http_bind} | WS ${snapshot.status.websocket_bind}`}
     >
       <div className="metric-row">
@@ -137,8 +137,9 @@ export function ReadinessPanel({
 }) {
   return (
     <Panel
+      className="panel--monitoring panel--context-compact"
       eyebrow="Readiness"
-      title="Grouped pre-arm checks"
+      title="Pre-arm check groups"
       detail={formatDateTime(snapshot.readiness.report.generated_at)}
     >
       <div className="metric-row">

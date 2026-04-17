@@ -218,9 +218,7 @@ fn sample_chart_bars_for_strategy(
 
 fn sample_chart_base_price_cents(seed: &str) -> i64 {
     let fingerprint = seed.bytes().fold(0u64, |accumulator, byte| {
-        accumulator
-            .wrapping_mul(131)
-            .wrapping_add(u64::from(byte))
+        accumulator.wrapping_mul(131).wrapping_add(u64::from(byte))
     });
     let whole_units = 900 + i64::try_from(fingerprint % 3_200).unwrap_or(0);
     whole_units * 100

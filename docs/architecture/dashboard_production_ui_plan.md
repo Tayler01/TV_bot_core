@@ -96,6 +96,7 @@ The current dashboard already has the pieces needed for this pivot:
 
 What is missing is not the data path.
 What is missing is a chart-first shell and information architecture that makes all of these surfaces feel like one product.
+The latest pass moved strategy-library and runtime-settings work into the lower dock and kept the right rail focused on action and safety, but the broader production sign-off around spacing, hierarchy, and overall product polish is still open.
 
 ## North-Star Experience
 

@@ -38,6 +38,7 @@ import {
 import {
   ControlCenterPanel,
   SafetyPanel,
+  StrategySetupPanel,
 } from "./components/dashboardControlPanels";
 import { LiveChartPanel } from "./components/dashboardLiveChart";
 import { SignalTile } from "./components/dashboardPrimitives";
@@ -45,13 +46,20 @@ import type { LatencyStageViewModel } from "./dashboardModels";
 import { useDashboardController } from "./hooks/useDashboardController";
 import { useDashboardChart } from "./hooks/useDashboardChart";
 
-type WorkspaceDockSection = "health" | "history" | "latency" | "journal" | "events";
+type WorkspaceDockSection =
+  | "health"
+  | "history"
+  | "latency"
+  | "journal"
+  | "events"
+  | "setup";
 
 const workspaceDockSections: ReadonlyArray<{
   section: WorkspaceDockSection;
   label: string;
 }> = [
   { section: "history", label: "Trades" },
+  { section: "setup", label: "Setup" },
   { section: "health", label: "Health" },
   { section: "latency", label: "Latency" },
   { section: "journal", label: "Journal" },
@@ -401,12 +409,6 @@ function App() {
               <ControlCenterPanel
                 snapshot={snapshot}
                 pendingAction={pendingAction}
-                strategyViewModel={strategyViewModel}
-                selectedStrategyEntry={selectedStrategyEntry}
-                selectedStrategyUploadFile={selectedStrategyUploadFile}
-                strategyUploadInputRef={strategyUploadInputRef}
-                settingsDraft={settingsDraft}
-                settingsDirty={settingsDirty}
                 newEntriesReason={newEntriesReason}
                 closePositionReason={closePositionReason}
                 manualEntrySide={manualEntrySide}
@@ -418,11 +420,8 @@ function App() {
                 cancelWorkingOrdersReason={cancelWorkingOrdersReason}
                 armButtonLabel={armButtonLabel}
                 pauseButtonLabel={pauseButtonLabel}
-                canLoadSelectedStrategy={canLoadSelectedStrategy}
-                canUploadSelectedStrategyFile={canUploadSelectedStrategyFile}
                 canDisableNewEntries={canDisableNewEntries}
                 canEnableNewEntries={canEnableNewEntries}
-                canSaveSettings={canSaveSettings}
                 canManualEntry={canManualEntry}
                 canClosePosition={canClosePosition}
                 canCancelWorkingOrders={canCancelWorkingOrders}
@@ -431,37 +430,6 @@ function App() {
                 onSetNewEntriesEnabled={(enabled) => {
                   void updateNewEntriesEnabled(enabled);
                 }}
-                onStrategyPathChange={handleStrategyPathChange}
-                onStrategyUploadFileChange={setSelectedStrategyUploadFile}
-                onUploadSelectedStrategyFile={() => {
-                  void uploadSelectedStrategyFile();
-                }}
-                onRefreshStrategyLibrary={() => {
-                  void refreshStrategyLibrary();
-                }}
-                onRefreshStrategyValidation={() => {
-                  void refreshStrategyValidation(strategyViewModel.selectedPath);
-                }}
-                onLoadSelectedStrategy={handleLoadSelectedStrategy}
-                onSettingsStartupModeChange={(mode) => {
-                  updateSettingsDraft((current) => ({ ...current, startupMode: mode }));
-                }}
-                onSettingsDefaultStrategyPathChange={(value) => {
-                  updateSettingsDraft((current) => ({ ...current, defaultStrategyPath: value }));
-                }}
-                onSettingsAllowSqliteFallbackChange={(enabled) => {
-                  updateSettingsDraft((current) => ({ ...current, allowSqliteFallback: enabled }));
-                }}
-                onSettingsPaperAccountNameChange={(value) => {
-                  updateSettingsDraft((current) => ({ ...current, paperAccountName: value }));
-                }}
-                onSettingsLiveAccountNameChange={(value) => {
-                  updateSettingsDraft((current) => ({ ...current, liveAccountName: value }));
-                }}
-                onSaveRuntimeSettings={() => {
-                  void saveRuntimeSettings();
-                }}
-                onResetSettings={handleSettingsReset}
                 onStartWarmup={handleStartWarmup}
                 onArmToggle={handleArmToggle}
                 onPauseResume={handlePauseResume}
@@ -504,8 +472,8 @@ function App() {
                 <p className="eyebrow">Detail Dock</p>
                 <h2>Monitoring, audit, and configuration depth</h2>
                 <p className="workspace-dock__summary">
-                  The chart stays in view while deeper runtime health, trade history, journal, and
-                  event detail move through focused dock tabs.
+                  Keep the chart in view while setup, trade detail, health, and audit surfaces
+                  move through focused dock tabs beneath the workspace stage.
                 </p>
               </div>
               <div className="workspace-dock__tabs" role="tablist" aria-label="Workspace dock">
@@ -538,6 +506,53 @@ function App() {
               role="tabpanel"
               aria-labelledby={`workspace-dock-tab-${activeDockSection}`}
             >
+              {activeDockSection === "setup" ? (
+                <StrategySetupPanel
+                  snapshot={snapshot}
+                  pendingAction={pendingAction}
+                  strategyViewModel={strategyViewModel}
+                  selectedStrategyEntry={selectedStrategyEntry}
+                  selectedStrategyUploadFile={selectedStrategyUploadFile}
+                  strategyUploadInputRef={strategyUploadInputRef}
+                  settingsDraft={settingsDraft}
+                  settingsDirty={settingsDirty}
+                  canLoadSelectedStrategy={canLoadSelectedStrategy}
+                  canUploadSelectedStrategyFile={canUploadSelectedStrategyFile}
+                  canSaveSettings={canSaveSettings}
+                  onStrategyPathChange={handleStrategyPathChange}
+                  onStrategyUploadFileChange={setSelectedStrategyUploadFile}
+                  onUploadSelectedStrategyFile={() => {
+                    void uploadSelectedStrategyFile();
+                  }}
+                  onRefreshStrategyLibrary={() => {
+                    void refreshStrategyLibrary();
+                  }}
+                  onRefreshStrategyValidation={() => {
+                    void refreshStrategyValidation(strategyViewModel.selectedPath);
+                  }}
+                  onLoadSelectedStrategy={handleLoadSelectedStrategy}
+                  onSettingsStartupModeChange={(mode) => {
+                    updateSettingsDraft((current) => ({ ...current, startupMode: mode }));
+                  }}
+                  onSettingsDefaultStrategyPathChange={(value) => {
+                    updateSettingsDraft((current) => ({ ...current, defaultStrategyPath: value }));
+                  }}
+                  onSettingsAllowSqliteFallbackChange={(enabled) => {
+                    updateSettingsDraft((current) => ({ ...current, allowSqliteFallback: enabled }));
+                  }}
+                  onSettingsPaperAccountNameChange={(value) => {
+                    updateSettingsDraft((current) => ({ ...current, paperAccountName: value }));
+                  }}
+                  onSettingsLiveAccountNameChange={(value) => {
+                    updateSettingsDraft((current) => ({ ...current, liveAccountName: value }));
+                  }}
+                  onSaveRuntimeSettings={() => {
+                    void saveRuntimeSettings();
+                  }}
+                  onResetSettings={handleSettingsReset}
+                />
+              ) : null}
+
               {activeDockSection === "history" ? (
                 <HistoryPanel
                   snapshot={snapshot}

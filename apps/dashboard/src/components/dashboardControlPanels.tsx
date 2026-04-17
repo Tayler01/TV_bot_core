@@ -69,12 +69,6 @@ type ShutdownDecision = "flatten_first" | "leave_broker_protected";
 interface ControlCenterPanelProps {
   snapshot: DashboardSnapshot;
   pendingAction: string | null;
-  strategyViewModel: StrategySummaryViewModel;
-  selectedStrategyEntry: RuntimeStrategyCatalogEntry | null;
-  selectedStrategyUploadFile: File | null;
-  strategyUploadInputRef: RefObject<HTMLInputElement | null>;
-  settingsDraft: RuntimeSettingsDraft | null;
-  settingsDirty: boolean;
   newEntriesReason: string;
   closePositionReason: string;
   manualEntrySide: "buy" | "sell";
@@ -86,30 +80,14 @@ interface ControlCenterPanelProps {
   cancelWorkingOrdersReason: string;
   armButtonLabel: string;
   pauseButtonLabel: string;
-  canLoadSelectedStrategy: boolean;
-  canUploadSelectedStrategyFile: boolean;
   canDisableNewEntries: boolean;
   canEnableNewEntries: boolean;
-  canSaveSettings: boolean;
   canManualEntry: boolean;
   canClosePosition: boolean;
   canCancelWorkingOrders: boolean;
   onSetMode: (mode: RuntimeMode) => void;
   onNewEntriesReasonChange: (value: string) => void;
   onSetNewEntriesEnabled: (enabled: boolean) => void;
-  onStrategyPathChange: (path: string) => void;
-  onStrategyUploadFileChange: (file: File | null) => void;
-  onUploadSelectedStrategyFile: () => void;
-  onRefreshStrategyLibrary: () => void;
-  onRefreshStrategyValidation: () => void;
-  onLoadSelectedStrategy: () => void;
-  onSettingsStartupModeChange: (mode: RuntimeMode) => void;
-  onSettingsDefaultStrategyPathChange: (value: string) => void;
-  onSettingsAllowSqliteFallbackChange: (enabled: boolean) => void;
-  onSettingsPaperAccountNameChange: (value: string) => void;
-  onSettingsLiveAccountNameChange: (value: string) => void;
-  onSaveRuntimeSettings: () => void;
-  onResetSettings: () => void;
   onStartWarmup: () => void;
   onArmToggle: () => void;
   onPauseResume: () => void;
@@ -129,12 +107,6 @@ interface ControlCenterPanelProps {
 export function ControlCenterPanel({
   snapshot,
   pendingAction,
-  strategyViewModel,
-  selectedStrategyEntry,
-  selectedStrategyUploadFile,
-  strategyUploadInputRef,
-  settingsDraft,
-  settingsDirty,
   newEntriesReason,
   closePositionReason,
   manualEntrySide,
@@ -146,30 +118,14 @@ export function ControlCenterPanel({
   cancelWorkingOrdersReason,
   armButtonLabel,
   pauseButtonLabel,
-  canLoadSelectedStrategy,
-  canUploadSelectedStrategyFile,
   canDisableNewEntries,
   canEnableNewEntries,
-  canSaveSettings,
   canManualEntry,
   canClosePosition,
   canCancelWorkingOrders,
   onSetMode,
   onNewEntriesReasonChange,
   onSetNewEntriesEnabled,
-  onStrategyPathChange,
-  onStrategyUploadFileChange,
-  onUploadSelectedStrategyFile,
-  onRefreshStrategyLibrary,
-  onRefreshStrategyValidation,
-  onLoadSelectedStrategy,
-  onSettingsStartupModeChange,
-  onSettingsDefaultStrategyPathChange,
-  onSettingsAllowSqliteFallbackChange,
-  onSettingsPaperAccountNameChange,
-  onSettingsLiveAccountNameChange,
-  onSaveRuntimeSettings,
-  onResetSettings,
   onStartWarmup,
   onArmToggle,
   onPauseResume,
@@ -196,7 +152,7 @@ export function ControlCenterPanel({
     <Panel
       className="panel--full panel--command-center"
       eyebrow="Control Center"
-      title="Lifecycle commands through /runtime/commands"
+      title="Primary operator actions beside the live contract chart"
       detail={`Current mode: ${formatMode(snapshot.status.mode)} | Dispatch: ${snapshot.status.command_dispatch_detail}`}
     >
       <div className="control-overview" aria-label="Command center summary">
@@ -325,337 +281,6 @@ export function ControlCenterPanel({
                 This gate blocks fresh entry requests through the runtime host while still leaving
                 flatten, close, and cancel actions available on existing exposure.
               </p>
-            </section>
-          </div>
-        </ControlCluster>
-
-        <ControlCluster
-          eyebrow="Strategy and settings"
-          title="Library workflow and runtime configuration"
-          detail="Strategy selection, upload, validation, and settings edits stay backend-owned."
-        >
-          <div className="control-grid">
-            <section className="control-card control-card--span-7">
-              <p className="control-card__title">Strategy Library</p>
-              <div className="strategy-toolbar">
-                <label className="field field--wide">
-                  <span>Available strategy</span>
-                  <select
-                    aria-label="Available strategy"
-                    value={strategyViewModel.selectedPath}
-                    disabled={
-                      strategyViewModel.libraryState === "loading" ||
-                      !strategyViewModel.library?.strategies.length
-                    }
-                    onChange={(event) => {
-                      onStrategyPathChange(event.target.value);
-                    }}
-                  >
-                    {strategyViewModel.library?.strategies.length ? (
-                      strategyViewModel.library.strategies.map((entry) => (
-                        <option key={entry.path} value={entry.path}>
-                          {entry.name ?? entry.title ?? entry.display_path}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">No strategies available</option>
-                    )}
-                  </select>
-                </label>
-                <label className="field field--wide">
-                  <span>Upload strategy file</span>
-                  <input
-                    ref={strategyUploadInputRef}
-                    aria-label="Upload strategy file"
-                    type="file"
-                    accept=".md,text/markdown"
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onStrategyUploadFileChange(event.target.files?.[0] ?? null);
-                    }}
-                  />
-                </label>
-                <div className="action-row action-row--compact">
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={!canUploadSelectedStrategyFile}
-                    onClick={onUploadSelectedStrategyFile}
-                  >
-                    Upload to library
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={strategyViewModel.libraryState === "loading"}
-                    onClick={onRefreshStrategyLibrary}
-                  >
-                    Refresh library
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={
-                      !strategyViewModel.selectedPath ||
-                      strategyViewModel.validationState === "loading"
-                    }
-                    onClick={onRefreshStrategyValidation}
-                  >
-                    Validate selection
-                  </button>
-                  <button
-                    className="command-button"
-                    type="button"
-                    disabled={!canLoadSelectedStrategy}
-                    onClick={onLoadSelectedStrategy}
-                  >
-                    Load selected strategy
-                  </button>
-                </div>
-              </div>
-              <div className="pill-row">
-                <Pill
-                  label={
-                    selectedStrategyEntry
-                      ? selectedStrategyEntry.valid
-                        ? "Library entry valid"
-                        : "Library entry needs fixes"
-                      : "No strategy selected"
-                  }
-                  tone={strategyTone(selectedStrategyEntry)}
-                />
-                <Pill
-                  label={
-                    strategyViewModel.validation
-                      ? strategyViewModel.validation.valid
-                        ? "Validation passed"
-                        : "Validation failed"
-                      : strategyViewModel.validationState === "loading"
-                        ? "Validation running"
-                        : "Validation idle"
-                  }
-                  tone={
-                    strategyViewModel.validationState === "loading"
-                      ? "info"
-                      : validationTone(strategyViewModel.validation)
-                  }
-                />
-                <Pill
-                  label={`${strategyViewModel.validation?.warnings.length ?? 0} warning(s)`}
-                  tone={
-                    (strategyViewModel.validation?.warnings.length ?? 0) > 0
-                      ? "warning"
-                      : "healthy"
-                  }
-                />
-                <Pill
-                  label={`${strategyViewModel.validation?.errors.length ?? 0} error(s)`}
-                  tone={
-                    (strategyViewModel.validation?.errors.length ?? 0) > 0
-                      ? "danger"
-                      : "healthy"
-                  }
-                />
-              </div>
-              <dl className="definition-list">
-                <Definition label="Selected" value={strategyLabel(strategyViewModel.validation)} />
-                <Definition
-                  label="Path"
-                  value={
-                    strategyViewModel.validation?.display_path ??
-                    selectedStrategyEntry?.display_path ??
-                    "No strategy selected"
-                  }
-                />
-                <Definition
-                  label="Scanned roots"
-                  value={
-                    strategyViewModel.library?.scanned_roots.length
-                      ? strategyViewModel.library.scanned_roots.join(" | ")
-                      : "No strategy library roots detected"
-                  }
-                />
-                <Definition
-                  label="Load status"
-                  value={
-                    snapshot.status.current_strategy?.path === strategyViewModel.selectedPath
-                      ? "Loaded into runtime"
-                      : "Not loaded"
-                  }
-                />
-                <Definition
-                  label="Upload ready"
-                  value={
-                    selectedStrategyUploadFile
-                      ? selectedStrategyUploadFile.name
-                      : "Choose a local Markdown strategy file"
-                  }
-                />
-              </dl>
-              {strategyViewModel.libraryError ? (
-                <p className="control-card__note">{strategyViewModel.libraryError}</p>
-              ) : null}
-              {strategyViewModel.validationError ? (
-                <p className="control-card__note">{strategyViewModel.validationError}</p>
-              ) : null}
-              {strategyViewModel.validation?.errors.length ? (
-                <ul className="issue-list">
-                  {strategyViewModel.validation.errors.slice(0, 3).map((issue, index) => (
-                    <li key={`${issue.message}-${index}`}>{issue.message}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {strategyViewModel.validation?.warnings.length ? (
-                <ul className="issue-list issue-list--warning">
-                  {strategyViewModel.validation.warnings.slice(0, 3).map((issue, index) => (
-                    <li key={`${issue.message}-${index}`}>{issue.message}</li>
-                  ))}
-                </ul>
-              ) : null}
-              <p className="control-card__note">
-                The dashboard now uploads, browses, validates, and loads strategy Markdown only
-                through the local runtime host, keeping file writes and validation inside the
-                backend-owned strategy library workflow.
-              </p>
-            </section>
-
-            <section className="control-card control-card--span-5">
-              <p className="control-card__title">Runtime settings</p>
-              <div className="pill-row">
-                <Pill
-                  label={
-                    snapshot.settings.persistence_mode === "config_file"
-                      ? "Config file backed"
-                      : "Session only"
-                  }
-                  tone={
-                    snapshot.settings.persistence_mode === "config_file" ? "healthy" : "warning"
-                  }
-                />
-                <Pill
-                  label={snapshot.settings.restart_required ? "Restart required" : "Live applied"}
-                  tone={snapshot.settings.restart_required ? "warning" : "healthy"}
-                />
-                <Pill
-                  label={snapshot.settings.config_file_path ?? "No config file path"}
-                  tone={snapshot.settings.config_file_path ? "info" : "warning"}
-                />
-              </div>
-              <div className="control-grid control-grid--form">
-                <label className="field">
-                  <span>Startup mode</span>
-                  <select
-                    aria-label="Runtime startup mode"
-                    value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onSettingsStartupModeChange(event.target.value as RuntimeMode);
-                    }}
-                  >
-                    <option value="paper">Paper</option>
-                    <option value="observation">Observation</option>
-                    <option value="paused">Paused</option>
-                    <option value="live">Live</option>
-                  </select>
-                </label>
-                <label className="field field--wide">
-                  <span>Default strategy path</span>
-                  <input
-                    aria-label="Default strategy path"
-                    placeholder="strategies/examples/gc_momentum_fade_v1.md"
-                    value={
-                      settingsDraft?.defaultStrategyPath ??
-                      (snapshot.settings.editable.default_strategy_path ?? "")
-                    }
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onSettingsDefaultStrategyPathChange(event.target.value);
-                    }}
-                  />
-                </label>
-                <label className="field">
-                  <span>Persistence fallback</span>
-                  <select
-                    aria-label="Persistence fallback policy"
-                    value={
-                      (settingsDraft?.allowSqliteFallback ??
-                      snapshot.settings.editable.allow_sqlite_fallback)
-                        ? "allow"
-                        : "block"
-                    }
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onSettingsAllowSqliteFallbackChange(event.target.value === "allow");
-                    }}
-                  >
-                    <option value="block">Require primary Postgres</option>
-                    <option value="allow">Allow SQLite fallback</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>Paper account name</span>
-                  <input
-                    aria-label="Paper account name"
-                    placeholder="paper-primary"
-                    value={
-                      settingsDraft?.paperAccountName ??
-                      (snapshot.settings.editable.paper_account_name ?? "")
-                    }
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onSettingsPaperAccountNameChange(event.target.value);
-                    }}
-                  />
-                </label>
-                <label className="field">
-                  <span>Live account name</span>
-                  <input
-                    aria-label="Live account name"
-                    placeholder="live-primary"
-                    value={
-                      settingsDraft?.liveAccountName ??
-                      (snapshot.settings.editable.live_account_name ?? "")
-                    }
-                    disabled={pendingAction !== null}
-                    onChange={(event) => {
-                      onSettingsLiveAccountNameChange(event.target.value);
-                    }}
-                  />
-                </label>
-              </div>
-              <div className="action-row action-row--compact">
-                <button
-                  className="command-button"
-                  type="button"
-                  disabled={!canSaveSettings}
-                  onClick={onSaveRuntimeSettings}
-                >
-                  Save runtime settings
-                </button>
-                <button
-                  className="command-button"
-                  type="button"
-                  disabled={!settingsDirty || pendingAction !== null}
-                  onClick={onResetSettings}
-                >
-                  Reset form
-                </button>
-              </div>
-              <dl className="definition-list">
-                <Definition label="HTTP bind" value={snapshot.settings.http_bind} />
-                <Definition label="WebSocket bind" value={snapshot.settings.websocket_bind} />
-                <Definition
-                  label="Config path"
-                  value={snapshot.settings.config_file_path ?? "Runtime launched without a config file"}
-                />
-                <Definition
-                  label="Effective path"
-                  value={
-                    snapshot.settings.editable.default_strategy_path ?? "No default strategy path"
-                  }
-                />
-              </dl>
-              <p className="control-card__note">{snapshot.settings.detail}</p>
             </section>
           </div>
         </ControlCluster>
@@ -910,6 +535,403 @@ export function ControlCenterPanel({
                 automatically when there is a single live position, and cancel routes only the
                 current market&apos;s working orders through the audited backend path.
               </p>
+            </section>
+          </div>
+        </ControlCluster>
+      </div>
+    </Panel>
+  );
+}
+
+interface StrategySetupPanelProps {
+  snapshot: DashboardSnapshot;
+  pendingAction: string | null;
+  strategyViewModel: StrategySummaryViewModel;
+  selectedStrategyEntry: RuntimeStrategyCatalogEntry | null;
+  selectedStrategyUploadFile: File | null;
+  strategyUploadInputRef: RefObject<HTMLInputElement | null>;
+  settingsDraft: RuntimeSettingsDraft | null;
+  settingsDirty: boolean;
+  canLoadSelectedStrategy: boolean;
+  canUploadSelectedStrategyFile: boolean;
+  canSaveSettings: boolean;
+  onStrategyPathChange: (path: string) => void;
+  onStrategyUploadFileChange: (file: File | null) => void;
+  onUploadSelectedStrategyFile: () => void;
+  onRefreshStrategyLibrary: () => void;
+  onRefreshStrategyValidation: () => void;
+  onLoadSelectedStrategy: () => void;
+  onSettingsStartupModeChange: (mode: RuntimeMode) => void;
+  onSettingsDefaultStrategyPathChange: (value: string) => void;
+  onSettingsAllowSqliteFallbackChange: (enabled: boolean) => void;
+  onSettingsPaperAccountNameChange: (value: string) => void;
+  onSettingsLiveAccountNameChange: (value: string) => void;
+  onSaveRuntimeSettings: () => void;
+  onResetSettings: () => void;
+}
+
+export function StrategySetupPanel({
+  snapshot,
+  pendingAction,
+  strategyViewModel,
+  selectedStrategyEntry,
+  selectedStrategyUploadFile,
+  strategyUploadInputRef,
+  settingsDraft,
+  settingsDirty,
+  canLoadSelectedStrategy,
+  canUploadSelectedStrategyFile,
+  canSaveSettings,
+  onStrategyPathChange,
+  onStrategyUploadFileChange,
+  onUploadSelectedStrategyFile,
+  onRefreshStrategyLibrary,
+  onRefreshStrategyValidation,
+  onLoadSelectedStrategy,
+  onSettingsStartupModeChange,
+  onSettingsDefaultStrategyPathChange,
+  onSettingsAllowSqliteFallbackChange,
+  onSettingsPaperAccountNameChange,
+  onSettingsLiveAccountNameChange,
+  onSaveRuntimeSettings,
+  onResetSettings,
+}: StrategySetupPanelProps) {
+  return (
+    <Panel
+      className="panel--full panel--setup-dock"
+      eyebrow="Setup"
+      title="Strategy workspace and runtime configuration"
+      detail="Lower-frequency library and settings work lives in the dock so the action rail can stay focused on exposure and execution."
+    >
+      <div className="control-shell">
+        <ControlCluster
+          eyebrow="Strategy library"
+          title="Browse, validate, upload, and load one runtime strategy"
+          detail="The chart stays locked to the loaded contract while strategy files and validation remain backend-owned."
+        >
+          <div className="control-grid">
+            <section className="control-card control-card--span-7">
+              <p className="control-card__title">Library workflow</p>
+              <div className="strategy-toolbar">
+                <label className="field field--wide">
+                  <span>Available strategy</span>
+                  <select
+                    aria-label="Available strategy"
+                    value={strategyViewModel.selectedPath}
+                    disabled={
+                      strategyViewModel.libraryState === "loading" ||
+                      !strategyViewModel.library?.strategies.length
+                    }
+                    onChange={(event) => {
+                      onStrategyPathChange(event.target.value);
+                    }}
+                  >
+                    {strategyViewModel.library?.strategies.length ? (
+                      strategyViewModel.library.strategies.map((entry) => (
+                        <option key={entry.path} value={entry.path}>
+                          {entry.name ?? entry.title ?? entry.display_path}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No strategies available</option>
+                    )}
+                  </select>
+                </label>
+                <label className="field field--wide">
+                  <span>Upload strategy file</span>
+                  <input
+                    ref={strategyUploadInputRef}
+                    aria-label="Upload strategy file"
+                    type="file"
+                    accept=".md,text/markdown"
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onStrategyUploadFileChange(event.target.files?.[0] ?? null);
+                    }}
+                  />
+                </label>
+                <div className="action-row action-row--compact">
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={!canUploadSelectedStrategyFile}
+                    onClick={onUploadSelectedStrategyFile}
+                  >
+                    Upload to library
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={strategyViewModel.libraryState === "loading"}
+                    onClick={onRefreshStrategyLibrary}
+                  >
+                    Refresh library
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={
+                      !strategyViewModel.selectedPath ||
+                      strategyViewModel.validationState === "loading"
+                    }
+                    onClick={onRefreshStrategyValidation}
+                  >
+                    Validate selection
+                  </button>
+                  <button
+                    className="command-button"
+                    type="button"
+                    disabled={!canLoadSelectedStrategy}
+                    onClick={onLoadSelectedStrategy}
+                  >
+                    Load selected strategy
+                  </button>
+                </div>
+              </div>
+              <div className="pill-row">
+                <Pill
+                  label={
+                    selectedStrategyEntry
+                      ? selectedStrategyEntry.valid
+                        ? "Library entry valid"
+                        : "Library entry needs fixes"
+                      : "No strategy selected"
+                  }
+                  tone={strategyTone(selectedStrategyEntry)}
+                />
+                <Pill
+                  label={
+                    strategyViewModel.validation
+                      ? strategyViewModel.validation.valid
+                        ? "Validation passed"
+                        : "Validation failed"
+                      : strategyViewModel.validationState === "loading"
+                        ? "Validation running"
+                        : "Validation idle"
+                  }
+                  tone={
+                    strategyViewModel.validationState === "loading"
+                      ? "info"
+                      : validationTone(strategyViewModel.validation)
+                  }
+                />
+                <Pill
+                  label={`${strategyViewModel.validation?.warnings.length ?? 0} warning(s)`}
+                  tone={
+                    (strategyViewModel.validation?.warnings.length ?? 0) > 0
+                      ? "warning"
+                      : "healthy"
+                  }
+                />
+                <Pill
+                  label={`${strategyViewModel.validation?.errors.length ?? 0} error(s)`}
+                  tone={
+                    (strategyViewModel.validation?.errors.length ?? 0) > 0
+                      ? "danger"
+                      : "healthy"
+                  }
+                />
+              </div>
+              <dl className="definition-list">
+                <Definition label="Selected" value={strategyLabel(strategyViewModel.validation)} />
+                <Definition
+                  label="Path"
+                  value={
+                    strategyViewModel.validation?.display_path ??
+                    selectedStrategyEntry?.display_path ??
+                    "No strategy selected"
+                  }
+                />
+                <Definition
+                  label="Scanned roots"
+                  value={
+                    strategyViewModel.library?.scanned_roots.length
+                      ? strategyViewModel.library.scanned_roots.join(" | ")
+                      : "No strategy library roots detected"
+                  }
+                />
+                <Definition
+                  label="Load status"
+                  value={
+                    snapshot.status.current_strategy?.path === strategyViewModel.selectedPath
+                      ? "Loaded into runtime"
+                      : "Not loaded"
+                  }
+                />
+                <Definition
+                  label="Upload ready"
+                  value={
+                    selectedStrategyUploadFile
+                      ? selectedStrategyUploadFile.name
+                      : "Choose a local Markdown strategy file"
+                  }
+                />
+              </dl>
+              {strategyViewModel.libraryError ? (
+                <p className="control-card__note">{strategyViewModel.libraryError}</p>
+              ) : null}
+              {strategyViewModel.validationError ? (
+                <p className="control-card__note">{strategyViewModel.validationError}</p>
+              ) : null}
+              {strategyViewModel.validation?.errors.length ? (
+                <ul className="issue-list">
+                  {strategyViewModel.validation.errors.slice(0, 3).map((issue, index) => (
+                    <li key={`${issue.message}-${index}`}>{issue.message}</li>
+                  ))}
+                </ul>
+              ) : null}
+              {strategyViewModel.validation?.warnings.length ? (
+                <ul className="issue-list issue-list--warning">
+                  {strategyViewModel.validation.warnings.slice(0, 3).map((issue, index) => (
+                    <li key={`${issue.message}-${index}`}>{issue.message}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="control-card__note">
+                Strategy markdown still uploads, validates, and loads only through the local
+                runtime host, keeping file writes and compiler decisions outside the frontend.
+              </p>
+            </section>
+
+            <section className="control-card control-card--span-5">
+              <p className="control-card__title">Runtime settings</p>
+              <div className="pill-row">
+                <Pill
+                  label={
+                    snapshot.settings.persistence_mode === "config_file"
+                      ? "Config file backed"
+                      : "Session only"
+                  }
+                  tone={
+                    snapshot.settings.persistence_mode === "config_file" ? "healthy" : "warning"
+                  }
+                />
+                <Pill
+                  label={snapshot.settings.restart_required ? "Restart required" : "Live applied"}
+                  tone={snapshot.settings.restart_required ? "warning" : "healthy"}
+                />
+                <Pill
+                  label={snapshot.settings.config_file_path ?? "No config file path"}
+                  tone={snapshot.settings.config_file_path ? "info" : "warning"}
+                />
+              </div>
+              <div className="control-grid control-grid--form">
+                <label className="field">
+                  <span>Startup mode</span>
+                  <select
+                    aria-label="Runtime startup mode"
+                    value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onSettingsStartupModeChange(event.target.value as RuntimeMode);
+                    }}
+                  >
+                    <option value="paper">Paper</option>
+                    <option value="observation">Observation</option>
+                    <option value="paused">Paused</option>
+                    <option value="live">Live</option>
+                  </select>
+                </label>
+                <label className="field field--wide">
+                  <span>Default strategy path</span>
+                  <input
+                    aria-label="Default strategy path"
+                    placeholder="strategies/examples/gc_momentum_fade_v1.md"
+                    value={
+                      settingsDraft?.defaultStrategyPath ??
+                      (snapshot.settings.editable.default_strategy_path ?? "")
+                    }
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onSettingsDefaultStrategyPathChange(event.target.value);
+                    }}
+                  />
+                </label>
+                <label className="field">
+                  <span>Persistence fallback</span>
+                  <select
+                    aria-label="Persistence fallback policy"
+                    value={
+                      (settingsDraft?.allowSqliteFallback ??
+                        snapshot.settings.editable.allow_sqlite_fallback)
+                        ? "allow"
+                        : "block"
+                    }
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onSettingsAllowSqliteFallbackChange(event.target.value === "allow");
+                    }}
+                  >
+                    <option value="block">Require primary Postgres</option>
+                    <option value="allow">Allow SQLite fallback</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Paper account name</span>
+                  <input
+                    aria-label="Paper account name"
+                    placeholder="paper-primary"
+                    value={
+                      settingsDraft?.paperAccountName ??
+                      (snapshot.settings.editable.paper_account_name ?? "")
+                    }
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onSettingsPaperAccountNameChange(event.target.value);
+                    }}
+                  />
+                </label>
+                <label className="field">
+                  <span>Live account name</span>
+                  <input
+                    aria-label="Live account name"
+                    placeholder="live-primary"
+                    value={
+                      settingsDraft?.liveAccountName ??
+                      (snapshot.settings.editable.live_account_name ?? "")
+                    }
+                    disabled={pendingAction !== null}
+                    onChange={(event) => {
+                      onSettingsLiveAccountNameChange(event.target.value);
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="action-row action-row--compact">
+                <button
+                  className="command-button"
+                  type="button"
+                  disabled={!canSaveSettings}
+                  onClick={onSaveRuntimeSettings}
+                >
+                  Save runtime settings
+                </button>
+                <button
+                  className="command-button"
+                  type="button"
+                  disabled={!settingsDirty || pendingAction !== null}
+                  onClick={onResetSettings}
+                >
+                  Reset form
+                </button>
+              </div>
+              <dl className="definition-list">
+                <Definition label="HTTP bind" value={snapshot.settings.http_bind} />
+                <Definition label="WebSocket bind" value={snapshot.settings.websocket_bind} />
+                <Definition
+                  label="Config path"
+                  value={
+                    snapshot.settings.config_file_path ?? "Runtime launched without a config file"
+                  }
+                />
+                <Definition
+                  label="Effective path"
+                  value={
+                    snapshot.settings.editable.default_strategy_path ?? "No default strategy path"
+                  }
+                />
+              </dl>
+              <p className="control-card__note">{snapshot.settings.detail}</p>
             </section>
           </div>
         </ControlCluster>

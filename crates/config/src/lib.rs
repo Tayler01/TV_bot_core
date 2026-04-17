@@ -395,9 +395,12 @@ fn apply_env_overrides(
     apply_string_override(env, "TV_BOT__MARKET_DATA__GATEWAY", |value| {
         partial.market_data_mut().gateway = Some(value);
     });
-    apply_string_override(env, "TV_BOT__MARKET_DATA__API_KEY", |value| {
+    if let Some(value) = env
+        .get("TV_BOT__MARKET_DATA__API_KEY")
+        .or_else(|| env.get("DATABENTO_API_KEY"))
+    {
         partial.market_data_mut().api_key = Some(value);
-    });
+    }
 
     apply_string_override(env, "TV_BOT__BROKER__HTTP_BASE_URL", |value| {
         partial.broker_mut().http_base_url = Some(value);
@@ -645,6 +648,8 @@ fn runtime_mode_value(mode: &RuntimeMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use secrecy::ExposeSecret;
+
     use super::*;
 
     fn env(entries: &[(&str, &str)]) -> MapEnvironment {
@@ -709,6 +714,53 @@ mod tests {
         assert_eq!(config.control_api.http_bind, "127.0.0.1:9000");
         assert!(config.persistence.sqlite_fallback.enabled);
         assert_eq!(config.broker.environment, Some(BrokerEnvironment::Live));
+    }
+
+    #[test]
+    fn official_databento_api_key_alias_is_supported() {
+        let config = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+            "#,
+            &env(&[("DATABENTO_API_KEY", "db-alias-key")]),
+        )
+        .expect("config should load");
+
+        assert_eq!(
+            config
+                .market_data
+                .api_key
+                .as_ref()
+                .map(|key| key.expose_secret().to_owned()),
+            Some("db-alias-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn repo_specific_market_data_api_key_takes_precedence_over_alias() {
+        let config = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+            "#,
+            &env(&[
+                ("DATABENTO_API_KEY", "db-alias-key"),
+                ("TV_BOT__MARKET_DATA__API_KEY", "db-runtime-key"),
+            ]),
+        )
+        .expect("config should load");
+
+        assert_eq!(
+            config
+                .market_data
+                .api_key
+                .as_ref()
+                .map(|key| key.expose_secret().to_owned()),
+            Some("db-runtime-key".to_owned())
+        );
     }
 
     #[test]
