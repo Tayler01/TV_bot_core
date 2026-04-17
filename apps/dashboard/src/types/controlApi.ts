@@ -423,6 +423,7 @@ export interface RuntimeChartBar {
   close: DecimalValue;
   volume: number;
   closed_at: string;
+  is_complete: boolean;
 }
 
 export interface RuntimeChartSnapshot {

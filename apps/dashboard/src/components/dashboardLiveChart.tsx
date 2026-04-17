@@ -1,16 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
   createChart,
-  createSeriesMarkers,
   CrosshairMode,
-  HistogramSeries,
   LineStyle,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type ISeriesMarkersPluginApi,
   type Time,
 } from "lightweight-charts";
 
@@ -20,29 +17,24 @@ import {
   chartTimeframeLabel,
   decimalToNumber,
   toChartCandles,
-  toFillMarkers,
-  toVolumeHistogram,
 } from "../lib/chartAdapter";
 import {
-  formatCurrency,
   formatDateTime,
   formatDecimal,
   formatInteger,
   formatMode,
-  formatSignedCurrency,
 } from "../lib/format";
-import type { RuntimeStatusSnapshot, Timeframe } from "../types/controlApi";
-import {
-  Definition,
-  Metric,
-  MiniMetric,
-  Panel,
-  Pill,
-  SectionBlock,
-} from "./dashboardPrimitives";
+import type {
+  RuntimeChartSnapshot,
+  RuntimeStatusSnapshot,
+  Timeframe,
+} from "../types/controlApi";
+import { Panel, Pill } from "./dashboardPrimitives";
 
-const CHART_HEIGHT = 420;
+const CHART_HEIGHT = 560;
 const CHART_INITIAL_FIT_TOKEN = 0;
+const CHART_PREFETCH_THRESHOLD_BARS = 36;
+const SVG_FALLBACK_MIN_VISIBLE_BARS = 64;
 
 interface ChartOperationalAlert {
   id: string;
@@ -93,27 +85,319 @@ function timeframeButtonLabel(timeframe: Timeframe): string {
   }
 }
 
+function preferredVisibleBars(timeframe: Timeframe, chartWidth: number): number {
+  if (timeframe === "1s") {
+    if (chartWidth >= 1100) {
+      return 146;
+    }
+
+    if (chartWidth >= 820) {
+      return 116;
+    }
+
+    return 72;
+  }
+
+  if (timeframe === "5m") {
+    if (chartWidth >= 1100) {
+      return 108;
+    }
+
+    if (chartWidth >= 820) {
+      return 88;
+    }
+
+    return 56;
+  }
+
+  if (chartWidth >= 1100) {
+    return 128;
+  }
+
+  if (chartWidth >= 820) {
+    return 102;
+  }
+
+  return 64;
+}
+
+function applyPreferredViewport(
+  chart: IChartApi,
+  timeframe: Timeframe,
+  candleCount: number,
+  chartWidth: number,
+) {
+  if (candleCount <= 0) {
+    return;
+  }
+
+  const visibleBars = preferredVisibleBars(timeframe, chartWidth);
+  const rightPadding = Math.max(4, Math.round(visibleBars * 0.06));
+  const from = Math.max(candleCount - visibleBars, -1);
+  const to = candleCount - 1 + rightPadding;
+
+  chart.timeScale().setVisibleLogicalRange({ from, to });
+}
+
+function chartHostHasInk(host: HTMLDivElement | null): boolean {
+  if (!host) {
+    return false;
+  }
+
+  const canvases = Array.from(host.querySelectorAll("canvas"));
+
+  if (canvases.length === 0) {
+    return false;
+  }
+
+  for (const canvas of canvases) {
+    if (canvas.width <= 0 || canvas.height <= 0) {
+      continue;
+    }
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+
+    if (!context) {
+      continue;
+    }
+
+    const stepX = Math.max(Math.floor(canvas.width / 18), 1);
+    const stepY = Math.max(Math.floor(canvas.height / 10), 1);
+
+    for (let y = 0; y < canvas.height; y += stepY) {
+      for (let x = 0; x < canvas.width; x += stepX) {
+        const [red, green, blue, alpha] = context.getImageData(x, y, 1, 1).data;
+
+        if (alpha > 0 && (red > 12 || green > 12 || blue > 12)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function svgFallbackVisibleBars(
+  snapshot: RuntimeChartSnapshot,
+  timeframe: Timeframe,
+  chartWidth: number,
+) {
+  const visibleBars = Math.max(
+    preferredVisibleBars(timeframe, chartWidth),
+    SVG_FALLBACK_MIN_VISIBLE_BARS,
+  );
+
+  if (snapshot.bars.length <= visibleBars) {
+    return snapshot.bars;
+  }
+
+  return snapshot.bars.slice(-visibleBars);
+}
+
+function SvgCandlestickFallback({
+  snapshot,
+  timeframe,
+  chartWidth,
+}: {
+  snapshot: RuntimeChartSnapshot;
+  timeframe: Timeframe;
+  chartWidth: number;
+}) {
+  const width = Math.max(chartWidth, 320);
+  const height = CHART_HEIGHT;
+  const paddingTop = 18;
+  const paddingBottom = 26;
+  const paddingLeft = 14;
+  const paddingRight = 64;
+  const plotWidth = Math.max(width - paddingLeft - paddingRight, 220);
+  const plotHeight = Math.max(height - paddingTop - paddingBottom, 220);
+  const bars = svgFallbackVisibleBars(snapshot, timeframe, width);
+  const highs = bars
+    .map((bar) => decimalToNumber(bar.high))
+    .filter((value): value is number => value !== null);
+  const lows = bars
+    .map((bar) => decimalToNumber(bar.low))
+    .filter((value): value is number => value !== null);
+
+  if (!highs.length || !lows.length) {
+    return null;
+  }
+
+  const high = Math.max(...highs);
+  const low = Math.min(...lows);
+  const spread = Math.max(high - low, 0.5);
+  const pricePadding = spread * 0.12;
+  const maxPrice = high + pricePadding;
+  const minPrice = low - pricePadding;
+  const slotWidth = plotWidth / Math.max(bars.length, 1);
+  const candleWidth = Math.max(Math.min(slotWidth * 0.56, 12), 2);
+  const gridLevels = 5;
+
+  const yForPrice = (price: number) =>
+    paddingTop + ((maxPrice - price) / Math.max(maxPrice - minPrice, 0.0001)) * plotHeight;
+
+  const xForIndex = (index: number) => paddingLeft + slotWidth * index + slotWidth / 2;
+
+  const priceLines = chartPriceLines(snapshot)
+    .filter((line) => line.price >= minPrice && line.price <= maxPrice)
+    .map((line) => ({
+      ...line,
+      y: yForPrice(line.price),
+    }));
+
+  return (
+    <svg
+      aria-label="Contract chart fallback"
+      className="live-chart__svg-fallback"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+    >
+      <rect x="0" y="0" width={width} height={height} fill="rgba(9, 17, 28, 0.96)" />
+      {Array.from({ length: gridLevels }).map((_, index) => {
+        const price = maxPrice - ((maxPrice - minPrice) / (gridLevels - 1)) * index;
+        const y = yForPrice(price);
+        return (
+          <g key={`grid-${index}`}>
+            <line
+              x1={paddingLeft}
+              y1={y}
+              x2={width - paddingRight}
+              y2={y}
+              stroke="rgba(140, 167, 205, 0.14)"
+              strokeWidth="1"
+            />
+            <text
+              x={width - paddingRight + 8}
+              y={y + 4}
+              fill="#8fa6c7"
+              fontSize="11"
+              fontFamily="'IBM Plex Mono', monospace"
+            >
+              {formatDecimal(price)}
+            </text>
+          </g>
+        );
+      })}
+      {priceLines.map((line) => (
+        <g key={line.key}>
+          <line
+            x1={paddingLeft}
+            y1={line.y}
+            x2={width - paddingRight}
+            y2={line.y}
+            stroke={line.color}
+            strokeWidth="1.25"
+            strokeDasharray={line.lineStyle === LineStyle.Dotted ? "2 4" : "6 6"}
+            opacity="0.9"
+          />
+          <text
+            x={width - paddingRight + 8}
+            y={line.y - 4}
+            fill={line.color}
+            fontSize="10"
+            fontFamily="'IBM Plex Mono', monospace"
+          >
+            {line.title}
+          </text>
+        </g>
+      ))}
+      {bars.map((bar, index) => {
+        const open = decimalToNumber(bar.open);
+        const highValue = decimalToNumber(bar.high);
+        const lowValue = decimalToNumber(bar.low);
+        const close = decimalToNumber(bar.close);
+
+        if (
+          open === null ||
+          highValue === null ||
+          lowValue === null ||
+          close === null
+        ) {
+          return null;
+        }
+
+        const x = xForIndex(index);
+        const wickTop = yForPrice(highValue);
+        const wickBottom = yForPrice(lowValue);
+        const bodyTop = yForPrice(Math.max(open, close));
+        const bodyBottom = yForPrice(Math.min(open, close));
+        const rising = close >= open;
+        const color = rising ? "#7ee1a3" : "#ff8f7f";
+        const bodyHeight = Math.max(bodyBottom - bodyTop, 1.5);
+
+        return (
+          <g key={`${bar.closed_at}-${index}`}>
+            <line
+              x1={x}
+              y1={wickTop}
+              x2={x}
+              y2={wickBottom}
+              stroke={color}
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+            <rect
+              x={x - candleWidth / 2}
+              y={bodyTop}
+              width={candleWidth}
+              height={bodyHeight}
+              rx="1.4"
+              fill={color}
+              opacity={rising ? 0.95 : 0.88}
+            />
+          </g>
+        );
+      })}
+      <text
+        x={paddingLeft}
+        y={height - 8}
+        fill="#8fa6c7"
+        fontSize="11"
+        fontFamily="'IBM Plex Mono', monospace"
+      >
+        {`${bars.length} bars | ${chartTimeframeLabel(timeframe)} | fallback renderer`}
+      </text>
+      <text
+        x={width - paddingRight}
+        y={height - 8}
+        fill="#8fa6c7"
+        fontSize="11"
+        textAnchor="end"
+        fontFamily="'IBM Plex Mono', monospace"
+      >
+        {formatDateTime(bars[bars.length - 1]?.closed_at ?? null)}
+      </text>
+    </svg>
+  );
+}
+
 function LiveChartCanvas({
   chartViewModel,
   fitRequestToken,
   liveFollowEnabled,
+  onRequestOlderHistory,
 }: {
   chartViewModel: ChartViewModel;
   fitRequestToken: number;
   liveFollowEnabled: boolean;
+  onRequestOlderHistory: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartHostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
-  const volumeSeriesRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
-  const fillMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const previousTimeframeRef = useRef<Timeframe | null>(null);
   const previousLatestClosedAtRef = useRef<string | null>(null);
   const previousBarCountRef = useRef(0);
+  const lastPrefetchCursorRef = useRef<string | null>(null);
+  const paintCheckFrameRef = useRef<number | null>(null);
+  const [chartWidth, setChartWidth] = useState(320);
+  const [fallbackVisible, setFallbackVisible] = useState(false);
 
-  useEffect(() => {
-    const container = containerRef.current;
+  useLayoutEffect(() => {
+    const container = chartHostRef.current;
 
     if (!container) {
       return;
@@ -186,35 +470,13 @@ function LiveChartCanvas({
       priceLineVisible: true,
     });
 
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: {
-        type: "volume",
-      },
-      priceScaleId: "",
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
-    volumeSeries.priceScale().applyOptions({
-      scaleMargins: {
-        top: 0.78,
-        bottom: 0,
-      },
-      borderVisible: false,
-    });
-
-    const markers = createSeriesMarkers(candleSeries, [], {
-      zOrder: "aboveSeries",
-      autoScale: true,
-    });
-
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
-    volumeSeriesRef.current = volumeSeries;
-    fillMarkersRef.current = markers;
 
     let resizeFrame = 0;
     const resizeChart = () => {
-      const nextWidth = Math.max(container.clientWidth, 320);
+      const nextWidth = Math.max(containerRef.current?.clientWidth ?? container.clientWidth, 320);
+      setChartWidth(nextWidth);
       chart.resize(nextWidth, CHART_HEIGHT);
     };
     const scheduleResize = () => {
@@ -236,9 +498,13 @@ function LiveChartCanvas({
             scheduleResize();
           })
         : null;
-    resizeObserver?.observe(container.parentElement ?? container);
+    resizeObserver?.observe(containerRef.current ?? container);
 
     return () => {
+      if (paintCheckFrameRef.current !== null) {
+        window.cancelAnimationFrame(paintCheckFrameRef.current);
+        paintCheckFrameRef.current = null;
+      }
       if (resizeFrame !== 0) {
         window.cancelAnimationFrame(resizeFrame);
         resizeFrame = 0;
@@ -249,13 +515,11 @@ function LiveChartCanvas({
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-      fillMarkersRef.current = null;
       priceLinesRef.current = [];
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     chartRef.current?.applyOptions({
       timeScale: {
         secondsVisible: chartViewModel.selectedTimeframe === "1s",
@@ -263,22 +527,18 @@ function LiveChartCanvas({
     });
   }, [chartViewModel.selectedTimeframe]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
-    const volumeSeries = volumeSeriesRef.current;
 
-    if (!chart || !candleSeries || !volumeSeries) {
+    if (!chart || !candleSeries) {
       return;
     }
 
     const snapshot = chartViewModel.snapshot;
     const candles = snapshot ? toChartCandles(snapshot.bars) : [];
-    const volumes = snapshot ? toVolumeHistogram(snapshot.bars) : [];
 
     candleSeries.setData(candles);
-    volumeSeries.setData(volumes);
-    fillMarkersRef.current?.setMarkers(toFillMarkers(snapshot));
 
     for (const line of priceLinesRef.current) {
       candleSeries.removePriceLine(line);
@@ -300,7 +560,7 @@ function LiveChartCanvas({
       );
     }
 
-    if (candles.length > 0) {
+    if (candles.length > 0 && chartViewModel.selectedTimeframe) {
       const timeframeChanged =
         previousTimeframeRef.current !== chartViewModel.selectedTimeframe;
       const firstRender = previousBarCountRef.current === 0;
@@ -309,7 +569,12 @@ function LiveChartCanvas({
         latestClosedAt !== null && latestClosedAt !== previousLatestClosedAtRef.current;
 
       if (timeframeChanged || firstRender) {
-        chart.timeScale().fitContent();
+        applyPreferredViewport(
+          chart,
+          chartViewModel.selectedTimeframe,
+          candles.length,
+          Math.max(containerRef.current?.clientWidth ?? 0, 320),
+        );
       } else if (liveFollowEnabled && newTailBar) {
         chart.timeScale().scrollToRealTime();
       }
@@ -322,6 +587,24 @@ function LiveChartCanvas({
       previousLatestClosedAtRef.current = null;
       previousBarCountRef.current = 0;
     }
+
+    if (paintCheckFrameRef.current !== null) {
+      window.cancelAnimationFrame(paintCheckFrameRef.current);
+      paintCheckFrameRef.current = null;
+    }
+
+    if (!candles.length) {
+      setFallbackVisible(false);
+      return;
+    }
+
+    setFallbackVisible(false);
+    paintCheckFrameRef.current = window.requestAnimationFrame(() => {
+      paintCheckFrameRef.current = window.requestAnimationFrame(() => {
+        paintCheckFrameRef.current = null;
+        setFallbackVisible(!chartHostHasInk(chartHostRef.current));
+      });
+    });
   }, [chartViewModel.selectedTimeframe, chartViewModel.snapshot, liveFollowEnabled]);
 
   useEffect(() => {
@@ -329,8 +612,20 @@ function LiveChartCanvas({
       return;
     }
 
-    chartRef.current?.timeScale().fitContent();
-  }, [fitRequestToken]);
+    const chart = chartRef.current;
+    const bars = chartViewModel.snapshot?.bars.length ?? 0;
+
+    if (!chart || bars === 0 || !chartViewModel.selectedTimeframe) {
+      return;
+    }
+
+    applyPreferredViewport(
+      chart,
+      chartViewModel.selectedTimeframe,
+      bars,
+      Math.max(containerRef.current?.clientWidth ?? 0, 320),
+    );
+  }, [fitRequestToken, chartViewModel.selectedTimeframe, chartViewModel.snapshot?.bars.length]);
 
   useEffect(() => {
     if (!liveFollowEnabled || !chartViewModel.snapshot?.bars.length) {
@@ -340,7 +635,90 @@ function LiveChartCanvas({
     chartRef.current?.timeScale().scrollToRealTime();
   }, [chartViewModel.snapshot?.bars.length, liveFollowEnabled]);
 
-  return <div ref={containerRef} className="live-chart__canvas" />;
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+
+    if (!chart || !candleSeries) {
+      return;
+    }
+
+    const evaluateRange = () => {
+      const snapshot = chartViewModel.snapshot;
+
+      if (
+        !snapshot?.bars.length ||
+        !snapshot.can_load_older_history ||
+        chartViewModel.historyState === "loading"
+      ) {
+        return;
+      }
+
+      const visibleRange = chart.timeScale().getVisibleLogicalRange();
+
+      if (!visibleRange) {
+        return;
+      }
+
+      const barsInfo = candleSeries.barsInLogicalRange(visibleRange);
+      const earliestLoadedBar = snapshot.bars[0]?.closed_at ?? null;
+
+      if (!barsInfo || !earliestLoadedBar) {
+        return;
+      }
+
+      if (
+        barsInfo.barsBefore < CHART_PREFETCH_THRESHOLD_BARS &&
+        lastPrefetchCursorRef.current !== earliestLoadedBar
+      ) {
+        lastPrefetchCursorRef.current = earliestLoadedBar;
+        onRequestOlderHistory();
+      }
+    };
+
+    const handleVisibleRangeChange = () => {
+      evaluateRange();
+    };
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+    const frame = window.requestAnimationFrame(() => {
+      evaluateRange();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+    };
+  }, [
+    chartViewModel.historyState,
+    chartViewModel.snapshot,
+    onRequestOlderHistory,
+  ]);
+
+  const fallbackEligible =
+    fallbackVisible &&
+    chartViewModel.snapshot !== null &&
+    chartViewModel.selectedTimeframe !== null;
+  const fallbackSnapshot = fallbackEligible ? chartViewModel.snapshot : null;
+  const fallbackTimeframe = fallbackEligible ? chartViewModel.selectedTimeframe : null;
+
+  return (
+    <div ref={containerRef} className="live-chart__canvas">
+      <div
+        ref={chartHostRef}
+        className={`live-chart__canvas-host${fallbackEligible ? " live-chart__canvas-host--hidden" : ""}`}
+      />
+      {fallbackSnapshot && fallbackTimeframe ? (
+        <div className="live-chart__canvas-overlay">
+          <SvgCandlestickFallback
+            snapshot={fallbackSnapshot}
+            timeframe={fallbackTimeframe}
+            chartWidth={chartWidth}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function workingOrderLevelsSummary(order: {
@@ -367,7 +745,7 @@ function activePositionSummary(
   } | null,
 ) {
   if (!activePosition) {
-    return "No active broker position";
+    return "No active position";
   }
 
   const side = activePosition.quantity >= 0 ? "Long" : "Short";
@@ -493,18 +871,10 @@ export function LiveChartPanel({
   const config = chartViewModel.config;
   const snapshot = chartViewModel.snapshot;
   const instrument = config?.instrument ?? null;
-  const latestPrice = decimalToNumber(snapshot?.latest_price ?? null);
   const activePosition = snapshot?.active_position ?? null;
   const workingOrders = snapshot?.working_orders ?? [];
   const recentFills = snapshot?.recent_fills ?? [];
-  const realizedPnl = decimalToNumber(activePosition?.realized_pnl ?? null);
-  const unrealizedPnl = decimalToNumber(activePosition?.unrealized_pnl ?? null);
-  const activePositionPrice = decimalToNumber(activePosition?.average_price ?? null);
   const latestClosedAt = snapshot?.latest_closed_at ?? null;
-
-  const chartTitle = instrument
-    ? `${instrument.strategy_name} live contract chart`
-    : "Live contract chart";
 
   const latestBarSummary = useMemo(() => {
     if (!snapshot?.bars.length) {
@@ -513,37 +883,48 @@ export function LiveChartPanel({
 
     return snapshot.bars[snapshot.bars.length - 1];
   }, [snapshot]);
+  const latestBarBuilding = latestBarSummary ? !latestBarSummary.is_complete : false;
+  const latestBarTimestampLabel = latestClosedAt
+    ? latestBarBuilding
+      ? `Building until ${formatDateTime(latestClosedAt)}`
+      : formatDateTime(latestClosedAt)
+    : "No candle closed yet";
   const operationalAlerts = useMemo(
     () => chartOperationalAlerts(runtimeStatus, chartViewModel),
     [chartViewModel, runtimeStatus],
   );
   const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
   const [fitRequestToken, setFitRequestToken] = useState(CHART_INITIAL_FIT_TOKEN);
+  const contractHeadline =
+    instrument?.tradovate_symbol ?? instrument?.canonical_symbol ?? "Chart unavailable";
+  const contractSubline = instrument?.strategy_name
+    ? `${instrument.strategy_name}${instrument.canonical_symbol ? ` | ${instrument.canonical_symbol}` : ""}`
+    : config?.detail ?? "Waiting for chart config";
 
   return (
     <Panel
       className="panel--full panel--chart"
-      eyebrow="Live chart"
-      title={chartTitle}
-      detail="Dedicated /chart snapshot and /chart/stream data for the currently loaded contract."
+      eyebrow="Chart"
+      title="Contract chart"
+      hideHeading
     >
-      <div className="chart-toolbar">
-        <div className="chart-toolbar__group">
+      <div className="chart-toolbar chart-toolbar--primary">
+        <div className="chart-toolbar__identity">
+          <strong>{contractHeadline}</strong>
+          <div className="chart-toolbar__identity-meta">
+            <span>{contractSubline}</span>
+          </div>
+        </div>
+        <div className="chart-toolbar__group chart-toolbar__group--status">
           <Pill
             label={
-              config?.available
-                ? `${instrument?.tradovate_symbol ?? instrument?.canonical_symbol ?? "contract"}`
-                : "Chart unavailable"
+              config?.available ? `Feed ${config?.market_data_health ?? "unknown"}` : "Chart unavailable"
             }
-            tone={config?.available ? "info" : "warning"}
+            tone={config?.available ? healthTone(config?.market_data_health ?? null) : "warning"}
           />
           <Pill
             label={`Stream ${chartViewModel.streamState}`}
             tone={chartStreamTone(chartViewModel.streamState)}
-          />
-          <Pill
-            label={`Feed ${config?.market_data_health ?? "unknown"}`}
-            tone={healthTone(config?.market_data_health ?? null)}
           />
           {config?.sample_data_active ? (
             <Pill label="Sample candles" tone="info" />
@@ -566,7 +947,7 @@ export function LiveChartPanel({
               setLiveFollowEnabled((current) => !current);
             }}
           >
-            {liveFollowEnabled ? "Live follow on" : "Live follow off"}
+            {liveFollowEnabled ? "Follow on" : "Follow off"}
           </button>
           <button
             className="command-button"
@@ -575,14 +956,14 @@ export function LiveChartPanel({
               setFitRequestToken((current) => current + 1);
             }}
           >
-            Fit chart
+            Fit
           </button>
           <button
             className="command-button"
             type="button"
             onClick={onRefreshChart}
           >
-            Refresh chart
+            Refresh
           </button>
           <button
             className="command-button"
@@ -592,7 +973,7 @@ export function LiveChartPanel({
               !snapshot?.can_load_older_history || chartViewModel.historyState === "loading"
             }
           >
-            {chartViewModel.historyState === "loading" ? "Loading older bars" : "Load older bars"}
+            {chartViewModel.historyState === "loading" ? "Loading" : "More history"}
           </button>
         </div>
       </div>
@@ -616,17 +997,26 @@ export function LiveChartPanel({
             </button>
           ))}
         </div>
-        <p className="chart-toolbar__note">
-          {chartViewModel.selectedTimeframe
-            ? `Showing ${chartTimeframeLabel(chartViewModel.selectedTimeframe)} candles for the currently loaded strategy contract.`
-            : config?.detail ?? "Load a strategy to chart its resolved contract."}
-          {config?.sample_data_active
-            ? " These candles are illustrative sample data from the local runtime host, not live market data."
-            : ""}
-          {config?.available
-            ? ` ${liveFollowEnabled ? "Live follow keeps the latest candle in view." : "Manual pan and zoom stay pinned until you refit or re-enable follow."}`
-            : ""}
-        </p>
+        <div className="chart-toolbar__group chart-toolbar__group--actions">
+          <Pill
+            label={chartViewModel.selectedTimeframe ? chartTimeframeLabel(chartViewModel.selectedTimeframe) : "Timeframe waiting"}
+            tone="info"
+          />
+          <Pill
+            label={`${formatInteger(snapshot?.bars.length ?? 0)} bars`}
+            tone="info"
+          />
+          <Pill
+            label={
+              config?.sample_data_active
+                ? "Sample data"
+                : config?.replay_caught_up
+                  ? "History caught up"
+                  : "History loading"
+            }
+            tone={config?.sample_data_active ? "info" : config?.replay_caught_up ? "healthy" : "warning"}
+          />
+        </div>
       </div>
 
       {chartViewModel.error ? (
@@ -662,7 +1052,7 @@ export function LiveChartPanel({
             <div className="live-chart__frame">
               <div className="live-chart__readout-strip" aria-label="Chart operator readouts">
                 <div className="live-chart__readout-card">
-                  <span>Execution posture</span>
+                  <span>Posture</span>
                   <strong>
                     {runtimeStatus
                       ? `${formatMode(runtimeStatus.mode)} | ${formatMode(runtimeStatus.arm_state)}`
@@ -681,19 +1071,19 @@ export function LiveChartPanel({
                       ? `O ${formatDecimal(latestBarSummary.open)} | H ${formatDecimal(latestBarSummary.high)} | L ${formatDecimal(latestBarSummary.low)} | C ${formatDecimal(latestBarSummary.close)}`
                       : "Waiting for chart bars"}
                   </strong>
-                  <p>{latestClosedAt ? formatDateTime(latestClosedAt) : "No candle closed yet"}</p>
+                  <p>{latestBarTimestampLabel}</p>
                 </div>
                 <div className="live-chart__readout-card">
-                  <span>Position context</span>
+                  <span>Position</span>
                   <strong>{activePositionSummary(activePosition)}</strong>
                   <p>
                     {activePosition?.protective_orders_present
-                      ? "Broker protections are present on the active position."
-                      : "Broker protections are not currently confirmed on the active position."}
+                      ? "Broker protections confirmed on the open position."
+                      : "Broker protections are not confirmed on the open position."}
                   </p>
                 </div>
                 <div className="live-chart__readout-card">
-                  <span>Working order ladder</span>
+                  <span>Orders</span>
                   <strong>{workingOrderSummary(workingOrders)}</strong>
                   <p>
                     {`${formatInteger(recentFills.length)} recent fill(s) | stream ${chartViewModel.streamState}`}
@@ -705,6 +1095,7 @@ export function LiveChartPanel({
                   chartViewModel={chartViewModel}
                   fitRequestToken={fitRequestToken}
                   liveFollowEnabled={liveFollowEnabled}
+                  onRequestOlderHistory={onLoadOlderHistory}
                 />
               ) : (
                 <div className="live-chart__empty">
@@ -715,222 +1106,7 @@ export function LiveChartPanel({
                 </div>
               )}
             </div>
-            <div className="metric-row live-chart__metrics">
-              <Metric
-                label="Latest price"
-                value={latestPrice === null ? "Unavailable" : formatDecimal(latestPrice)}
-              />
-              <Metric
-                label="Buffered bars"
-                value={formatInteger(snapshot?.bars.length ?? 0)}
-              />
-              <Metric
-                label="Latest candle"
-                value={latestClosedAt ? formatDateTime(latestClosedAt) : "Waiting"}
-              />
-              <Metric
-                label="Warmup"
-                value={
-                  config
-                    ? config.replay_caught_up
-                      ? "Caught up"
-                      : "Replaying"
-                    : "Waiting"
-                }
-              />
-            </div>
-            <div className="subgrid">
-              <MiniMetric
-                label="Replay state"
-                value={config?.replay_caught_up ? "Caught up" : "Building history"}
-              />
-              <MiniMetric
-                label="Trade readiness"
-                value={config?.trade_ready ? "Ready" : "Not ready"}
-              />
-              <MiniMetric
-                label="Connection"
-                value={config?.market_data_connection_state ?? "Unavailable"}
-              />
-              <MiniMetric
-                label="Last stream update"
-                value={formatDateTime(chartViewModel.lastStreamedAt)}
-              />
-            </div>
           </section>
-
-          <aside className="live-chart__sidebar">
-            <SectionBlock
-              title="Contract context"
-              note="The chart is locked to the contract resolved from the currently loaded strategy."
-            >
-              <dl className="definition-list">
-                <Definition label="Strategy" value={instrument?.strategy_name ?? "Not loaded"} />
-                <Definition
-                  label="Tradovate symbol"
-                  value={instrument?.tradovate_symbol ?? "Unavailable"}
-                />
-                <Definition
-                  label="Canonical symbol"
-                  value={instrument?.canonical_symbol ?? "Unavailable"}
-                />
-                <Definition
-                  label="Databento mapping"
-                  value={instrument?.databento_symbols.join(", ") || "Unavailable"}
-                />
-                <Definition label="Chart detail" value={config?.detail ?? "Unavailable"} />
-                <Definition
-                  label="Reconnect review"
-                  value={
-                    runtimeStatus?.reconnect_review.required
-                      ? runtimeStatus.reconnect_review.reason ?? "Review required"
-                      : "Clear"
-                  }
-                />
-              </dl>
-            </SectionBlock>
-
-            <SectionBlock
-              title="Active position"
-              note="Position context comes directly from the synchronized broker snapshot."
-            >
-              {activePosition ? (
-                <>
-                  <div className="pill-row">
-                    <Pill
-                      label={activePosition.quantity >= 0 ? "Long position" : "Short position"}
-                      tone="info"
-                    />
-                    <Pill
-                      label={
-                        activePosition.protective_orders_present
-                          ? "Broker protections present"
-                          : "Protections missing"
-                      }
-                      tone={activePosition.protective_orders_present ? "healthy" : "warning"}
-                    />
-                  </div>
-                  <dl className="definition-list">
-                    <Definition
-                      label="Quantity"
-                      value={formatInteger(activePosition.quantity)}
-                    />
-                    <Definition
-                      label="Average price"
-                      value={
-                        activePositionPrice === null
-                          ? "Unavailable"
-                          : formatDecimal(activePositionPrice)
-                      }
-                    />
-                    <Definition
-                      label="Realized P&L"
-                      value={
-                        realizedPnl === null
-                          ? "Unavailable"
-                          : formatSignedCurrency(realizedPnl)
-                      }
-                    />
-                    <Definition
-                      label="Unrealized P&L"
-                      value={
-                        unrealizedPnl === null
-                          ? "Unavailable"
-                          : formatSignedCurrency(unrealizedPnl)
-                      }
-                    />
-                    <Definition
-                      label="Captured"
-                      value={formatDateTime(activePosition.captured_at)}
-                    />
-                  </dl>
-                </>
-              ) : (
-                <p className="section-block__empty">
-                  No active position is currently projected for this chart contract.
-                </p>
-              )}
-            </SectionBlock>
-
-            <SectionBlock
-              title="Working orders"
-              note="Working orders are projected alongside the chart, and exact limit or stop levels are drawn when the broker snapshot exposes them."
-            >
-              {workingOrders.length ? (
-                <ul className="event-list event-list--compact">
-                  {workingOrders.map((order) => (
-                    <li key={order.broker_order_id} className="event-list__item">
-                      <div className="event-list__header">
-                        <strong>{order.broker_order_id}</strong>
-                        <Pill label={order.status} tone="warning" />
-                      </div>
-                      <p>
-                        {`${order.side ?? "side?"} ${formatInteger(order.quantity)} | ${order.order_type ?? "type unavailable"} | ${workingOrderLevelsSummary(order)} | filled ${formatInteger(order.filled_quantity)} | avg fill ${formatDecimal(order.average_fill_price)}`}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="section-block__empty">
-                  No working broker orders are projected for this contract right now.
-                </p>
-              )}
-            </SectionBlock>
-
-            <SectionBlock
-              title="Recent fills"
-              note="Recent fills are plotted on the chart with buy and sell markers."
-            >
-              {recentFills.length ? (
-                <ul className="event-list event-list--compact">
-                  {recentFills.map((fill) => (
-                    <li key={fill.fill_id} className="event-list__item">
-                      <div className="event-list__header">
-                        <strong>{`${fill.side} ${formatInteger(fill.quantity)}`}</strong>
-                        <Pill
-                          label={formatDecimal(fill.price)}
-                          tone={fill.side === "buy" ? "healthy" : "danger"}
-                        />
-                      </div>
-                      <p>
-                        {`Fill ${fill.fill_id}${fill.broker_order_id ? ` | order ${fill.broker_order_id}` : ""} | fee ${formatCurrency(fill.fee)} | commission ${formatCurrency(fill.commission)} | ${formatDateTime(fill.occurred_at)}`}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="section-block__empty">
-                  No recent fills are projected for this contract yet.
-                </p>
-              )}
-            </SectionBlock>
-
-            <SectionBlock
-              title="Latest candle detail"
-              note="Current bar values from the local chart snapshot."
-            >
-              {latestBarSummary ? (
-                <dl className="definition-list">
-                  <Definition label="Open" value={formatDecimal(latestBarSummary.open)} />
-                  <Definition label="High" value={formatDecimal(latestBarSummary.high)} />
-                  <Definition label="Low" value={formatDecimal(latestBarSummary.low)} />
-                  <Definition label="Close" value={formatDecimal(latestBarSummary.close)} />
-                  <Definition
-                    label="Volume"
-                    value={formatInteger(latestBarSummary.volume)}
-                  />
-                  <Definition
-                    label="Closed"
-                    value={formatDateTime(latestBarSummary.closed_at)}
-                  />
-                </dl>
-              ) : (
-                <p className="section-block__empty">
-                  Latest candle values will appear here once the runtime projects chart bars.
-                </p>
-              )}
-            </SectionBlock>
-          </aside>
         </div>
       )}
     </Panel>

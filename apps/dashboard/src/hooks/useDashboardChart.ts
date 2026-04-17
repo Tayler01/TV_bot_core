@@ -21,8 +21,7 @@ import type {
   Timeframe,
 } from "../types/controlApi";
 
-const CHART_INITIAL_LIMIT = 240;
-const CHART_HISTORY_PAGE_SIZE = 180;
+const DEFAULT_VIEWPORT_WIDTH = 1440;
 const CHART_RECONNECT_DELAY_MS = 1_500;
 
 const INITIAL_CHART_VIEW_MODEL: ChartViewModel = {
@@ -90,6 +89,58 @@ function mergeIncomingSnapshot(
   };
 }
 
+function chartViewportWidth(): number {
+  if (typeof window === "undefined") {
+    return DEFAULT_VIEWPORT_WIDTH;
+  }
+
+  return Math.max(window.innerWidth, 390);
+}
+
+function chartVisibleBarsTarget(timeframe: Timeframe, viewportWidth = chartViewportWidth()): number {
+  if (timeframe === "1s") {
+    if (viewportWidth >= 1280) {
+      return 150;
+    }
+
+    if (viewportWidth >= 900) {
+      return 118;
+    }
+
+    return 72;
+  }
+
+  if (timeframe === "5m") {
+    if (viewportWidth >= 1280) {
+      return 112;
+    }
+
+    if (viewportWidth >= 900) {
+      return 92;
+    }
+
+    return 56;
+  }
+
+  if (viewportWidth >= 1280) {
+    return 132;
+  }
+
+  if (viewportWidth >= 900) {
+    return 104;
+  }
+
+  return 64;
+}
+
+function chartSnapshotLimit(timeframe: Timeframe, viewportWidth = chartViewportWidth()): number {
+  return Math.max(Math.round(chartVisibleBarsTarget(timeframe, viewportWidth) * 3), 180);
+}
+
+function chartHistoryPageSize(timeframe: Timeframe, viewportWidth = chartViewportWidth()): number {
+  return Math.max(Math.round(chartVisibleBarsTarget(timeframe, viewportWidth) * 1.5), 120);
+}
+
 export function useDashboardChart(
   snapshot: DashboardSnapshot | null,
 ): DashboardChartController {
@@ -128,7 +179,11 @@ export function useDashboardChart(
         return;
       }
 
-      const currentSnapshot = await loadChartSnapshot(nextTimeframe, CHART_INITIAL_LIMIT, signal);
+      const currentSnapshot = await loadChartSnapshot(
+        nextTimeframe,
+        chartSnapshotLimit(nextTimeframe),
+        signal,
+      );
 
       startTransition(() => {
         setChartViewModel((current) => ({
@@ -192,7 +247,7 @@ export function useDashboardChart(
       const history = await loadChartHistory(
         timeframe,
         earliestBar.closed_at,
-        CHART_HISTORY_PAGE_SIZE,
+        chartHistoryPageSize(timeframe),
       );
 
       setChartViewModel((current) => {
@@ -258,7 +313,7 @@ export function useDashboardChart(
       try {
         const currentSnapshot = await loadChartSnapshot(
           timeframe,
-          CHART_INITIAL_LIMIT,
+          chartSnapshotLimit(timeframe),
           controller.signal,
         );
 
@@ -330,7 +385,10 @@ export function useDashboardChart(
       }));
 
       socket = new WebSocket(
-        controlApiChartStreamUrl(chartViewModel.selectedTimeframe, CHART_INITIAL_LIMIT),
+        controlApiChartStreamUrl(
+          chartViewModel.selectedTimeframe,
+          chartSnapshotLimit(chartViewModel.selectedTimeframe),
+        ),
       );
 
       socket.onopen = () => {

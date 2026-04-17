@@ -8,24 +8,28 @@ export function Panel({
   detail,
   children,
   className,
+  hideHeading = false,
 }: {
   eyebrow: string;
   title: string;
   detail?: string;
   children: ReactNode;
   className?: string;
+  hideHeading?: boolean;
 }) {
   const panelClassName = className ? `panel ${className}` : "panel";
 
   return (
     <section className={panelClassName}>
-      <div className="panel__heading">
-        <div>
-          <p className="eyebrow">{eyebrow}</p>
-          <h2>{title}</h2>
+      {hideHeading ? null : (
+        <div className="panel__heading">
+          <div>
+            <p className="eyebrow">{eyebrow}</p>
+            <h2>{title}</h2>
+          </div>
+          {detail ? <p className="panel__detail">{detail}</p> : null}
         </div>
-        {detail ? <p className="panel__detail">{detail}</p> : null}
-      </div>
+      )}
       {children}
     </section>
   );
@@ -36,17 +40,30 @@ export function ControlCluster({
   title,
   detail,
   children,
+  className,
+  compact = false,
+  hideEyebrow = false,
 }: {
   eyebrow: string;
   title: string;
   detail?: string;
   children: ReactNode;
+  className?: string;
+  compact?: boolean;
+  hideEyebrow?: boolean;
 }) {
+  const clusterClassName = className
+    ? `control-cluster ${className}${compact ? " control-cluster--compact" : ""}`
+    : `control-cluster${compact ? " control-cluster--compact" : ""}`;
+  const headerClassName = compact
+    ? "control-cluster__header control-cluster__header--compact"
+    : "control-cluster__header";
+
   return (
-    <section className="control-cluster">
-      <div className="control-cluster__header">
+    <section className={clusterClassName}>
+      <div className={headerClassName}>
         <div>
-          <p className="eyebrow">{eyebrow}</p>
+          {hideEyebrow ? null : <p className="eyebrow">{eyebrow}</p>}
           <h3>{title}</h3>
         </div>
         {detail ? <p className="control-cluster__detail">{detail}</p> : null}
@@ -87,7 +104,11 @@ export function Pill({
   label: string;
   tone: BannerTone;
 }) {
-  return <span className={`pill pill--${tone}`}>{label}</span>;
+  return (
+    <span className={`pill pill--${tone}`} title={label}>
+      <span className="pill__label">{label}</span>
+    </span>
+  );
 }
 
 export function Metric({ label, value }: { label: string; value: string }) {

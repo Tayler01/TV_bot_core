@@ -273,6 +273,7 @@ fn sample_chart_bars_for_timeframe(
                 close: Decimal::new(close, 2),
                 volume,
                 closed_at,
+                is_complete: true,
             }
         })
         .collect()
@@ -792,6 +793,90 @@ impl RuntimeMarketDataManager {
         };
 
         paginate_chart_bars(bars, before, limit)
+    }
+
+    fn chart_snapshot_bars(
+        &self,
+        timeframe: Timeframe,
+        before: Option<DateTime<Utc>>,
+        limit: usize,
+    ) -> (Vec<RuntimeChartBar>, bool) {
+        let (mut bars, mut can_load_older_history) = self.chart_bars(timeframe, before, limit);
+
+        if before.is_some() {
+            return (bars, can_load_older_history);
+        }
+
+        if let Some(forming_bar) = self.forming_chart_bar(timeframe) {
+            merge_runtime_chart_bar(&mut bars, forming_bar);
+            if bars.len() > limit {
+                let overflow = bars.len().saturating_sub(limit);
+                bars = bars[overflow..].to_vec();
+                can_load_older_history = true;
+            }
+        }
+
+        (bars, can_load_older_history)
+    }
+
+    fn forming_chart_bar(&self, timeframe: Timeframe) -> Option<RuntimeChartBar> {
+        match &self.state {
+            RuntimeMarketDataState::Active {
+                service,
+                last_snapshot,
+                sample_chart_bars,
+                ..
+            } => {
+                if market_data_failure_sample_fallback_active(
+                    last_snapshot.as_ref(),
+                    sample_chart_bars
+                        .keys()
+                        .filter_map(|candidate| service.session().coordinator().buffer(*candidate))
+                        .map(tv_bot_market_data::RollingBuffer::len)
+                        .sum(),
+                    !sample_chart_bars.is_empty(),
+                ) {
+                    return None;
+                }
+
+                let completed_bars = service
+                    .session()
+                    .coordinator()
+                    .buffer(timeframe)
+                    .map(runtime_chart_bars_from_buffer)
+                    .unwrap_or_default();
+
+                forming_runtime_chart_bar(timeframe, &completed_bars, |source_timeframe| {
+                    service
+                        .session()
+                        .coordinator()
+                        .buffer(source_timeframe)
+                        .map(runtime_chart_bars_from_buffer)
+                        .unwrap_or_default()
+                })
+            }
+            RuntimeMarketDataState::Unconfigured { .. }
+            | RuntimeMarketDataState::PendingStrategy { .. }
+            | RuntimeMarketDataState::StrategyBlocked { .. } => None,
+            #[cfg(test)]
+            RuntimeMarketDataState::SnapshotOverride {
+                chart_bars,
+                sample_chart_active,
+                ..
+            } => {
+                if *sample_chart_active {
+                    return None;
+                }
+
+                let completed_bars = chart_bars.get(&timeframe).cloned().unwrap_or_default();
+                forming_runtime_chart_bar(timeframe, &completed_bars, |source_timeframe| {
+                    chart_bars
+                        .get(&source_timeframe)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+            }
+        }
     }
 
     async fn refresh(&mut self, now: chrono::DateTime<Utc>) -> RuntimeMarketDataView {
@@ -1348,8 +1433,117 @@ fn runtime_chart_bar_from_market_event(event: &MarketEvent) -> Option<RuntimeCha
             close: *close,
             volume: *volume,
             closed_at: *closed_at,
+            is_complete: true,
         }),
         _ => None,
+    }
+}
+
+fn runtime_chart_bars_from_buffer(
+    buffer: &tv_bot_market_data::RollingBuffer<MarketEvent>,
+) -> Vec<RuntimeChartBar> {
+    buffer
+        .iter()
+        .filter_map(runtime_chart_bar_from_market_event)
+        .collect()
+}
+
+fn chart_timeframe_duration(timeframe: Timeframe) -> ChronoDuration {
+    match timeframe {
+        Timeframe::OneSecond => ChronoDuration::seconds(1),
+        Timeframe::OneMinute => ChronoDuration::minutes(1),
+        Timeframe::FiveMinute => ChronoDuration::minutes(5),
+    }
+}
+
+fn align_chart_window_start(timestamp: DateTime<Utc>, timeframe: Timeframe) -> DateTime<Utc> {
+    let seconds = chart_timeframe_duration(timeframe).num_seconds();
+    let aligned_seconds = timestamp.timestamp() - timestamp.timestamp().rem_euclid(seconds);
+
+    DateTime::<Utc>::from_timestamp(aligned_seconds, 0)
+        .expect("aligned chart timestamp should be valid")
+}
+
+fn chart_partial_source_timeframe(timeframe: Timeframe) -> Option<Timeframe> {
+    match timeframe {
+        Timeframe::OneSecond => None,
+        Timeframe::OneMinute => Some(Timeframe::OneSecond),
+        Timeframe::FiveMinute => Some(Timeframe::OneMinute),
+    }
+}
+
+fn forming_runtime_chart_bar<F>(
+    timeframe: Timeframe,
+    completed_bars: &[RuntimeChartBar],
+    mut source_bars_for_timeframe: F,
+) -> Option<RuntimeChartBar>
+where
+    F: FnMut(Timeframe) -> Vec<RuntimeChartBar>,
+{
+    let source_timeframe = chart_partial_source_timeframe(timeframe)?;
+    let source_duration = chart_timeframe_duration(source_timeframe);
+    let target_duration = chart_timeframe_duration(timeframe);
+    let source_bars = source_bars_for_timeframe(source_timeframe);
+    let latest_source_closed_at = source_bars.last()?.closed_at;
+    let latest_source_started_at = latest_source_closed_at - source_duration;
+    let window_start = align_chart_window_start(latest_source_started_at, timeframe);
+    let window_end = window_start + target_duration;
+
+    let window_source_bars = source_bars
+        .into_iter()
+        .filter(|bar| {
+            let source_started_at = bar.closed_at - source_duration;
+            source_started_at >= window_start && source_started_at < window_end
+        })
+        .collect::<Vec<_>>();
+
+    let first_bar = window_source_bars.first()?;
+    let last_bar = window_source_bars.last()?;
+    let open = first_bar.open;
+    let close = last_bar.close;
+    let high = window_source_bars
+        .iter()
+        .map(|bar| bar.high)
+        .max()
+        .unwrap_or(first_bar.high);
+    let low = window_source_bars
+        .iter()
+        .map(|bar| bar.low)
+        .min()
+        .unwrap_or(first_bar.low);
+    let volume = window_source_bars.iter().map(|bar| bar.volume).sum();
+
+    if let Some(existing_completed) = completed_bars.last() {
+        if existing_completed.closed_at >= window_end && existing_completed.is_complete {
+            return None;
+        }
+    }
+
+    Some(RuntimeChartBar {
+        timeframe,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        closed_at: window_end,
+        is_complete: latest_source_closed_at >= window_end,
+    })
+}
+
+fn merge_runtime_chart_bar(bars: &mut Vec<RuntimeChartBar>, candidate: RuntimeChartBar) {
+    if let Some(index) = bars
+        .iter()
+        .position(|bar| bar.closed_at == candidate.closed_at)
+    {
+        if bars[index].is_complete && !candidate.is_complete {
+            return;
+        }
+
+        bars[index] = candidate;
+    } else {
+        bars.push(candidate);
+        bars.sort_by_key(|bar| bar.closed_at);
     }
 }
 
@@ -3044,7 +3238,7 @@ async fn build_chart_snapshot(
     let dispatch_snapshot = current_dispatch_snapshot(state).await;
     let (bars, can_load_older_history) = {
         let market_data = state.market_data.lock().await;
-        market_data.chart_bars(timeframe, query.before, requested_limit)
+        market_data.chart_snapshot_bars(timeframe, query.before, requested_limit)
     };
     let symbol = config
         .instrument
@@ -5416,6 +5610,7 @@ mod tests {
             close: Decimal::new(close, 2),
             volume,
             closed_at,
+            is_complete: true,
         }
     }
 
@@ -10515,6 +10710,166 @@ selection:
         assert_eq!(snapshot.working_orders.len(), 1);
         assert_eq!(snapshot.recent_fills.len(), 1);
         assert!(snapshot.config.available);
+    }
+
+    #[tokio::test]
+    async fn chart_snapshot_route_projects_live_one_minute_bar_from_one_second_buffer() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart snapshot load strategy for live candle projection",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let base_time = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 0, 0)
+            .single()
+            .expect("timestamp should be valid");
+        set_test_market_data_snapshot_with_chart_bars(
+            &state,
+            sample_market_data_snapshot(tv_bot_market_data::MarketDataHealth::Healthy),
+            None,
+            BTreeMap::from([
+                (
+                    Timeframe::OneMinute,
+                    vec![
+                        sample_chart_bar(
+                            Timeframe::OneMinute,
+                            base_time,
+                            238_400,
+                            238_450,
+                            238_350,
+                            238_425,
+                            12,
+                        ),
+                        sample_chart_bar(
+                            Timeframe::OneMinute,
+                            base_time + ChronoDuration::minutes(1),
+                            238_425,
+                            238_500,
+                            238_400,
+                            238_475,
+                            18,
+                        ),
+                    ],
+                ),
+                (
+                    Timeframe::OneSecond,
+                    vec![
+                        sample_chart_bar(
+                            Timeframe::OneSecond,
+                            base_time + ChronoDuration::minutes(1) + ChronoDuration::seconds(1),
+                            238_500,
+                            238_520,
+                            238_480,
+                            238_510,
+                            4,
+                        ),
+                        sample_chart_bar(
+                            Timeframe::OneSecond,
+                            base_time + ChronoDuration::minutes(1) + ChronoDuration::seconds(2),
+                            238_510,
+                            238_540,
+                            238_490,
+                            238_530,
+                            6,
+                        ),
+                        sample_chart_bar(
+                            Timeframe::OneSecond,
+                            base_time + ChronoDuration::minutes(1) + ChronoDuration::seconds(3),
+                            238_530,
+                            238_560,
+                            238_520,
+                            238_550,
+                            8,
+                        ),
+                    ],
+                ),
+            ]),
+        )
+        .await;
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/chart/snapshot?timeframe=1m&limit=2")
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart snapshot live candle projection route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let snapshot: RuntimeChartSnapshot =
+            serde_json::from_slice(&body).expect("chart snapshot json should parse");
+
+        assert_eq!(snapshot.timeframe, Timeframe::OneMinute);
+        assert_eq!(snapshot.requested_limit, 2);
+        assert_eq!(snapshot.bars.len(), 2);
+        assert_eq!(
+            snapshot.bars[0].closed_at,
+            base_time + ChronoDuration::minutes(1)
+        );
+        assert!(snapshot.bars[0].is_complete);
+        assert_eq!(
+            snapshot.bars[1].closed_at,
+            base_time + ChronoDuration::minutes(2)
+        );
+        assert_eq!(snapshot.bars[1].open, Decimal::new(238_500, 2));
+        assert_eq!(snapshot.bars[1].high, Decimal::new(238_560, 2));
+        assert_eq!(snapshot.bars[1].low, Decimal::new(238_480, 2));
+        assert_eq!(snapshot.bars[1].close, Decimal::new(238_550, 2));
+        assert_eq!(snapshot.bars[1].volume, 18);
+        assert!(!snapshot.bars[1].is_complete);
+        assert_eq!(snapshot.latest_price, Some(Decimal::new(238_550, 2)));
+        assert_eq!(
+            snapshot.latest_closed_at,
+            Some(base_time + ChronoDuration::minutes(2))
+        );
+        assert!(snapshot.can_load_older_history);
     }
 
     #[tokio::test]

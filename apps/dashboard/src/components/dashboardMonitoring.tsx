@@ -1,4 +1,5 @@
 import type { DashboardSnapshot } from "../lib/api";
+import type { RuntimeMode } from "../types/controlApi";
 import {
   formatCurrency,
   formatDateTime,
@@ -20,6 +21,7 @@ import {
   statusTone,
   tradeTone,
 } from "../lib/dashboardPresentation";
+import type { ChartViewModel } from "../dashboardModels";
 import type {
   EventFeedViewModel,
   HeadlineSummary,
@@ -46,67 +48,96 @@ import {
   SectionBlock,
 } from "./dashboardPrimitives";
 
-export function RuntimeSummaryPanel({ snapshot }: { snapshot: DashboardSnapshot }) {
+export function RuntimeSummaryPanel({
+  snapshot,
+  chartViewModel,
+  pendingAction,
+  newEntriesReason,
+  canDisableNewEntries,
+  canEnableNewEntries,
+  onNewEntriesReasonChange,
+  onSetNewEntriesEnabled,
+  onSetMode,
+}: {
+  snapshot: DashboardSnapshot;
+  chartViewModel: ChartViewModel;
+  pendingAction: string | null;
+  newEntriesReason: string;
+  canDisableNewEntries: boolean;
+  canEnableNewEntries: boolean;
+  onNewEntriesReasonChange: (value: string) => void;
+  onSetNewEntriesEnabled: (enabled: boolean) => void;
+  onSetMode: (mode: RuntimeMode) => void;
+}) {
+  const contractLabel =
+    snapshot.status.instrument_mapping?.tradovate_symbol ??
+    snapshot.status.current_strategy?.market_family ??
+    "No contract";
+  const strategyLabel = snapshot.status.current_strategy
+    ? `${snapshot.status.current_strategy.name} v${snapshot.status.current_strategy.version}`
+    : "No strategy loaded";
+  const chartConfig = chartViewModel.config;
+  const chartSnapshot = chartViewModel.snapshot;
+  const latestBar = chartSnapshot?.bars.at(-1) ?? null;
+  const databentoLabel =
+    chartConfig?.instrument?.databento_symbols.join(", ") ||
+    snapshot.status.market_data_status?.session.market_data.provider ||
+    "Unavailable";
+  const chartStateLabel = chartConfig?.detail ?? "Chart context unavailable";
+  const latestCandleLabel = latestBar
+    ? latestBar.is_complete
+      ? formatDateTime(latestBar.closed_at)
+      : `Building until ${formatDateTime(latestBar.closed_at)}`
+    : "Waiting";
+  const latestOhlcLabel =
+    latestBar != null
+      ? `O ${formatDecimal(latestBar.open)} | H ${formatDecimal(latestBar.high)} | L ${formatDecimal(latestBar.low)} | C ${formatDecimal(latestBar.close)}`
+      : "Waiting for bars";
+  const openPositionCount = snapshot.history.projection.open_position_symbols.length;
+  const workingOrderCount = snapshot.history.projection.working_order_ids.length;
+
   return (
     <Panel
-      className="panel--monitoring panel--context-compact"
+      className="panel--monitoring panel--context-compact panel--rail-toolbar"
       eyebrow="Context"
-      title="Runtime posture"
+      title="Runtime context"
       detail={`HTTP ${snapshot.status.http_bind} | WS ${snapshot.status.websocket_bind}`}
+      hideHeading
     >
+      <div className="rail-toolbar__identity">
+        <strong>{contractLabel}</strong>
+        <span>{strategyLabel}</span>
+      </div>
       <div className="metric-row">
-        <Metric label="Arm state" value={formatMode(snapshot.status.arm_state)} />
+        <Metric label="Arm" value={formatMode(snapshot.status.arm_state)} />
         <Metric label="Warmup" value={formatMode(snapshot.status.warmup_status)} />
-        <Metric label="Account" value={snapshot.status.current_account_name ?? "Not selected"} />
-        <Metric
-          label="Dispatch"
-          value={snapshot.status.command_dispatch_ready ? "Ready" : "Blocked"}
-        />
+        <Metric label="Pos" value={formatInteger(openPositionCount)} />
+        <Metric label="Orders" value={formatInteger(workingOrderCount)} />
       </div>
       <div className="pill-row">
         <Pill label={formatMode(snapshot.status.mode)} tone="info" />
         <Pill
-          label={snapshot.status.strategy_loaded ? "Strategy loaded" : "No strategy"}
-          tone={snapshot.status.strategy_loaded ? "healthy" : "warning"}
-        />
-        <Pill
           label={
             snapshot.status.hard_override_active
-              ? "Temporary override active"
-              : "No override"
+              ? "Override active"
+              : "Override clear"
           }
           tone={snapshot.status.hard_override_active ? "warning" : "healthy"}
         />
         <Pill
+          label={snapshot.status.command_dispatch_ready ? "Dispatch ok" : "Dispatch off"}
+          tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
+        />
+        <Pill
           label={
             snapshot.status.operator_new_entries_enabled
-              ? "Entry gate open"
-              : "Entry gate closed"
+              ? "Entries on"
+              : "Entries off"
           }
           tone={snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"}
         />
-        <Pill
-          label={snapshot.status.command_dispatch_detail}
-          tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
-        />
       </div>
       <dl className="definition-list">
-        <Definition
-          label="Strategy"
-          value={
-            snapshot.status.current_strategy
-              ? `${snapshot.status.current_strategy.name} v${snapshot.status.current_strategy.version}`
-              : "Not loaded"
-          }
-        />
-        <Definition
-          label="New entries"
-          value={
-            snapshot.status.operator_new_entries_enabled
-              ? "Enabled"
-              : snapshot.status.operator_new_entries_reason ?? "Disabled by operator control"
-          }
-        />
         <Definition
           label="Market"
           value={
@@ -115,6 +146,18 @@ export function RuntimeSummaryPanel({ snapshot }: { snapshot: DashboardSnapshot 
             "Instrument mapping unavailable"
           }
         />
+        <Definition label="Databento" value={databentoLabel} />
+        <Definition label="State" value={chartStateLabel} />
+        <Definition
+          label="Review"
+          value={
+            snapshot.status.reconnect_review.required
+              ? snapshot.status.reconnect_review.reason ?? "Review required"
+              : "Clear"
+          }
+        />
+        <Definition label="Candle" value={latestCandleLabel} />
+        <Definition label="OHLC" value={latestOhlcLabel} />
         <Definition
           label="Broker route"
           value={
@@ -124,6 +167,89 @@ export function RuntimeSummaryPanel({ snapshot }: { snapshot: DashboardSnapshot 
           }
         />
       </dl>
+      <div className="rail-toolbelt">
+        <section className="rail-tool-group">
+          <p className="control-card__title">Mode</p>
+          <div className="action-row action-row--segmented action-row--compact">
+            <button
+              className="command-button"
+              type="button"
+              disabled={pendingAction !== null || snapshot.status.mode === "paper"}
+              onClick={() => {
+                onSetMode("paper");
+              }}
+            >
+              Paper
+            </button>
+            <button
+              className="command-button"
+              type="button"
+              disabled={pendingAction !== null || snapshot.status.mode === "observation"}
+              onClick={() => {
+                onSetMode("observation");
+              }}
+            >
+              Observe
+            </button>
+            <button
+              className="command-button command-button--danger"
+              type="button"
+              disabled={pendingAction !== null || snapshot.status.mode === "live"}
+              onClick={() => {
+                onSetMode("live");
+              }}
+            >
+              Live
+            </button>
+          </div>
+        </section>
+        <section className="rail-tool-group">
+          <div className="rail-tool-group__header">
+            <p className="control-card__title">Gate</p>
+            <Pill
+              label={
+                snapshot.status.operator_new_entries_enabled
+                  ? "Entries on"
+                  : "Entries off"
+              }
+              tone={snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"}
+            />
+          </div>
+          <label className="field field--wide">
+            <span>Reason</span>
+            <input
+              aria-label="New entry gate reason"
+              placeholder="operator gate"
+              value={newEntriesReason}
+              onChange={(event) => {
+                onNewEntriesReasonChange(event.target.value);
+              }}
+            />
+          </label>
+          <div className="action-row action-row--compact">
+            <button
+              className="command-button command-button--danger"
+              type="button"
+              disabled={!canDisableNewEntries}
+              onClick={() => {
+                onSetNewEntriesEnabled(false);
+              }}
+            >
+              Block entries
+            </button>
+            <button
+              className="command-button"
+              type="button"
+              disabled={!canEnableNewEntries}
+              onClick={() => {
+                onSetNewEntriesEnabled(true);
+              }}
+            >
+              Allow entries
+            </button>
+          </div>
+        </section>
+      </div>
     </Panel>
   );
 }
@@ -137,9 +263,9 @@ export function ReadinessPanel({
 }) {
   return (
     <Panel
-      className="panel--monitoring panel--context-compact"
+      className="panel--monitoring panel--context-compact panel--dock-terminal"
       eyebrow="Readiness"
-      title="Pre-arm check groups"
+      title="Pre-arm checks"
       detail={formatDateTime(snapshot.readiness.report.generated_at)}
     >
       <div className="metric-row">
@@ -175,7 +301,11 @@ export function HealthPanel({
   feedStatuses: FeedStatus[];
 }) {
   return (
-    <Panel eyebrow="Health" title="Broker, feed, storage, and host telemetry">
+    <Panel
+      className="panel--dock-terminal"
+      eyebrow="Health"
+      title="Broker, feed, storage, and host telemetry"
+    >
       <div className="metric-row">
         <Metric label="Host" value={formatMode(snapshot.health.status)} />
         <Metric
@@ -377,7 +507,7 @@ export function HistoryPanel({
 }) {
   return (
     <Panel
-      className="panel--full panel--monitoring panel--history"
+      className="panel--full panel--monitoring panel--history panel--dock-terminal"
       eyebrow="History"
       title="Trade state and PnL projection"
       detail="Projected orders, fills, trade summaries, and floating P&L from the local runtime host."
@@ -695,7 +825,7 @@ export function LatencyPanel({
 }) {
   return (
     <Panel
-      className="panel--full panel--monitoring panel--latency"
+      className="panel--full panel--monitoring panel--latency panel--dock-terminal"
       eyebrow="Latency"
       title="Latest trade-path timing"
       detail="Latest signal-to-fill path with host write and reconnect context."
@@ -835,7 +965,7 @@ export function JournalPanel({
 }) {
   return (
     <Panel
-      className="panel--full panel--monitoring panel--journal"
+      className="panel--full panel--monitoring panel--journal panel--dock-terminal"
       eyebrow="Journal"
       title="Persisted operator journal and audit trail"
       detail={`${formatInteger(snapshot.journal.total_records)} total record(s)`}
@@ -917,7 +1047,7 @@ export function EventsPanel({
 }) {
   return (
     <Panel
-      className="panel--full panel--monitoring panel--events"
+      className="panel--full panel--monitoring panel--events panel--dock-terminal"
       eyebrow="Events"
       title="Local operator feed from /events"
       detail={

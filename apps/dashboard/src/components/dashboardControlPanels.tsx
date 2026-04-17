@@ -13,7 +13,12 @@ import type {
   RuntimeStrategyCatalogEntry,
   RuntimeStrategyValidationResponse,
 } from "../types/controlApi";
-import { ControlCluster, Definition, Panel, Pill } from "./dashboardPrimitives";
+import {
+  ControlCluster,
+  Definition,
+  Panel,
+  Pill,
+} from "./dashboardPrimitives";
 
 function strategyTone(entry: RuntimeStrategyCatalogEntry | null | undefined): BannerTone {
   if (!entry) {
@@ -69,7 +74,6 @@ type ShutdownDecision = "flatten_first" | "leave_broker_protected";
 interface ControlCenterPanelProps {
   snapshot: DashboardSnapshot;
   pendingAction: string | null;
-  newEntriesReason: string;
   closePositionReason: string;
   manualEntrySide: "buy" | "sell";
   manualEntryQuantity: string;
@@ -80,14 +84,9 @@ interface ControlCenterPanelProps {
   cancelWorkingOrdersReason: string;
   armButtonLabel: string;
   pauseButtonLabel: string;
-  canDisableNewEntries: boolean;
-  canEnableNewEntries: boolean;
   canManualEntry: boolean;
   canClosePosition: boolean;
   canCancelWorkingOrders: boolean;
-  onSetMode: (mode: RuntimeMode) => void;
-  onNewEntriesReasonChange: (value: string) => void;
-  onSetNewEntriesEnabled: (enabled: boolean) => void;
   onStartWarmup: () => void;
   onArmToggle: () => void;
   onPauseResume: () => void;
@@ -107,7 +106,6 @@ interface ControlCenterPanelProps {
 export function ControlCenterPanel({
   snapshot,
   pendingAction,
-  newEntriesReason,
   closePositionReason,
   manualEntrySide,
   manualEntryQuantity,
@@ -118,14 +116,9 @@ export function ControlCenterPanel({
   cancelWorkingOrdersReason,
   armButtonLabel,
   pauseButtonLabel,
-  canDisableNewEntries,
-  canEnableNewEntries,
   canManualEntry,
   canClosePosition,
   canCancelWorkingOrders,
-  onSetMode,
-  onNewEntriesReasonChange,
-  onSetNewEntriesEnabled,
   onStartWarmup,
   onArmToggle,
   onPauseResume,
@@ -150,149 +143,52 @@ export function ControlCenterPanel({
 
   return (
     <Panel
-      className="panel--full panel--command-center"
+      className="panel--full panel--command-center panel--rail-toolbar"
       eyebrow="Control Center"
-      title="Primary operator actions beside the live contract chart"
-      detail={`Current mode: ${formatMode(snapshot.status.mode)} | Dispatch: ${snapshot.status.command_dispatch_detail}`}
+      title="Trade actions"
+      hideHeading
     >
-      <div className="control-overview" aria-label="Command center summary">
-        <Pill label={`Mode ${formatMode(snapshot.status.mode)}`} tone={modePillTone} />
-        <Pill
-          label={snapshot.status.strategy_loaded ? "Strategy loaded" : "Strategy missing"}
-          tone={snapshot.status.strategy_loaded ? "healthy" : "warning"}
-        />
-        <Pill
-          label={
-            snapshot.status.command_dispatch_ready ? "Dispatch ready" : "Dispatch blocked"
-          }
-          tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
-        />
-        <Pill
-          label={
-            snapshot.status.operator_new_entries_enabled
-              ? "Entries enabled"
-              : "Entries blocked"
-          }
-          tone={snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"}
-        />
-        <Pill
-          label={
-            snapshot.status.arm_state === "armed" ? "Runtime armed" : "Runtime disarmed"
-          }
-          tone={snapshot.status.arm_state === "armed" ? "healthy" : "info"}
-        />
-      </div>
-      <div className="control-shell">
+      <div className="control-shell control-shell--compact">
         <ControlCluster
-          eyebrow="Mode and gating"
-          title="Runtime posture and operator entry controls"
-          detail="High-frequency controls for mode selection and fresh-entry gating stay grouped together."
+          className="control-cluster--toolbar"
+          compact
+          hideEyebrow
+          eyebrow="Toolbar"
+          title="Runtime"
         >
-          <div className="control-grid">
-            <section className="control-card control-card--span-4">
-              <p className="control-card__title">Mode</p>
-              <div className="action-row action-row--segmented">
-                <button
-                  className="command-button"
-                  type="button"
-                  disabled={pendingAction !== null || snapshot.status.mode === "paper"}
-                  onClick={() => {
-                    onSetMode("paper");
-                  }}
-                >
-                  Paper
-                </button>
-                <button
-                  className="command-button"
-                  type="button"
-                  disabled={pendingAction !== null || snapshot.status.mode === "observation"}
-                  onClick={() => {
-                    onSetMode("observation");
-                  }}
-                >
-                  Observation
-                </button>
-                <button
-                  className="command-button command-button--danger"
-                  type="button"
-                  disabled={pendingAction !== null || snapshot.status.mode === "live"}
-                  onClick={() => {
-                    onSetMode("live");
-                  }}
-                >
-                  Live
-                </button>
-              </div>
-            </section>
-
-            <section className="control-card control-card--span-8">
-              <p className="control-card__title">New entry gate</p>
-              <div className="pill-row">
+          <div className="control-grid control-grid--rail-compact">
+            <section className="control-card control-card--span-12 control-card--dense">
+              <p className="control-card__title">Posture</p>
+              <div className="pill-row pill-row--compact">
                 <Pill
-                  label={
-                    snapshot.status.operator_new_entries_enabled
-                      ? "New entries enabled"
-                      : "New entries disabled"
+                  label={`Warmup ${formatMode(snapshot.status.warmup_status)}`}
+                  tone={
+                    snapshot.status.warmup_status === "ready"
+                      ? "healthy"
+                      : snapshot.status.warmup_status === "failed"
+                        ? "danger"
+                        : "warning"
                   }
-                  tone={snapshot.status.operator_new_entries_enabled ? "healthy" : "warning"}
                 />
                 <Pill
                   label={
-                    snapshot.status.operator_new_entries_reason ??
-                    "Operator gate is open for fresh entries"
+                    snapshot.status.command_dispatch_ready ? "Dispatch ok" : "Dispatch off"
                   }
-                  tone={snapshot.status.operator_new_entries_enabled ? "info" : "warning"}
+                  tone={snapshot.status.command_dispatch_ready ? "healthy" : "warning"}
+                />
+                <Pill
+                  label={
+                    snapshot.readiness.report.hard_override_required
+                      ? "Override needed"
+                      : "Override clear"
+                  }
+                  tone={snapshot.readiness.report.hard_override_required ? "warning" : "healthy"}
+                />
+                <Pill
+                  label={snapshot.status.mode === "paused" ? "Paused" : "Flow on"}
+                  tone={snapshot.status.mode === "paused" ? "warning" : modePillTone}
                 />
               </div>
-              <label className="field field--wide">
-                <span>Reason</span>
-                <input
-                  aria-label="New entry gate reason"
-                  placeholder="operator gate"
-                  value={newEntriesReason}
-                  onChange={(event) => {
-                    onNewEntriesReasonChange(event.target.value);
-                  }}
-                />
-              </label>
-                  <div className="action-row action-row--compact">
-                <button
-                  className="command-button command-button--danger"
-                  type="button"
-                  disabled={!canDisableNewEntries}
-                  onClick={() => {
-                    onSetNewEntriesEnabled(false);
-                  }}
-                >
-                  Disable new entries
-                </button>
-                <button
-                  className="command-button"
-                  type="button"
-                  disabled={!canEnableNewEntries}
-                  onClick={() => {
-                    onSetNewEntriesEnabled(true);
-                  }}
-                >
-                  Enable new entries
-                </button>
-              </div>
-              <p className="control-card__note">
-                This gate blocks fresh entry requests through the runtime host while still leaving
-                flatten, close, and cancel actions available on existing exposure.
-              </p>
-            </section>
-          </div>
-        </ControlCluster>
-
-        <ControlCluster
-          eyebrow="Execution controls"
-          title="Warmup, arming, and manual operator actions"
-          detail="Execution-facing controls stay separate from strategy and settings work."
-        >
-          <div className="control-grid">
-            <section className="control-card control-card--span-4">
-              <p className="control-card__title">Warmup</p>
               <div className="action-row action-row--compact">
                 <button
                   className="command-button"
@@ -300,18 +196,8 @@ export function ControlCenterPanel({
                   disabled={pendingAction !== null || !snapshot.status.strategy_loaded}
                   onClick={onStartWarmup}
                 >
-                  Start warmup
+                  Warmup
                 </button>
-              </div>
-              <p className="control-card__note">
-                Strategy loaded: {snapshot.status.strategy_loaded ? "Yes" : "No"} | Warmup:{" "}
-                {formatMode(snapshot.status.warmup_status)}
-              </p>
-            </section>
-
-            <section className="control-card control-card--span-4">
-              <p className="control-card__title">Arming</p>
-              <div className="action-row action-row--compact">
                 <button
                   className={
                     snapshot.status.arm_state === "armed"
@@ -324,16 +210,6 @@ export function ControlCenterPanel({
                 >
                   {armButtonLabel}
                 </button>
-              </div>
-              <p className="control-card__note">
-                Arm state: {formatMode(snapshot.status.arm_state)} | Override required:{" "}
-                {snapshot.readiness.report.hard_override_required ? "Yes" : "No"}
-              </p>
-            </section>
-
-            <section className="control-card control-card--span-4">
-              <p className="control-card__title">Flow Control</p>
-              <div className="action-row action-row--compact">
                 <button
                   className="command-button"
                   type="button"
@@ -343,198 +219,190 @@ export function ControlCenterPanel({
                   {pauseButtonLabel}
                 </button>
               </div>
-              <p className="control-card__note">
-                Use pause to stop new entries without changing the selected trading mode.
-              </p>
+            </section>
+          </div>
+        </ControlCluster>
+
+        <ControlCluster
+          className="control-cluster--toolbar"
+          compact
+          hideEyebrow
+          eyebrow="Toolbar"
+          title="Ticket"
+        >
+          <div className="control-grid control-grid--rail-compact">
+            <section className="control-card control-card--span-12 control-card--dense">
+              <p className="control-card__title">Entry</p>
+              <form
+                className="flatten-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!canManualEntry) {
+                    return;
+                  }
+
+                  onManualEntrySubmit();
+                }}
+              >
+                <div className="control-grid control-grid--form control-grid--form-tight control-grid--ticket">
+                  <label className="field">
+                    <span>Side</span>
+                    <select
+                      aria-label="Manual entry side"
+                      value={manualEntrySide}
+                      onChange={(event) => {
+                        onManualEntrySideChange(event.target.value as "buy" | "sell");
+                      }}
+                    >
+                      <option value="buy">Buy</option>
+                      <option value="sell">Sell</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Quantity</span>
+                    <input
+                      aria-label="Manual entry quantity"
+                      inputMode="numeric"
+                      value={manualEntryQuantity}
+                      onChange={(event) => {
+                        onManualEntryQuantityChange(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Tick size</span>
+                    <input
+                      aria-label="Manual entry tick size"
+                      inputMode="decimal"
+                      placeholder="0.25"
+                      value={manualEntryTickSize}
+                      onChange={(event) => {
+                        onManualEntryTickSizeChange(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Reference price</span>
+                    <input
+                      aria-label="Manual entry reference price"
+                      inputMode="decimal"
+                      placeholder="2410.50"
+                      value={manualEntryReferencePrice}
+                      onChange={(event) => {
+                        onManualEntryReferencePriceChange(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Tick value USD</span>
+                    <input
+                      aria-label="Manual entry tick value"
+                      inputMode="decimal"
+                      placeholder="Optional"
+                      value={manualEntryTickValueUsd}
+                      onChange={(event) => {
+                        onManualEntryTickValueUsdChange(event.target.value);
+                      }}
+                    />
+                  </label>
+                </div>
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="Manual entry reason"
+                    placeholder="manual entry"
+                    value={manualEntryReason}
+                    onChange={(event) => {
+                      onManualEntryReasonChange(event.target.value);
+                    }}
+                  />
+                </label>
+                <button
+                  className="command-button"
+                  type="submit"
+                  disabled={pendingAction !== null || !canManualEntry}
+                >
+                  Send order
+                </button>
+              </form>
+            </section>
+          </div>
+        </ControlCluster>
+
+        <ControlCluster
+          className="control-cluster--toolbar"
+          compact
+          hideEyebrow
+          eyebrow="Toolbar"
+          title="Exits"
+        >
+          <div className="control-grid control-grid--rail-compact">
+            <section className="control-card control-card--span-12 control-card--dense">
+              <p className="control-card__title">Flatten</p>
+              <form
+                className="flatten-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!canClosePosition) {
+                    return;
+                  }
+
+                  onClosePositionSubmit();
+                }}
+              >
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="Flatten position reason"
+                    placeholder="flatten position"
+                    value={closePositionReason}
+                    onChange={(event) => {
+                      onClosePositionReasonChange(event.target.value);
+                    }}
+                  />
+                </label>
+                <button
+                  className="command-button command-button--danger"
+                  type="submit"
+                  disabled={pendingAction !== null || !canClosePosition}
+                >
+                  Flatten
+                </button>
+              </form>
             </section>
 
-            <section className="control-card control-card--span-12">
-              <p className="control-card__title">Operator actions</p>
-              <div className="control-grid control-grid--operator-actions">
-                <section className="control-card control-card--span-7">
-                  <p className="control-card__title">Manual entry</p>
-                  <form
-                    className="flatten-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!canManualEntry) {
-                        return;
-                      }
+            <section className="control-card control-card--span-12 control-card--dense">
+              <p className="control-card__title">Cancel</p>
+              <form
+                className="flatten-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!canCancelWorkingOrders) {
+                    return;
+                  }
 
-                      onManualEntrySubmit();
+                  onCancelWorkingOrdersSubmit();
+                }}
+              >
+                <label className="field field--wide">
+                  <span>Reason</span>
+                  <input
+                    aria-label="Cancel working orders reason"
+                    placeholder="cancel working orders"
+                    value={cancelWorkingOrdersReason}
+                    onChange={(event) => {
+                      onCancelWorkingOrdersReasonChange(event.target.value);
                     }}
-                  >
-                    <div className="control-grid control-grid--form control-grid--form-tight">
-                      <label className="field">
-                        <span>Side</span>
-                        <select
-                          aria-label="Manual entry side"
-                          value={manualEntrySide}
-                          onChange={(event) => {
-                            onManualEntrySideChange(event.target.value as "buy" | "sell");
-                          }}
-                        >
-                          <option value="buy">Buy</option>
-                          <option value="sell">Sell</option>
-                        </select>
-                      </label>
-                      <label className="field">
-                        <span>Quantity</span>
-                        <input
-                          aria-label="Manual entry quantity"
-                          inputMode="numeric"
-                          value={manualEntryQuantity}
-                          onChange={(event) => {
-                            onManualEntryQuantityChange(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Tick size</span>
-                        <input
-                          aria-label="Manual entry tick size"
-                          inputMode="decimal"
-                          placeholder="0.25"
-                          value={manualEntryTickSize}
-                          onChange={(event) => {
-                            onManualEntryTickSizeChange(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Reference price</span>
-                        <input
-                          aria-label="Manual entry reference price"
-                          inputMode="decimal"
-                          placeholder="2410.50"
-                          value={manualEntryReferencePrice}
-                          onChange={(event) => {
-                            onManualEntryReferencePriceChange(event.target.value);
-                          }}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Tick value USD</span>
-                        <input
-                          aria-label="Manual entry tick value"
-                          inputMode="decimal"
-                          placeholder="Optional for risk-based sizing"
-                          value={manualEntryTickValueUsd}
-                          onChange={(event) => {
-                            onManualEntryTickValueUsdChange(event.target.value);
-                          }}
-                        />
-                      </label>
-                    </div>
-                    <label className="field field--wide">
-                      <span>Reason</span>
-                      <input
-                        aria-label="Manual entry reason"
-                        placeholder="manual entry"
-                        value={manualEntryReason}
-                        onChange={(event) => {
-                          onManualEntryReasonChange(event.target.value);
-                        }}
-                      />
-                    </label>
-                    <button
-                      className="command-button"
-                      type="submit"
-                      disabled={pendingAction !== null || !canManualEntry}
-                    >
-                      Submit manual entry
-                    </button>
-                  </form>
-                  <p className="control-card__note">
-                    Manual entry reuses the loaded strategy for order type, reversal, and
-                    broker-protection handling. Reference price and tick inputs keep the execution
-                    path explicit and strategy-agnostic.
-                  </p>
-                </section>
-
-                <section className="control-card control-card--span-5">
-                  <p className="control-card__title">Flatten current position</p>
-                  <form
-                    className="flatten-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!canClosePosition) {
-                        return;
-                      }
-
-                      onClosePositionSubmit();
-                    }}
-                  >
-                    <label className="field field--wide">
-                      <span>Reason</span>
-                      <input
-                        aria-label="Flatten position reason"
-                        placeholder="flatten position"
-                        value={closePositionReason}
-                        onChange={(event) => {
-                          onClosePositionReasonChange(event.target.value);
-                        }}
-                      />
-                    </label>
-                    <button
-                      className="command-button command-button--danger"
-                      type="submit"
-                      disabled={pendingAction !== null || !canClosePosition}
-                    >
-                      Flatten current position
-                    </button>
-                  </form>
-                  <p className="control-card__note">
-                    This is the direct dashboard flatten control. The runtime host resolves the
-                    active broker contract from the synchronized snapshot and keeps the action on
-                    the same audited close/flatten path used elsewhere.
-                  </p>
-                </section>
-
-                <section className="control-card control-card--span-5">
-                  <p className="control-card__title">Cancel working orders</p>
-                  <form
-                    className="flatten-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!canCancelWorkingOrders) {
-                        return;
-                      }
-
-                      onCancelWorkingOrdersSubmit();
-                    }}
-                  >
-                    <label className="field field--wide">
-                      <span>Reason</span>
-                      <input
-                        aria-label="Cancel working orders reason"
-                        placeholder="cancel working orders"
-                        value={cancelWorkingOrdersReason}
-                        onChange={(event) => {
-                          onCancelWorkingOrdersReasonChange(event.target.value);
-                        }}
-                      />
-                    </label>
-                    <button
-                      className="command-button"
-                      type="submit"
-                      disabled={pendingAction !== null || !canCancelWorkingOrders}
-                    >
-                      Cancel working orders
-                    </button>
-                  </form>
-                  <p className="control-card__note">
-                    Cancel routes only the current market&apos;s working orders through the audited
-                    backend path.
-                  </p>
-                </section>
-              </div>
-              <p className="control-card__note">
-                All three actions stay inside the local runtime host. Manual entry uses the loaded
-                strategy and synchronized market contract, close resolves the active contract
-                automatically when there is a single live position, and cancel routes only the
-                current market&apos;s working orders through the audited backend path.
-              </p>
+                  />
+                </label>
+                <button
+                  className="command-button"
+                  type="submit"
+                  disabled={pendingAction !== null || !canCancelWorkingOrders}
+                >
+                  Cancel all
+                </button>
+              </form>
             </section>
           </div>
         </ControlCluster>
@@ -598,7 +466,7 @@ export function StrategySetupPanel({
 }: StrategySetupPanelProps) {
   return (
     <Panel
-      className="panel--full panel--setup-dock"
+      className="panel--full panel--setup-dock panel--dock-terminal"
       eyebrow="Setup"
       title="Strategy workspace and runtime configuration"
       detail="Lower-frequency library and settings work lives in the dock so the action rail can stay focused on exposure and execution."

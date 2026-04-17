@@ -9,8 +9,6 @@ import {
   perTradePnlForProjection,
   pnlChartForProjection,
   pnlChartPath,
-  readinessSummary,
-  readinessTone,
   recentFillsForProjection,
   recentJournalRecords,
   recentTradeSummariesForProjection,
@@ -21,11 +19,7 @@ import {
   warmupTone,
   workingOrdersForProjection,
 } from "./lib/dashboardProjection";
-import {
-  formatDateTime,
-  formatMode,
-  formatWarmupMode,
-} from "./lib/format";
+import { formatDateTime, formatMode } from "./lib/format";
 import {
   EventsPanel,
   HealthPanel,
@@ -41,12 +35,13 @@ import {
   StrategySetupPanel,
 } from "./components/dashboardControlPanels";
 import { LiveChartPanel } from "./components/dashboardLiveChart";
-import { SignalTile } from "./components/dashboardPrimitives";
+import { Pill } from "./components/dashboardPrimitives";
 import type { LatencyStageViewModel } from "./dashboardModels";
 import { useDashboardController } from "./hooks/useDashboardController";
 import { useDashboardChart } from "./hooks/useDashboardChart";
 
 type WorkspaceDockSection =
+  | "readiness"
   | "health"
   | "history"
   | "latency"
@@ -59,6 +54,7 @@ const workspaceDockSections: ReadonlyArray<{
   label: string;
 }> = [
   { section: "history", label: "Trades" },
+  { section: "readiness", label: "Checks" },
   { section: "setup", label: "Setup" },
   { section: "health", label: "Health" },
   { section: "latency", label: "Latency" },
@@ -150,12 +146,12 @@ function App() {
     : { pass: 0, warning: 0, blocking: 0 };
   const armButtonLabel = snapshot
     ? snapshot.status.arm_state === "armed"
-      ? "Disarm runtime"
+      ? "Disarm"
       : snapshot.readiness.report.hard_override_required
-        ? "Arm with temporary override"
-        : "Arm runtime"
-    : "Arm runtime";
-  const pauseButtonLabel = snapshot?.status.mode === "paused" ? "Resume runtime" : "Pause runtime";
+        ? "Arm with override"
+        : "Arm"
+    : "Arm";
+  const pauseButtonLabel = snapshot?.status.mode === "paused" ? "Resume" : "Pause";
   const openWorkingOrders = snapshot ? workingOrdersForProjection(snapshot) : [];
   const recentFills = snapshot ? recentFillsForProjection(snapshot) : [];
   const recentTrades = snapshot ? recentTradeSummariesForProjection(snapshot) : [];
@@ -183,8 +179,22 @@ function App() {
   );
   const projectedPnlSnapshot = snapshot ? latestPnlSnapshot(snapshot) : null;
   const feedStatuses = snapshot?.status.market_data_status?.session.market_data.feed_statuses ?? [];
-  const readinessState = readinessSummary(readinessCounts);
   const activeReviewSummary = snapshot ? reviewSummary(snapshot.status) : "Awaiting runtime";
+  const loadedContractLabel =
+    snapshot?.status.instrument_mapping?.tradovate_symbol ??
+    snapshot?.status.current_strategy?.market_family ??
+    "Waiting for contract";
+  const loadedStrategyLabel = snapshot?.status.current_strategy
+    ? `${snapshot.status.current_strategy.name} v${snapshot.status.current_strategy.version}`
+    : "No strategy loaded";
+  const feedHealthLabel = snapshot?.status.market_data_status
+    ? formatMode(snapshot.status.market_data_status.session.market_data.health)
+    : "Waiting";
+  const showSafetyPanel =
+    snapshot != null &&
+    (snapshot.status.reconnect_review.required ||
+      snapshot.status.shutdown_review.blocked ||
+      snapshot.status.shutdown_review.awaiting_flatten);
   const canManualEntry =
     snapshot != null &&
     snapshot.status.strategy_loaded === true &&
@@ -235,123 +245,99 @@ function App() {
   return (
     <main className="shell">
       <section className={`system-bar system-bar--${headlineTone}`}>
-        <div className="system-bar__intro">
-          <div className="system-bar__copy">
-            <p className="eyebrow">TV Bot Operator Console</p>
-            <h1>Local runtime command center</h1>
-            <p className="system-bar__summary">
-              The loaded contract chart is now the center of the workspace, with runtime posture,
-              contract context, and operator actions arranged around it.
+        <div className="system-bar__utility">
+          <div className="system-bar__identity">
+            <strong>{loadedContractLabel}</strong>
+            <span className="system-bar__identity-detail">{loadedStrategyLabel}</span>
+          </div>
+          <div className="system-bar__status-strip" aria-label="Runtime posture">
+            <Pill
+              label={snapshot ? `Mode ${formatMode(snapshot.status.mode)}` : "Mode waiting"}
+              tone={
+                snapshot
+                  ? snapshot.status.mode === "live"
+                    ? "danger"
+                    : snapshot.status.mode === "paper"
+                      ? "warning"
+                      : "info"
+                  : "info"
+              }
+            />
+            <Pill
+              label={
+                snapshot
+                  ? `Arm ${formatMode(snapshot.status.arm_state)}`
+                  : "Arm waiting"
+              }
+              tone={
+                snapshot
+                  ? snapshot.status.arm_state === "armed"
+                    ? "healthy"
+                    : "info"
+                  : "info"
+              }
+            />
+            <Pill
+              label={
+                snapshot
+                  ? `Warmup ${formatMode(snapshot.status.warmup_status)}`
+                  : "Warmup waiting"
+              }
+              tone={snapshot ? warmupTone(snapshot.status.warmup_status) : "info"}
+            />
+            <Pill
+              label={snapshot ? `Feed ${feedHealthLabel}` : "Feed waiting"}
+              tone={
+                snapshot
+                  ? snapshot.status.market_data_status?.session.market_data.health === "healthy"
+                    ? "healthy"
+                    : snapshot.status.market_data_status?.session.market_data.health === "failed"
+                      ? "danger"
+                      : "warning"
+                  : "info"
+              }
+            />
+            <Pill
+              label={
+                snapshot
+                  ? snapshot.status.command_dispatch_ready
+                    ? "Dispatch ok"
+                    : "Dispatch off"
+                  : "Dispatch waiting"
+              }
+              tone={snapshot ? dispatchTone(snapshot.status) : "info"}
+            />
+            <Pill
+              label={
+                snapshot
+                  ? showSafetyPanel
+                    ? "Review active"
+                    : "Reviews ok"
+                  : "Reviews waiting"
+              }
+              tone={snapshot ? (showSafetyPanel ? "warning" : "healthy") : "info"}
+            />
+          </div>
+          <div className="system-bar__actions">
+            <button
+              className="refresh-button"
+              type="button"
+              onClick={() => {
+                void refreshSnapshot();
+              }}
+            >
+              Refresh
+            </button>
+            {showSafetyPanel ? (
+              <p className="system-bar__timestamp">{activeReviewSummary}</p>
+            ) : null}
+            <p className="system-bar__timestamp">
+              Synced{" "}
+              {snapshot
+                ? formatDateTime(snapshot.fetchedAt)
+                : formatDateTime(viewModel.lastAttemptedAt)}
             </p>
           </div>
-          <div className="system-bar__meta">
-            <div className="system-bar__mode-lockup">
-              <span className="system-bar__mode-label">Current mode</span>
-              <strong>{snapshot ? formatMode(snapshot.status.mode) : "Waiting for runtime"}</strong>
-              <span className="system-bar__mode-detail">{activeReviewSummary}</span>
-            </div>
-            <div className="system-bar__actions">
-              <button
-                className="refresh-button"
-                type="button"
-                onClick={() => {
-                  void refreshSnapshot();
-                }}
-              >
-                Refresh now
-              </button>
-              <p className="system-bar__timestamp">
-                Last sync{" "}
-                {snapshot
-                  ? formatDateTime(snapshot.fetchedAt)
-                  : formatDateTime(viewModel.lastAttemptedAt)}
-              </p>
-            </div>
-          </div>
-        </div>
-        <div className="system-bar__signals" aria-label="Runtime posture">
-          <SignalTile
-            label="Arm state"
-            value={snapshot ? formatMode(snapshot.status.arm_state) : "Waiting"}
-            detail={
-              snapshot
-                ? snapshot.status.strategy_loaded
-                  ? "Strategy is loaded and tracked by the host"
-                  : "No strategy is currently loaded"
-                : "Polling local runtime host"
-            }
-            tone={
-              snapshot
-                ? snapshot.status.arm_state === "armed"
-                  ? "healthy"
-                  : "neutral"
-                : "info"
-            }
-          />
-          <SignalTile
-            label="Readiness"
-            value={snapshot ? readinessState : "Waiting"}
-            detail={
-              snapshot
-                ? `${readinessCounts.pass} pass | ${readinessCounts.warning} warning`
-                : "Waiting for grouped checks"
-            }
-            tone={snapshot ? readinessTone(readinessCounts) : "info"}
-          />
-          <SignalTile
-            label="Warmup"
-            value={snapshot ? formatMode(snapshot.status.warmup_status) : "Waiting"}
-            detail={
-              snapshot?.status.market_data_status?.warmup_mode
-                ? formatWarmupMode(snapshot.status.market_data_status.warmup_mode)
-                : "Awaiting market-data state"
-            }
-            tone={snapshot ? warmupTone(snapshot.status.warmup_status) : "info"}
-          />
-          <SignalTile
-            label="Dispatch"
-            value={
-              snapshot
-                ? snapshot.status.command_dispatch_ready
-                  ? "Ready"
-                  : "Blocked"
-                : "Waiting"
-            }
-            detail={
-              snapshot
-                ? snapshot.status.command_dispatch_ready
-                  ? snapshot.status.current_account_name ?? "Runtime host is dispatch-ready"
-                  : snapshot.status.command_dispatch_detail
-                : "Waiting for dispatcher state"
-            }
-            tone={snapshot ? dispatchTone(snapshot.status) : "info"}
-          />
-          <SignalTile
-            label="Safety review"
-            value={
-              snapshot
-                ? snapshot.status.reconnect_review.required ||
-                  snapshot.status.shutdown_review.blocked ||
-                  snapshot.status.shutdown_review.awaiting_flatten
-                  ? "Attention"
-                  : "Clear"
-                : "Waiting"
-            }
-            detail={
-              snapshot
-                ? activeReviewSummary
-                : "Waiting for reconnect and shutdown review state"
-            }
-            tone={
-              snapshot
-                ? snapshot.status.reconnect_review.required ||
-                  snapshot.status.shutdown_review.blocked ||
-                  snapshot.status.shutdown_review.awaiting_flatten
-                  ? "warning"
-                  : "healthy"
-                : "info"
-            }
-          />
         </div>
       </section>
 
@@ -387,8 +373,19 @@ function App() {
         <div className="workspace-shell">
           <div className="workspace-stage">
             <aside className="workspace-stage__rail workspace-stage__rail--context">
-              <RuntimeSummaryPanel snapshot={snapshot} />
-              <ReadinessPanel snapshot={snapshot} readinessCounts={readinessCounts} />
+              <RuntimeSummaryPanel
+                snapshot={snapshot}
+                chartViewModel={chartViewModel}
+                pendingAction={pendingAction}
+                newEntriesReason={newEntriesReason}
+                canDisableNewEntries={canDisableNewEntries}
+                canEnableNewEntries={canEnableNewEntries}
+                onNewEntriesReasonChange={setNewEntriesReason}
+                onSetNewEntriesEnabled={(enabled) => {
+                  void updateNewEntriesEnabled(enabled);
+                }}
+                onSetMode={handleSetMode}
+              />
             </aside>
 
             <section className="workspace-stage__chart">
@@ -409,7 +406,6 @@ function App() {
               <ControlCenterPanel
                 snapshot={snapshot}
                 pendingAction={pendingAction}
-                newEntriesReason={newEntriesReason}
                 closePositionReason={closePositionReason}
                 manualEntrySide={manualEntrySide}
                 manualEntryQuantity={manualEntryQuantity}
@@ -420,16 +416,9 @@ function App() {
                 cancelWorkingOrdersReason={cancelWorkingOrdersReason}
                 armButtonLabel={armButtonLabel}
                 pauseButtonLabel={pauseButtonLabel}
-                canDisableNewEntries={canDisableNewEntries}
-                canEnableNewEntries={canEnableNewEntries}
                 canManualEntry={canManualEntry}
                 canClosePosition={canClosePosition}
                 canCancelWorkingOrders={canCancelWorkingOrders}
-                onSetMode={handleSetMode}
-                onNewEntriesReasonChange={setNewEntriesReason}
-                onSetNewEntriesEnabled={(enabled) => {
-                  void updateNewEntriesEnabled(enabled);
-                }}
                 onStartWarmup={handleStartWarmup}
                 onArmToggle={handleArmToggle}
                 onPauseResume={handlePauseResume}
@@ -446,36 +435,30 @@ function App() {
                 onCancelWorkingOrdersSubmit={handleCancelWorkingOrdersSubmit}
               />
 
-              <SafetyPanel
-                snapshot={snapshot}
-                reconnectReason={reconnectReason}
-                shutdownReason={shutdownReason}
-                reviewActionsDisabled={reviewActionsDisabled}
-                reconnectCloseDisabled={reconnectCloseDisabled}
-                shutdownLeaveDisabled={shutdownLeaveDisabled}
-                shutdownFlattenDisabled={shutdownFlattenDisabled}
-                onReconnectReasonChange={setReconnectReason}
-                onShutdownReasonChange={setShutdownReason}
-                onReconnectDecision={(decision) => {
-                  void executeReconnectDecision(decision);
-                }}
-                onShutdownDecision={(decision) => {
-                  void executeShutdownDecision(decision);
-                }}
-              />
+              {showSafetyPanel ? (
+                <SafetyPanel
+                  snapshot={snapshot}
+                  reconnectReason={reconnectReason}
+                  shutdownReason={shutdownReason}
+                  reviewActionsDisabled={reviewActionsDisabled}
+                  reconnectCloseDisabled={reconnectCloseDisabled}
+                  shutdownLeaveDisabled={shutdownLeaveDisabled}
+                  shutdownFlattenDisabled={shutdownFlattenDisabled}
+                  onReconnectReasonChange={setReconnectReason}
+                  onShutdownReasonChange={setShutdownReason}
+                  onReconnectDecision={(decision) => {
+                    void executeReconnectDecision(decision);
+                  }}
+                  onShutdownDecision={(decision) => {
+                    void executeShutdownDecision(decision);
+                  }}
+                />
+              ) : null}
             </aside>
           </div>
 
           <section className="workspace-dock">
             <div className="workspace-dock__header">
-              <div>
-                <p className="eyebrow">Detail Dock</p>
-                <h2>Monitoring, audit, and configuration depth</h2>
-                <p className="workspace-dock__summary">
-                  Keep the chart in view while setup, trade detail, health, and audit surfaces
-                  move through focused dock tabs beneath the workspace stage.
-                </p>
-              </div>
               <div className="workspace-dock__tabs" role="tablist" aria-label="Workspace dock">
                 {workspaceDockSections.map(({ section, label }) => (
                   <button
@@ -565,6 +548,10 @@ function App() {
                   perTradePnl={perTradePnl}
                   projectedPnlSnapshot={projectedPnlSnapshot}
                 />
+              ) : null}
+
+              {activeDockSection === "readiness" ? (
+                <ReadinessPanel snapshot={snapshot} readinessCounts={readinessCounts} />
               ) : null}
 
               {activeDockSection === "health" ? (

@@ -227,7 +227,11 @@ export function mergeChartBars(
   }
 
   for (const bar of incoming) {
-    byClosedAt.set(bar.closed_at, bar);
+    const current = byClosedAt.get(bar.closed_at);
+
+    if (!current || !current.is_complete || bar.is_complete) {
+      byClosedAt.set(bar.closed_at, bar);
+    }
   }
 
   return Array.from(byClosedAt.values()).sort((left, right) =>

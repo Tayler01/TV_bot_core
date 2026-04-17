@@ -220,6 +220,7 @@ pub struct RuntimeChartBar {
     pub close: Decimal,
     pub volume: u64,
     pub closed_at: chrono::DateTime<chrono::Utc>,
+    pub is_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

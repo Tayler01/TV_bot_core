@@ -2,485 +2,422 @@
 
 ## Purpose
 
-The dashboard should now pivot from a broad operator console with a chart embedded inside it to a chart-first trading workspace where the live contract chart is the center of gravity and every other surface is arranged around it.
+The dashboard should now evolve from a chart-first shell into a true chart-centric workspace where:
 
-This document is now the source of truth for dashboard Phase 5 layout, visual, and workflow redesign work.
-The separate functional chart-delivery plan still lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>) and remains the source of truth for chart data, overlays, and control-plane boundaries.
+- the chart is the product
+- the header and side surfaces behave like compact toolbars, not dashboard cards
+- almost every visible control is actionable or high-signal
+- explanatory prose is removed from the primary workspace
+- the interface feels sleek, modern, and self-explanatory rather than dense or admin-heavy
 
-## Why Pivot Now
+This document is the source of truth for the Phase 5 productization pass in `apps/dashboard`.
+The separate chart-delivery and data-surface plan still lives in [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
 
-This pivot is the right next move because:
+## Updated Product Direction
 
-- the runtime-host chart control plane is already in place
-- the live contract chart is already real, tested, and visually stable enough to become the main surface
-- most remaining dashboard work is no longer missing raw capability, it is missing cohesive product shape
-- the current layout still feels like several useful operator modules placed on one page rather than one polished, self-explanatory trading workspace
+The next design target is more opinionated than the earlier shell-reset pass.
 
-The product goal for this phase is clear:
+The dashboard should no longer read as:
 
-- chart-first
-- sleek and professional
-- easy to scan
-- self-explanatory without tutorial-level text
-- polished enough to feel closer in spirit to Robinhood Legend than to an internal tool
+- top hero
+- chart section
+- side cards
+- lower dashboard tabs
 
-This does **not** mean copying Robinhood branding or layout literally.
-It means adopting the product principles that make modern chart-centric trading tools feel intuitive:
+It should read as:
 
-- the chart is the primary canvas
-- related controls stay near the chart
-- analysis, exposure, and action live in one place
-- lower-priority audit and settings surfaces stay available but recede
+- utility header
+- left tool rail
+- dominant chart stage
+- right trade rail
+- compact lower dock
+
+That means:
+
+- no unnecessary title treatment inside the main workspace
+- no descriptive paragraphs above the fold unless they are warnings
+- no broad card stack in the right rail
+- no duplicate status summaries competing with the chart
+- no decorative framing that makes the chart feel boxed in
+
+## North-Star Experience
+
+The operator should feel like they opened a polished chart workspace first and a dashboard second.
+
+In the first few seconds, the screen should answer:
+
+- What contract is loaded?
+- What timeframe am I on?
+- Am I live, paper, or observation?
+- Am I armed or blocked?
+- Do I have exposure or working orders?
+- Is the feed healthy?
+- What is the next useful action?
+
+The chart should be the main visual anchor for those answers.
+
+## Design Principles
+
+### 1. Chart Dominance
+
+The chart must own the center of gravity.
+
+Desktop target:
+
+- chart stage should carry roughly `68-78%` of above-the-fold visual emphasis
+- right rail should feel like a narrow trade sidebar, not a second content region
+- left rail should behave like a compact context or chart-tools rail, not a second dashboard
+
+### 2. Toolbar Mental Model
+
+Header and rails should be designed like toolbars.
+
+That means:
+
+- short labels
+- small but readable controls
+- grouped actions
+- high signal density
+- little or no explanatory copy
+
+If a surface is not helping the operator read the chart or act on the chart, it should move to the lower dock.
+
+### 3. Minimal Chrome
+
+The workspace should feel calm and expensive, not boxed in.
+
+That means:
+
+- fewer heavy card borders
+- fewer nested panels
+- more use of spacing, alignment, and contrast hierarchy
+- one subtle chart frame instead of several stacked chart containers
+
+### 4. Progressive Disclosure
+
+The main workspace should contain:
+
+- posture
+- chart
+- exposure
+- actions
+
+Audit, diagnostics, and configuration stay available, but in the dock.
+
+### 5. Self-Explanatory Language
+
+Primary surfaces should use terse operator language:
+
+- `Paper`
+- `Armed`
+- `Warmup`
+- `Orders`
+- `Flatten`
+- `Cancel`
+- `No new entries`
+
+Avoid:
+
+- long detail blurbs
+- internal implementation language
+- multi-sentence helper text in the active workspace
 
 ## Research Snapshot
 
-Research date: 2026-04-16
+Research basis for this plan:
 
-Official references reviewed:
+- Robinhood Legend product materials already reviewed in the previous planning pass
+- TradingView Lightweight Charts official API docs reviewed again for time-scale and history-loading behavior:
+  - [ITimeScaleApi](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/ITimeScaleApi)
+  - [ISeriesApi](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/ISeriesApi)
+  - [ChartOptionsBase](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/ChartOptionsBase)
 
-- Robinhood Legend product page: [Robinhood Legend](https://robinhood.com/us/en/legend/)
-- Robinhood Legend launch post: [The Legend Awakens](https://robinhood.com/us/en/newsroom/the-legend-awakens/)
-- Robinhood Legend charts on mobile: [Introducing Robinhood Legend Charts on Mobile](https://robinhood.com/us/en/newsroom/introducing-robinhood-legend-charts-on-mobile/)
-- TradingView Lightweight Charts official site: [Lightweight Charts](https://www.tradingview.com/lightweight-charts/)
+### Key Additional Takeaways
 
-### Research Takeaways
-
-The Robinhood material repeatedly emphasizes:
-
-- charts as the center of active-trader setups
-- custom layouts and preset layouts
-- linked widgets that keep context synchronized
-- trade initiation close to the chart
-- high-speed, real-time updates
-- an interface that feels intuitive rather than legacy-terminal-heavy
-
-The mobile chart announcement is especially important because Robinhood says about `90%` of Legend users center their setups around charts and frames charting around speed, precision, and seamless continuity between contexts.
-
-The TradingView documentation reinforces that the chart layer we already chose is the right technical base for this product direction:
-
-- interactive and responsive
-- mobile-friendly
-- real-time streaming updates
-- finance-native legends, tooltips, price lines, markers, and range controls
-- high performance with large series and frequent updates
-
-### Product Principles Derived From Research
-
-1. The chart must be the visual anchor, not a secondary widget.
-2. High-frequency operator tasks should sit adjacent to the chart, not several scrolls away.
-3. The interface should default to one strong layout before chasing limitless customization.
-4. Context synchronization should feel obvious: the loaded strategy contract drives the chart, exposure, orders, and actions together.
-5. The interface should explain itself through placement and labeling, not through paragraphs.
-6. Sleek does not mean ornamental; it means calm hierarchy, fast scanning, and low-friction action.
+- `fitContent()`, `setVisibleLogicalRange(...)`, and `setVisibleRange(...)` give us explicit control over first-open framing
+- `barsInLogicalRange(...)` plus `subscribeVisibleLogicalRangeChange(...)` is the intended pattern for loading more history before the operator hits empty space
+- the chart library already gives us the control we need to open with a filled chart and keep historical paging smooth
 
 ## Architecture Guardrails
 
 These rules remain fixed:
 
-- The dashboard must consume only the local control plane.
-- The chart must continue to show only the currently loaded strategy contract.
-- The frontend must not become the source of truth for positions, orders, PnL, readiness, or safety state.
-- Dangerous actions must still route through audited backend commands with confirmations.
-- The execution core must remain strategy-agnostic.
-- The redesign must preserve clear live, paper, and observation distinctions.
+- dashboard consumes only the local control plane
+- chart stays locked to the currently loaded strategy contract
+- frontend is not the source of truth for candles, positions, orders, or readiness
+- dangerous actions remain backend-confirmed and audit-logged
+- execution core remains strategy-agnostic
 
-## Current Repo Reality
+## Target Workspace Architecture
 
-The current dashboard already has the pieces needed for this pivot:
+### 1. Utility Header
 
-- a working chart module in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>)
-- extracted monitoring and operator modules in [apps/dashboard/src/components/dashboardMonitoring.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardMonitoring.tsx>) and [apps/dashboard/src/components/dashboardControlPanels.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardControlPanels.tsx>)
-- dedicated orchestration hooks in [apps/dashboard/src/hooks](</C:/repos/TV_bot_core/apps/dashboard/src/hooks>)
-- a dark-first visual system already in [apps/dashboard/src/styles.css](</C:/repos/TV_bot_core/apps/dashboard/src/styles.css>)
-- host-backed status, readiness, chart, history, journal, settings, and command surfaces
+The current header should shrink again and lose any remaining hero feel.
 
-What is missing is not the data path.
-What is missing is a chart-first shell and information architecture that makes all of these surfaces feel like one product.
-The latest pass moved strategy-library and runtime-settings work into the lower dock and kept the right rail focused on action and safety, but the broader production sign-off around spacing, hierarchy, and overall product polish is still open.
+It should contain only:
 
-## North-Star Experience
+- mode badge
+- arm badge
+- warmup or readiness badge
+- broker or feed badge
+- review-required badge when relevant
+- loaded contract or symbol
+- refresh
 
-The finished dashboard should answer these questions in the first few seconds without scrolling:
+Rules:
 
-- What contract is loaded right now?
-- What mode am I in?
-- Am I armed, blocked, degraded, or review-required?
-- Do I currently have exposure?
-- What orders are working?
-- What is the market doing right now?
-- What is the next safe action I can take?
+- no large title block
+- no summary paragraph
+- no repeated status language already visible elsewhere
 
-The chart should carry the visual weight of that experience.
-Everything else should exist either to support reading the chart or to act on what the chart and runtime are telling the operator.
+### 2. Left Tool Rail
 
-## Target Information Architecture
+This should become a compact chart-support rail.
 
-### Desktop
+Primary contents:
 
-The chart should own the center of the page.
+- contract identity
+- strategy identity
+- latest price or session snapshot
+- quick overlay toggles
+- quick chart mode controls if needed
 
-Recommended structure:
+Rules:
 
-1. A slim top system bar
-   Shows mode, arm state, readiness, warmup, dispatch posture, broker/data health, and any active review state.
+- dense, vertically scannable
+- minimal text
+- no large audit summaries
 
-2. A chart-stage row
-   Three-part layout:
-   - left context rail
-   - center chart stage
-   - right action and exposure rail
+### 3. Center Chart Stage
 
-3. A lower dock
-   Houses secondary information such as history, journal, events, latency, health details, and settings.
+This becomes the visual product core.
 
-The chart stage should dominate the above-the-fold area.
-On desktop, the center chart region should consume roughly `55-70%` of the visual weight.
+The chart stage should contain:
 
-### Tablet
+- top chart toolbar
+- chart canvas
+- compact chart readout strip
+- optional compact sub-toolbar under the chart only when needed
 
-- Keep the chart first
-- collapse one side rail at a time into tabs or drawers
-- keep the action rail easier to reach than the deep audit rail
-
-### Mobile
-
-- chart first, always
-- top bar remains visible and compact
-- context and action rails collapse into segmented drawers or bottom sheets
-- lower dock becomes tabbed content below the chart
-
-## Layout Blueprint
-
-```mermaid
-flowchart TB
-    A["Top System Bar<br/>Mode, arm, readiness, health, reviews"] --> B["Main Chart Stage"]
-    B --> C["Left Context Rail<br/>Contract, strategy, quick stats, session context"]
-    B --> D["Center Chart Canvas<br/>Toolbar, legend, candles, overlays, volume"]
-    B --> E["Right Action Rail<br/>Position, working orders, manual actions, flatten/close/cancel"]
-    D --> F["Bottom Dock<br/>History, journal, events, latency, health, settings"]
-```
-
-## Surface Responsibilities
-
-### Top System Bar
-
-This becomes the global posture strip, not a hero banner.
-
-It should show only:
-
-- mode
-- arm state
-- readiness or warmup
-- dispatch availability
-- feed health
-- broker health
-- active review state
-- loaded strategy and contract identity
-
-It should avoid long prose and should feel like an operator status strip, not a dashboard intro.
-
-### Left Context Rail
-
-This is the chart’s analysis context rail.
-It should support reading, not action overload.
-
-Recommended content:
-
-- loaded strategy name and contract
-- session state summary
-- latest price and change
-- timeframe summary
-- key position stats when a position exists
-- strategy metadata that helps interpret the chart
-- replay or live state cues
-
-This rail should not become a second audit feed.
-
-### Center Chart Stage
-
-This is the primary canvas.
-
-It should include:
+The chart toolbar should contain only chart-related controls:
 
 - timeframe switcher
+- fit
+- live follow
+- load more history
 - overlay toggles
-- fit and live-follow controls
-- compact OHLC and last-price readout
-- active-position average line
-- working-order overlays
-- fill markers
-- health and review banners inside the chart stage
-- volume pane
+- chart-state badge
 
-The chart should feel calm and premium:
+### 4. Right Trade Rail
 
-- generous space
-- low chrome
-- strong focus on price action
-- toolbars that read more like instrument controls than like form inputs
+This should be a narrow, dense operator rail with no dashboard-card feel.
 
-### Right Action And Exposure Rail
+The target grouping is:
 
-This becomes the primary action surface.
-It should hold the operator workflows currently spread across multiple broad cards.
+- posture block
+  - mode, arm, warmup, gate, pause or resume
+- ticket block
+  - side, size, price inputs, submit
+- exposure block
+  - position count, working orders, flatten, cancel
+- safety review block only when active
 
-Recommended content:
+Rules:
 
-- active position summary
-- working-order summary
-- manual entry panel
-- flatten current position
-- close position
-- cancel working orders
-- no-new-entry gate
-- warmup, arm, pause, resume, and disarm controls
+- no long descriptive notes
+- use pills, micro-metrics, and short labels
+- keep dangerous buttons distinct
 
-Dangerous controls should remain visually isolated and confirmation-backed.
+### 5. Lower Dock
 
-### Bottom Dock
+This remains for slower or deeper work:
 
-This is where secondary information lives.
-It should be tabbed or segmented so the operator can pull up detail without leaving the chart context.
+- trades
+- checks
+- setup
+- health
+- latency
+- journal
+- events
 
-Recommended dock tabs:
-
-- Trades
-- Journal
-- Events
-- Latency
-- Health
-- Settings
-
-Settings should leave the primary right rail and move here.
-They matter, but they should not compete with price, exposure, and action.
+This area can keep slightly more explanation, but still should not read like documentation.
 
 ## Visual Direction
 
-The design target should feel modern and premium without becoming decorative.
+### Tone
 
-### Desired Tone
+- dark
+- calm
+- precise
+- minimal
+- premium
 
-- dark, calm, and high-contrast
-- confident rather than flashy
-- finance-native rather than generic SaaS
-- polished enough to feel consumer-friendly
-- precise enough to feel operator-grade
+### Specific UI Rules
 
-### Visual Rules
+- reduce panel stacking around the chart
+- replace thick chart container feel with a subtle frame
+- use softer separators and hairlines
+- keep chart background neutral
+- reserve stronger color for mode, review, and order-state overlays
+- avoid bright decorative gradients near the chart itself
 
-- minimize heavy panel borders and box clutter
-- use layered surfaces and spacing more than loud separators
-- use typography and alignment to create hierarchy
-- reserve strong accent color for mode, risk, and action
-- keep the chart visually neutral enough that overlays remain legible
+### Chart Frame Direction
 
-### Color Strategy
+The chart should have a minimalist border treatment:
 
-- keep the chart base mostly neutral
-- use one unmistakable accent language for `live`
-- one for `paper`
-- one for `observation`
-- one for warning and review-required
-- one for destructive actions
+- subtle `1px` or near-hairline frame
+- low-contrast edge against the workspace background
+- modest radius
+- no thick nested wrappers
+- no oversized panel padding that shrinks the canvas
 
-These accents must stay readable without turning the page into a traffic-light collage.
+The chart should feel mounted into the workspace, not placed inside a card.
 
-### Copy Strategy
+## Immediate Chart Improvements Required
 
-- remove development-flavored labels where possible
-- replace long helper text with short direct labels
-- prefer labels that answer operator questions
-- use progressive disclosure for secondary explanations
+These chart changes are now first-class requirements, not optional polish.
 
-Examples of the right tone:
+### A. Open With Enough History To Fill The Chart
 
-- `Flatten current position`
-- `No new entries`
-- `Waiting for warmup`
-- `Reconnect review required`
-- `Broker connected`
+The chart should not open sparse or half-empty.
 
-Avoid copy that sounds like internal tooling or implementation detail unless it appears in the lower dock.
+The runtime and dashboard should cooperate so the default chart view:
 
-## Interaction Model
+- loads enough history to fill the visible canvas immediately
+- includes left-side overscan so the operator can pan a bit before needing a fetch
+- keeps loading more history before the operator hits empty space
 
-The interaction model should feel chart-led.
+Planned policy:
 
-### Primary Interactions
+1. On chart bootstrap, request a larger initial history window than the current visible viewport needs.
+2. Size the initial target by breakpoint and timeframe.
+3. Apply a visible logical range or fit strategy so the screen opens full.
+4. Subscribe to visible logical range changes and fetch more bars when the left buffer drops below a threshold.
 
-- change timeframe
-- toggle overlays
-- fit chart
-- follow live data
-- inspect current position and working orders
-- place manual entry from the adjacent action rail
-- flatten or cancel without hunting through the page
+Recommended starting targets:
 
-### Secondary Interactions
+- desktop: enough bars for roughly `1.8x-2.5x` the visible viewport
+- tablet: enough bars for roughly `1.6x-2.2x`
+- mobile: enough bars for roughly `1.4x-2.0x`
 
-- inspect journal and events
-- review latency and health
-- edit settings
-- browse deeper history
+Initial working defaults for the first implementation pass:
 
-### Progressive Disclosure
+- `1m`: request `300-500` bars on desktop, `220-320` on tablet, `160-240` on mobile
+- `5m`: request enough bars to show a meaningful multi-session window on open
+- `1s`: request enough bars to avoid a toy-looking chart while still respecting performance
 
-The rule should be:
+### B. Infinite-Left History Behavior
 
-- price, posture, exposure, and actions are always close
-- detailed audit and configuration surfaces are one click away, not always expanded
+The chart should feel continuous.
 
-## Scope Policy For Layout Customization
+Implementation plan:
 
-Robinhood-style customization is appealing, but we should not turn this redesign into a full layout-builder project immediately.
+- use Lightweight Charts visible logical range APIs to detect when the operator is nearing the loaded left edge
+- fetch older bars through `/chart/history`
+- prepend them without snapping the operator out of context
+- expose `Load older` as a fallback, but rely on background prefetch first
 
-Recommended scope split:
+### C. Minimal Chart Border
 
-### First Delivery
+The chart frame should be visually quieter.
 
-- one strong chart-first default layout
-- collapsible or tabbed lower dock
-- responsive rail collapse behavior
-- no arbitrary drag-and-drop widget canvas yet
+Implementation plan:
 
-### Later Upgrade Path
-
-- saved layout presets
-- resizable rails
-- chart-detached or multi-chart views
-- custom workspace persistence
-
-This keeps the redesign focused and achievable while still moving clearly toward a modern active-trader feel.
+- remove heavy chart panel padding
+- reduce border contrast
+- simplify chart frame layers
+- keep only one primary chart edge treatment
+- tune grid and pane lines so they feel deliberate but understated
 
 ## Implementation Plan
 
-### Phase 1: Chart-First Shell Reset
+### Phase 1: Chrome Reduction
 
-- Replace the current broad dashboard stack with a chart-stage shell
-- Turn the existing top area into a slim system bar
-- Move the chart directly into the center of the default view
+- remove remaining hero-style header treatment
+- convert header into a true utility strip
+- remove non-warning prose above the fold
+- reduce duplicate status wording
 
-Status:
-- Landed on `main` as an initial shell reset
-- Current implementation now has the top system bar, a chart-centered workspace stage, and a tabbed lower detail dock
-- Remaining work in this phase is refinement, not first delivery
+### Phase 2: Toolbar-Driven Layout
 
-Likely file additions or refactors:
+- convert left rail into a real tool/context rail
+- convert right rail into a narrow trade rail
+- keep only the most important controls visible
+- move everything secondary into the dock
 
-- `apps/dashboard/src/components/layout/*`
-- `apps/dashboard/src/components/chartStage/*`
-- `apps/dashboard/src/components/docks/*`
+### Phase 3: Chart Stage Expansion
 
-### Phase 2: Rail Recomposition
+- enlarge the chart footprint further
+- reduce chart wrapper padding
+- simplify chart frame styling
+- make readout strip and toolbar denser
 
-- Refactor current control-center surfaces into the right action rail
-- Refactor key runtime and contract context into the left rail
-- Reduce duplicated summary cards outside those rails
+### Phase 4: Chart Data Loading Upgrade
 
-### Phase 3: Bottom Dock Migration
+- add enough first-open history to fill the chart
+- add viewport-aware history sizing
+- add logical-range-triggered historical prefetch
+- keep explicit `Load older` as backup
 
-- Move history, journal, events, latency, health, and settings into a tabbed lower dock
-- Make the dock denser and cleaner than the current long monitoring deck
+### Phase 5: Minimal Visual Sweep
 
-### Phase 4: Visual Polish And Copy Sweep
+- reduce border noise
+- unify spacing rhythm
+- tighten typography
+- replace verbose copy with short labels
+- ensure no toolbar feels redundant
 
-- tighten spacing
-- reduce verbose copy
-- standardize iconography and badge density
-- improve form clarity and control grouping
-- make the whole interface feel more productized and less like a stitched control panel
+### Phase 6: Responsive And Sign-Off Pass
 
-### Phase 5: Responsive And Acceptance Pass
-
-- verify the chart remains the primary surface at `390px`, `768px`, `1024px`, and `1440px`
-- verify no page-level horizontal overflow
-- verify the right action surface remains usable without chart obstruction
-- verify the lower dock stays understandable on narrow widths
+- verify chart stays dominant at `390px`, `768px`, `1024px`, and `1440px`
+- verify no horizontal overflow
+- verify trade rail remains usable without crowding the chart
+- verify dock still reads clearly on smaller widths
 
 ## Suggested Module Targets
 
-The redesign should land on explicit modules instead of growing the current files again.
+The current component split is good enough to keep building on.
 
-Suggested structure:
+The next restructuring target should be:
 
-- `apps/dashboard/src/components/layout/dashboardShell.tsx`
-- `apps/dashboard/src/components/layout/dashboardSystemBar.tsx`
-- `apps/dashboard/src/components/chartStage/dashboardChartStage.tsx`
+- `apps/dashboard/src/components/layout/dashboardUtilityHeader.tsx`
 - `apps/dashboard/src/components/chartStage/dashboardContextRail.tsx`
-- `apps/dashboard/src/components/chartStage/dashboardActionRail.tsx`
+- `apps/dashboard/src/components/chartStage/dashboardTradeRail.tsx`
+- `apps/dashboard/src/components/chartStage/dashboardChartToolbar.tsx`
+- `apps/dashboard/src/components/chartStage/dashboardChartStage.tsx`
 - `apps/dashboard/src/components/docks/dashboardBottomDock.tsx`
-- `apps/dashboard/src/components/docks/*`
 
-Suggested stylesheet split:
+The chart-specific data work should continue to live with:
 
-- `theme.css`
-- `shell.css`
-- `chart-stage.css`
-- `rails.css`
-- `dock.css`
-
-The existing hooks and control-plane integration can mostly stay where they are.
-This should be primarily an information-architecture and presentation refactor, not a data-contract rewrite.
-
-## Test And QA Plan
-
-The redesign is not done without explicit verification.
-
-### Frontend Tests
-
-- chart-first shell renders with loaded strategy and chart present
-- right action rail renders key controls without clipping
-- lower dock tabs switch correctly
-- degraded, reconnect-review, and no-strategy states stay readable in the new shell
-
-### Browser QA
-
-- `390px`
-- `768px`
-- `1024px`
-- `1440px`
-
-Verify:
-
-- no horizontal page overflow
-- chart remains the visual anchor
-- rails collapse intentionally
-- no text spill in badges, rails, or dock tabs
-- dangerous controls remain readable and confirmable
-
-### Operator Review Checklist
-
-- can an operator understand mode, readiness, and exposure in under five seconds?
-- can an operator act on the current contract without scrolling through unrelated panels?
-- does the chart feel like the product, not an add-on?
-- does the interface feel self-explanatory enough to reduce operator anxiety?
+- `apps/dashboard/src/hooks/useDashboardChart.ts`
+- `apps/dashboard/src/lib/chartAdapter.ts`
 
 ## Acceptance Bar
 
-The chart-first redesign is not complete unless all of the following are true:
+This redesign is not complete unless all of the following are true:
 
-- the chart is the clear primary surface above the fold on desktop and tablet
-- the dashboard still remains understandable on mobile without hiding the chart behind forms
-- the most common operator actions are adjacent to the chart
-- audit and settings surfaces are available but no longer dominate the page
-- live, paper, and observation states remain unmistakable
-- the interface has no page-level horizontal overflow at supported widths
-- the language feels production-ready and self-explanatory
-- the layout feels like a polished trading workspace rather than a collection of cards
+- the chart is unmistakably the primary surface above the fold
+- the header reads like a utility strip, not a hero
+- the side surfaces feel like toolbars, not card stacks
+- there is little or no explanatory prose above the fold
+- the chart opens with enough history to feel full and useful
+- the chart keeps loading history before the operator reaches empty space
+- the chart frame feels minimal and premium
+- live, paper, and observation remain unmistakable
+- no supported width has page-level horizontal overflow
 
 ## Immediate Work Order
 
-1. Treat this document as the new source of truth for dashboard Phase 5 redesign work.
-2. Freeze a chart-first content inventory:
-   decide exactly which current widgets move into the left rail, right rail, and bottom dock.
-3. Refine the new shell and rail composition around the existing live chart.
-4. Continue tightening the current control center inside the right action rail.
-5. Continue tightening monitoring and audit depth inside the lower dock.
-6. Run the copy and responsive QA pass.
+1. Treat this revised document as the source of truth for the next chart-first pass.
+2. Strip the header down into a utility-only bar.
+3. Convert the left and right rails into denser toolbar-style surfaces.
+4. Expand the chart stage and reduce chart wrapper chrome.
+5. Upgrade chart bootstrap and historical paging so the chart opens full.
+6. Run another responsive and browser QA sweep after the chart-stage resize.
 
 ## Documentation Follow-Up
 
-Keep these docs aligned while the chart-first redesign lands:
+Keep these docs aligned while this pass lands:
 
 - [README.md](</C:/repos/TV_bot_core/README.md>)
 - [apps/dashboard/README.md](</C:/repos/TV_bot_core/apps/dashboard/README.md>)

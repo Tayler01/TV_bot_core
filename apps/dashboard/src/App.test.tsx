@@ -7,11 +7,25 @@ vi.mock("lightweight-charts", () => {
     options: vi.fn(() => ({})),
   }));
   const removePriceLine = vi.fn();
+  const timeScale = {
+    fitContent: vi.fn(),
+    scrollToRealTime: vi.fn(),
+    setVisibleLogicalRange: vi.fn(),
+    getVisibleLogicalRange: vi.fn(() => ({ from: 0, to: 120 })),
+    subscribeVisibleLogicalRangeChange: vi.fn(),
+    unsubscribeVisibleLogicalRangeChange: vi.fn(),
+  };
   const candleSeries = {
     setData: vi.fn(),
     createPriceLine,
     removePriceLine,
     priceLines: vi.fn(() => []),
+    barsInLogicalRange: vi.fn(() => ({
+      barsBefore: 120,
+      barsAfter: 0,
+      from: 0,
+      to: 120,
+    })),
   };
   const histogramSeries = {
     setData: vi.fn(),
@@ -32,10 +46,7 @@ vi.mock("lightweight-charts", () => {
       applyOptions: vi.fn(),
       resize: vi.fn(),
       remove: vi.fn(),
-      timeScale: vi.fn(() => ({
-        fitContent: vi.fn(),
-        scrollToRealTime: vi.fn(),
-      })),
+      timeScale: vi.fn(() => timeScale),
     })),
     createSeriesMarkers: vi.fn(() => ({
       setMarkers: vi.fn(),
@@ -588,6 +599,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2411.95",
         volume: 18,
         closed_at: "2026-04-12T20:10:58Z",
+        is_complete: true,
       },
       {
         timeframe: "1s",
@@ -597,6 +609,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2412.20",
         volume: 24,
         closed_at: "2026-04-12T20:10:59Z",
+        is_complete: true,
       },
       {
         timeframe: "1s",
@@ -606,6 +619,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2412.25",
         volume: 16,
         closed_at: "2026-04-12T20:11:00Z",
+        is_complete: true,
       },
     ],
     "1m": [
@@ -617,6 +631,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2409.60",
         volume: 140,
         closed_at: "2026-04-12T20:07:00Z",
+        is_complete: true,
       },
       {
         timeframe: "1m",
@@ -626,6 +641,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2410.80",
         volume: 182,
         closed_at: "2026-04-12T20:08:00Z",
+        is_complete: true,
       },
       {
         timeframe: "1m",
@@ -635,6 +651,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2411.90",
         volume: 210,
         closed_at: "2026-04-12T20:09:00Z",
+        is_complete: true,
       },
       {
         timeframe: "1m",
@@ -644,6 +661,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2412.40",
         volume: 236,
         closed_at: "2026-04-12T20:10:00Z",
+        is_complete: true,
       },
       {
         timeframe: "1m",
@@ -653,6 +671,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2412.25",
         volume: 148,
         closed_at: "2026-04-12T20:11:00Z",
+        is_complete: false,
       },
     ],
     "5m": [
@@ -664,6 +683,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2409.50",
         volume: 620,
         closed_at: "2026-04-12T20:00:00Z",
+        is_complete: true,
       },
       {
         timeframe: "5m",
@@ -673,6 +693,7 @@ function installFetchMock(snapshotOverrides?: {
         close: "2412.25",
         volume: 712,
         closed_at: "2026-04-12T20:05:00Z",
+        is_complete: true,
       },
     ],
   } as const;
@@ -1295,40 +1316,36 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Local runtime command center")).toBeInTheDocument();
-    expect(await screen.findByText("TV Bot Operator Console")).toBeInTheDocument();
-    expect(await screen.findByText("Dispatch")).toBeInTheDocument();
-    expect(await screen.findByText("Safety review")).toBeInTheDocument();
+    expect(await screen.findAllByText("GCM2026")).not.toHaveLength(0);
+    expect(await screen.findAllByText(/Dispatch/)).not.toHaveLength(0);
+    expect(await screen.findByText("Reviews ok")).toBeInTheDocument();
     expect(await screen.findAllByText("Paper")).not.toHaveLength(0);
-    expect(await screen.findAllByText("paper-primary")).not.toHaveLength(0);
-    expect(await screen.findByText("Runtime posture and operator entry controls")).toBeInTheDocument();
-    expect(await screen.findByText("Warmup, arming, and manual operator actions")).toBeInTheDocument();
-    expect(await screen.findAllByText("Gold Breakout v1.0.0")).toHaveLength(1);
-    expect(await screen.findByText("Pre-arm check groups")).toBeInTheDocument();
-    expect(await screen.findByText("Gold Breakout live contract chart")).toBeInTheDocument();
-    expect(await screen.findByText("Contract context")).toBeInTheDocument();
+    expect(await screen.findAllByText(/paper-primary/)).not.toHaveLength(0);
+    expect(await screen.findByLabelText("Runtime posture")).toBeInTheDocument();
+    expect(await screen.findAllByText("Posture")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Gold Breakout v1.0.0")).not.toHaveLength(0);
+    expect(await screen.findByRole("tab", { name: "Checks" })).toBeInTheDocument();
+    expect(await screen.findByText("Databento")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "1m" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Live follow on" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Fit chart" })).toBeInTheDocument();
-    expect(await screen.findByText("Execution posture")).toBeInTheDocument();
-    expect(await screen.findByText("Working order ladder")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Load older bars" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Follow on" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Fit" })).toBeInTheDocument();
+    expect(await screen.findAllByText("Posture")).not.toHaveLength(0);
+    expect(await screen.findAllByText("Orders")).not.toHaveLength(0);
+    expect(await screen.findByRole("button", { name: "More history" })).toBeInTheDocument();
     expect(
       await screen.findAllByText(/limit 2,412\.25 \| stop 2,408\.75/),
     ).not.toHaveLength(0);
     expect(await screen.findByText("Real-time P&L chart")).toBeInTheDocument();
     expect(await screen.findByText("Per-trade P&L")).toBeInTheDocument();
     expect(await screen.findByText("Open working orders")).toBeInTheDocument();
-    expect(await screen.findAllByText("Recent fills")).toHaveLength(2);
+    expect(await screen.findAllByText("Recent fills")).not.toHaveLength(0);
     expect(await screen.findByText("Trade ledger")).toBeInTheDocument();
     expect(await screen.findByText("Floating now")).toBeInTheDocument();
     expect(await screen.findByText(/Order 8102 \| limit \| filled 0/)).toBeInTheDocument();
-    expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(2);
+    expect(await screen.findAllByText(/Fill fill-1 \| order 8102/)).toHaveLength(1);
     expect(await screen.findAllByText(/Trade trade-1/)).toHaveLength(2);
     expect(
-      await screen.findByText(
-        "Protective brackets available and operator overrides are clear.",
-      ),
+      await screen.findByText("Broker protections confirmed on the open position."),
     ).toBeInTheDocument();
     expect(await screen.findByText("+$97.00")).toBeInTheDocument();
     expect(await screen.findAllByText("100.0%")).toHaveLength(2);
@@ -1421,7 +1438,7 @@ describe("App", () => {
       expect(snapshotCalls.length).toBeGreaterThan(0);
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Load older bars" }));
+    fireEvent.click(await screen.findByRole("button", { name: "More history" }));
 
     await waitFor(() => {
       const historyCalls = fetchSpy.mock.calls.filter((call) => {
@@ -1445,9 +1462,9 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Live follow on" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Follow on" }));
 
-    expect(await screen.findByRole("button", { name: "Live follow off" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Follow off" })).toBeInTheDocument();
   });
 
   it("surfaces the sample-candle fallback when live market data is not configured", async () => {
@@ -1459,7 +1476,7 @@ describe("App", () => {
     expect(await screen.findByText("Sample candles")).toBeInTheDocument();
     expect(
       await screen.findByText(
-        /These candles are illustrative sample data from the local runtime host, not live market data\./,
+        /Live market data is not configured, so the chart is showing sample candles to keep the workspace readable until a Databento API key is provided\./,
       ),
     ).toBeInTheDocument();
     expect(
@@ -1473,7 +1490,7 @@ describe("App", () => {
 
     render(<App />);
 
-    await screen.findByText("Latest price");
+    await screen.findByText("Latest candle");
     await waitFor(() => {
       expect(websocket.latest("/chart/stream")).not.toBeNull();
     });
@@ -1514,6 +1531,7 @@ describe("App", () => {
             close: "2414.80",
             volume: 276,
             closed_at: "2026-04-12T20:12:00Z",
+            is_complete: false,
           },
         ],
         latest_price: "2414.80",
@@ -1535,8 +1553,15 @@ describe("App", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getAllByText("2,414.80").length).toBeGreaterThan(0);
+      expect(
+        screen.getAllByText(
+          /O 2,412\.40 \| H 2,414\.95 \| L 2,412\.10 \| C 2,414\.80/,
+        ).length,
+      ).toBeGreaterThan(0);
     });
+    expect(
+      (await screen.findAllByText(/Building until/i)).length,
+    ).toBeGreaterThan(0);
   });
 
   it("renders recent websocket operator events from the local runtime host", async () => {
@@ -1774,10 +1799,10 @@ describe("App", () => {
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause runtime" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
 
     await screen.findByText("runtime paused");
-    expect(await screen.findByRole("button", { name: "Resume runtime" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Resume" })).toBeInTheDocument();
 
     const runtimeCommandCall = fetchSpy.mock.calls.find((call) => {
       const target = call[0];
@@ -1809,15 +1834,15 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("New entry gate reason"), {
       target: { value: "let the current runner finish without adding size" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Disable new entries" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Block entries" }));
 
     expect(
       await screen.findByText(
         "new entries disabled: let the current runner finish without adding size",
       ),
     ).toBeInTheDocument();
-    expect(await screen.findByText("New entries disabled")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Enable new entries" })).toBeEnabled();
+    expect(await screen.findAllByText("Entries off")).not.toHaveLength(0);
+    expect(await screen.findByRole("button", { name: "Allow entries" })).toBeEnabled();
 
     const runtimeCommandCalls = fetchSpy.mock.calls.filter((call) => {
       const target = call[0];
@@ -1839,10 +1864,10 @@ describe("App", () => {
       },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Enable new entries" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Allow entries" }));
 
     expect(await screen.findByText("new entries enabled")).toBeInTheDocument();
-    expect(await screen.findByText("New entries enabled")).toBeInTheDocument();
+    expect(await screen.findAllByText("Entries on")).not.toHaveLength(0);
 
     const updatedRuntimeCommandCalls = fetchSpy.mock.calls.filter((call) => {
       const target = call[0];
@@ -1875,7 +1900,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("Flatten position reason"), {
       target: { value: "dashboard safety close" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Flatten current position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Flatten" }));
 
     expect(confirmSpy).toHaveBeenCalledWith(
       "Flatten the active broker position now? The runtime host will resolve the current contract from the synchronized broker snapshot and dispatch the audited flatten path.",
@@ -1907,7 +1932,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("Flatten position reason"), {
       target: { value: "dashboard safety close" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Flatten current position" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Flatten" }));
 
     expect(await screen.findByText("close position command dispatched")).toBeInTheDocument();
 
@@ -1942,7 +1967,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("Cancel working orders reason"), {
       target: { value: "dashboard cancel stale orders" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Cancel working orders" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel all" }));
 
     expect(await screen.findByText("working-order cancellation dispatched")).toBeInTheDocument();
 
@@ -1991,7 +2016,7 @@ describe("App", () => {
     fireEvent.change(await screen.findByLabelText("Manual entry reason"), {
       target: { value: "dashboard breakout probe" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Submit manual entry" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send order" }));
 
     expect(await screen.findByText("manual entry command dispatched")).toBeInTheDocument();
 

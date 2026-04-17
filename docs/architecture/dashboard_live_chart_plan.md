@@ -23,7 +23,43 @@ Current state as of 2026-04-16:
 - Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
 - Phase 3 is now substantially in place: active-position context, exact working-order price overlays, recent fill markers, chart-side runtime alert banners, operator readout strips, and a clearly-labeled sample-candle fallback for the no-API-key setup path all render on the chart from the shared runtime-host projection.
 - Phase 5 `operator polish and acceptance` is now materially in place too: the live chart has cleared fresh-open browser QA plus responsive overflow sweeps at `390px`, `768px`, `1024px`, and `1440px`, the dev stack no longer depends on stale release binaries to expose current chart routes, and the chart module comes up without the earlier startup WebSocket noise in the local sign-off path.
-- No V1-critical chart data-path work remains beyond the broader chart-first dashboard redesign tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>) and any future overlay expansion outside the current acceptance scope.
+- The next chart-critical work is no longer first delivery of the module; it is refinement of chart framing and history-loading behavior so the chart opens full, stays full while panning left, and visually reads as the main workspace surface.
+
+## Immediate Next Chart Requirements
+
+The live chart itself now needs a productization pass in two areas.
+
+### 1. Fill The Chart With Enough History On Open
+
+The chart should not open with a sparse recent window.
+
+Required behavior:
+
+- initial chart load should fetch enough bars to fill the visible canvas and provide left-side overscan
+- the amount of history requested should vary by timeframe and viewport size
+- the dashboard should use chart-library visible-range APIs to prefetch older history before the operator hits empty space
+- explicit `Load older bars` remains useful, but should become secondary to automatic backfill
+
+Implementation target:
+
+- extend the chart bootstrap logic in `apps/dashboard/src/hooks/useDashboardChart.ts`
+- allow a larger initial request budget from `GET /chart/snapshot`
+- continue older-history paging through `GET /chart/history`
+- use Lightweight Charts logical-range APIs to trigger prefetch as the operator nears the left edge
+
+### 2. Reduce Chart Chrome
+
+The chart should feel mounted into the workspace, not surrounded by nested panel framing.
+
+Required behavior:
+
+- one subtle chart frame
+- smaller wrapper padding
+- lower-contrast edge treatment
+- minimal border language around the canvas
+- calmer toolbar and readout surfaces
+
+This visual work belongs with the broader chart-first product pass tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>), but it remains a chart requirement rather than generic styling polish.
 
 ## Scope Guardrails
 
@@ -186,6 +222,18 @@ Default timeframe selection should follow this order:
 
 Future higher intervals such as `15m`, `30m`, `1h`, and `1d` should be added only after the host can aggregate or query them cleanly.
 The chart API should be forward-compatible with that expansion now.
+
+### History Loading Policy
+
+The chart history policy should now be explicit:
+
+1. Bootstrap with enough bars to fill the viewport plus overscan.
+2. Use breakpoint-aware and timeframe-aware request sizing.
+3. Track visible logical range on the frontend.
+4. Prefetch older history before the left edge goes empty.
+5. Preserve operator viewport context while prepending older bars.
+
+The first implementation should prioritize correctness and visual completeness over aggressive request minimization.
 
 ### State Ownership
 
