@@ -1,5 +1,6 @@
 [runtime]
 startup_mode = "observation"
+default_strategy_path = "strategies/examples/micro_silver_elephant_tradovate_v1.md"
 allow_sqlite_fallback = false
 
 [market_data]

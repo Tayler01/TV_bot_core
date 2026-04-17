@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use rust_decimal::Decimal;
@@ -375,4 +375,32 @@ fn flattens_after_session_end_when_position_is_open() {
         evaluation.intent,
         Some(ExecutionIntent::Flatten { .. })
     ));
+}
+
+#[test]
+fn extracted_micro_silver_strategy_file_compiles_for_runtime() {
+    let strategy_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../strategies/examples/micro_silver_elephant_tradovate_v1.md");
+    let markdown = fs::read_to_string(&strategy_path).expect("strategy file should be readable");
+    let compiled = StrictStrategyCompiler
+        .compile_markdown(&markdown)
+        .expect("strategy markdown should compile")
+        .compiled;
+    let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
+
+    assert_eq!(
+        compiled.metadata.strategy_id,
+        "micro_silver_elephant_tradovate_v1"
+    );
+    assert_eq!(compiled.market.market, "micro_silver");
+    assert!(compiled
+        .data_requirements
+        .timeframes
+        .contains(&Timeframe::OneSecond));
+    assert!(compiled
+        .data_requirements
+        .timeframes
+        .contains(&Timeframe::OneMinute));
+    assert_eq!(runtime.entry_conditions.long.len(), 1);
+    assert_eq!(runtime.entry_conditions.short.len(), 1);
 }
