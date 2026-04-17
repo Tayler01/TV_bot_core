@@ -200,6 +200,7 @@ pub struct RuntimeChartInstrumentSummary {
 pub struct RuntimeChartConfigResponse {
     pub available: bool,
     pub detail: String,
+    pub sample_data_active: bool,
     pub instrument: Option<RuntimeChartInstrumentSummary>,
     pub supported_timeframes: Vec<Timeframe>,
     pub default_timeframe: Option<Timeframe>,

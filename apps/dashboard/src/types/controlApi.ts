@@ -405,6 +405,7 @@ export interface RuntimeChartInstrumentSummary {
 export interface RuntimeChartConfigResponse {
   available: boolean;
   detail: string;
+  sample_data_active: boolean;
   instrument: RuntimeChartInstrumentSummary | null;
   supported_timeframes: Timeframe[];
   default_timeframe: Timeframe | null;

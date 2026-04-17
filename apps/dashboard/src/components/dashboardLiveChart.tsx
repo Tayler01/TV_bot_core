@@ -388,6 +388,7 @@ function chartOperationalAlerts(
 ): ChartOperationalAlert[] {
   const alerts: ChartOperationalAlert[] = [];
   const marketData = runtimeStatus?.market_data_status?.session.market_data ?? null;
+  const chartConfig = chartViewModel.config;
 
   if (runtimeStatus?.reconnect_review.required) {
     alerts.push({
@@ -424,6 +425,16 @@ function chartOperationalAlerts(
         runtimeStatus?.market_data_detail ??
         marketData?.last_disconnect_reason ??
         "New entries stay blocked while the market-data session recovers; broker-protected positions remain untouched.",
+    });
+  }
+
+  if (chartConfig?.sample_data_active) {
+    alerts.push({
+      id: "sample-candles",
+      tone: "info",
+      headline: "Illustrative sample candles active",
+      detail:
+        "Live market data is not configured, so the chart is showing sample candles to keep the workspace readable until a Databento API key is provided.",
     });
   }
 
@@ -526,6 +537,9 @@ export function LiveChartPanel({
             label={`Feed ${config?.market_data_health ?? "unknown"}`}
             tone={healthTone(config?.market_data_health ?? null)}
           />
+          {config?.sample_data_active ? (
+            <Pill label="Sample candles" tone="info" />
+          ) : null}
           <Pill
             label={config?.trade_ready ? "Trade ready" : "Warmup in progress"}
             tone={config?.trade_ready ? "healthy" : "warning"}
@@ -598,6 +612,9 @@ export function LiveChartPanel({
           {chartViewModel.selectedTimeframe
             ? `Showing ${chartTimeframeLabel(chartViewModel.selectedTimeframe)} candles for the currently loaded strategy contract.`
             : config?.detail ?? "Load a strategy to chart its resolved contract."}
+          {config?.sample_data_active
+            ? " These candles are illustrative sample data from the local runtime host, not live market data."
+            : ""}
           {config?.available
             ? ` ${liveFollowEnabled ? "Live follow keeps the latest candle in view." : "Manual pan and zoom stay pinned until you refit or re-enable follow."}`
             : ""}

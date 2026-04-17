@@ -21,9 +21,9 @@ Current state as of 2026-04-16:
 - Phase 1 `chart control-plane foundation` is now materially in place in [apps/runtime/src/host.rs](</C:/repos/TV_bot_core/apps/runtime/src/host.rs>) and [crates/control_api/src/lib.rs](</C:/repos/TV_bot_core/crates/control_api/src/lib.rs>) through `GET /chart/config`, `GET /chart/snapshot`, `GET /chart/history`, and `GET /chart/stream`.
 - The host now exposes chart wire models, strategy-driven timeframe negotiation, in-memory candle pagination from market-data buffers, and symbol-scoped active-position or working-order or recent-fill overlay projection for the currently loaded contract.
 - Phase 2 `chart shell and toolbar` is now in place in [apps/dashboard/src/components/dashboardLiveChart.tsx](</C:/repos/TV_bot_core/apps/dashboard/src/components/dashboardLiveChart.tsx>), [apps/dashboard/src/hooks/useDashboardChart.ts](</C:/repos/TV_bot_core/apps/dashboard/src/hooks/useDashboardChart.ts>), and [apps/dashboard/src/lib/chartAdapter.ts](</C:/repos/TV_bot_core/apps/dashboard/src/lib/chartAdapter.ts>) with a dark live chart module, timeframe switching, fit/live-follow controls, chart-stream updates, buffered history paging, and strategy-driven chart defaults.
-- Phase 3 is now substantially in place: active-position context, exact working-order price overlays, recent fill markers, chart-side runtime alert banners, and operator readout strips render on the chart from the shared runtime-host projection.
+- Phase 3 is now substantially in place: active-position context, exact working-order price overlays, recent fill markers, chart-side runtime alert banners, operator readout strips, and a clearly-labeled sample-candle fallback for the no-API-key setup path all render on the chart from the shared runtime-host projection.
 - Phase 5 `operator polish and acceptance` is now materially in place too: the live chart has cleared fresh-open browser QA plus responsive overflow sweeps at `390px`, `768px`, `1024px`, and `1440px`, the dev stack no longer depends on stale release binaries to expose current chart routes, and the chart module comes up without the earlier startup WebSocket noise in the local sign-off path.
-- No V1-critical chart work remains beyond broader dashboard release sign-off and any future overlay expansion outside the current acceptance scope.
+- No V1-critical chart data-path work remains beyond the broader chart-first dashboard redesign tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>) and any future overlay expansion outside the current acceptance scope.
 
 ## Scope Guardrails
 
@@ -350,8 +350,8 @@ The live chart work is not done unless all of the following are true:
 1. Define the chart control-plane contract in `crates/control_api`.
 2. Add runtime-host chart routes and chart-stream tests.
 3. Add the dashboard chart hook plus Lightweight Charts shell.
-4. Treat the chart module as signed off for current V1 scope and keep any follow-up changes aligned with the operator-console checklist.
-5. Return to broader dashboard and release verification work outside the chart module.
+4. Keep the chart module stable while the broader chart-first dashboard redesign lands around it.
+5. Return to broader dashboard and release verification work outside the chart data-path itself.
 
 ## Documentation Follow-Up
 

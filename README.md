@@ -90,7 +90,7 @@ tests/
 
 ## Still Required For V1
 
-- Final dashboard/operator production sign-off, including any remaining copy or ergonomics nits outside the now-signed-off live chart module
+- Final chart-first dashboard/operator redesign and production sign-off around the now-real live chart module
 - Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
 - Final release checklist walkthrough and sign-off
 
@@ -119,7 +119,7 @@ For a Databento-only observation smoke test on Windows, set `TV_BOT__MARKET_DATA
 .\scripts\dev\start_databento_observation.ps1 -StartDashboard
 ```
 
-That observation path now rebuilds the release runtime and CLI before launch and starts warmup with a strategy-driven Databento historical replay window instead of waiting only on live bars, so local smoke tests stay aligned with current source and multi-timeframe warmup should catch up much faster when historical data is available.
+That observation path now rebuilds the release runtime and CLI before launch and starts warmup with a strategy-driven Databento historical replay window instead of waiting only on live bars, so local smoke tests stay aligned with current source and multi-timeframe warmup should catch up much faster when historical data is available. If the runtime still has no Databento API key, the chart now renders clearly-labeled illustrative sample candles so the dashboard layout stays readable instead of looking broken.
 
 For the release-hardening path, the repository now includes:
 

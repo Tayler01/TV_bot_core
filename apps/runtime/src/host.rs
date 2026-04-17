@@ -19,6 +19,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use rust_decimal::Decimal;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -96,6 +97,7 @@ const CHART_DEFAULT_LIMIT: usize = 300;
 const CHART_MAX_LIMIT: usize = 1_000;
 const CHART_RECENT_FILL_LIMIT: usize = 20;
 const CHART_STREAM_INTERVAL: Duration = Duration::from_millis(250);
+const SAMPLE_CHART_BAR_COUNT: usize = 480;
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -115,11 +117,13 @@ struct RuntimeMarketDataConfig {
 struct RuntimeMarketDataView {
     snapshot: Option<MarketDataServiceSnapshot>,
     detail: Option<String>,
+    sample_chart_active: bool,
 }
 
 enum RuntimeMarketDataState {
     Unconfigured {
         detail: String,
+        chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
     },
     PendingStrategy {
         detail: String,
@@ -187,6 +191,91 @@ fn align_timeframe_start(
 
     DateTime::<Utc>::from_timestamp(aligned_seconds, 0)
         .expect("aligned warmup timestamp should be valid")
+}
+
+fn sample_chart_bars_for_strategy(
+    seed: &LoadedStrategyMarketDataSeed,
+    now: DateTime<Utc>,
+) -> BTreeMap<Timeframe, Vec<RuntimeChartBar>> {
+    let supported_timeframes = supported_chart_timeframes(&seed.strategy);
+    let price_seed = seed
+        .instrument_mapping
+        .as_ref()
+        .map(|mapping| mapping.tradovate_symbol.as_str())
+        .unwrap_or(seed.strategy.metadata.strategy_id.as_str());
+    let base_price_cents = sample_chart_base_price_cents(price_seed);
+
+    supported_timeframes
+        .into_iter()
+        .map(|timeframe| {
+            (
+                timeframe,
+                sample_chart_bars_for_timeframe(timeframe, now, base_price_cents),
+            )
+        })
+        .collect()
+}
+
+fn sample_chart_base_price_cents(seed: &str) -> i64 {
+    let fingerprint = seed.bytes().fold(0u64, |accumulator, byte| {
+        accumulator
+            .wrapping_mul(131)
+            .wrapping_add(u64::from(byte))
+    });
+    let whole_units = 900 + i64::try_from(fingerprint % 3_200).unwrap_or(0);
+    whole_units * 100
+}
+
+fn sample_chart_bars_for_timeframe(
+    timeframe: Timeframe,
+    now: DateTime<Utc>,
+    base_price_cents: i64,
+) -> Vec<RuntimeChartBar> {
+    let (drift_per_bar, swing_size, wick_size, volume_base) = match timeframe {
+        Timeframe::OneSecond => (1_i64, 12_i64, 6_i64, 18_u64),
+        Timeframe::OneMinute => (4_i64, 28_i64, 12_i64, 80_u64),
+        Timeframe::FiveMinute => (9_i64, 54_i64, 22_i64, 220_u64),
+    };
+    let timeframe_step = timeframe_duration(timeframe);
+    let anchor = align_timeframe_start(now, timeframe);
+    let first_bar_time = anchor
+        - timeframe_step
+            .checked_mul(i32::try_from(SAMPLE_CHART_BAR_COUNT.saturating_sub(1)).unwrap_or(0))
+            .unwrap_or_else(ChronoDuration::zero);
+    let midpoint = i64::try_from(SAMPLE_CHART_BAR_COUNT / 2).unwrap_or(0);
+    let mut previous_close = base_price_cents - (swing_size / 2);
+
+    (0..SAMPLE_CHART_BAR_COUNT)
+        .map(|index| {
+            let index_i64 = i64::try_from(index).unwrap_or(0);
+            let trend = (index_i64 - midpoint) * drift_per_bar;
+            let primary_wave = ((index_i64 % 14) - 7) * swing_size;
+            let secondary_wave = ((index_i64 % 5) - 2) * (swing_size / 2);
+            let close = base_price_cents + trend + primary_wave + secondary_wave;
+            let open = previous_close;
+            let high = open.max(close) + wick_size + (index_i64 % 4) * 2;
+            let low = open.min(close) - wick_size - (index_i64 % 3) * 2;
+            let volume = volume_base
+                + u64::try_from((index_i64 % 9) * 11).unwrap_or(0)
+                + u64::try_from((index_i64 % 4) * 7).unwrap_or(0);
+            let closed_at = first_bar_time
+                + timeframe_step
+                    .checked_mul(i32::try_from(index).unwrap_or(0))
+                    .unwrap_or_else(ChronoDuration::zero);
+
+            previous_close = close;
+
+            RuntimeChartBar {
+                timeframe,
+                open: Decimal::new(open, 2),
+                high: Decimal::new(high, 2),
+                low: Decimal::new(low, 2),
+                close: Decimal::new(close, 2),
+                volume,
+                closed_at,
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -453,6 +542,7 @@ impl RuntimeMarketDataManager {
                 config: None,
                 state: RuntimeMarketDataState::Unconfigured {
                     detail: "missing market-data configuration: market_data.api_key".to_owned(),
+                    chart_bars: BTreeMap::new(),
                 },
             };
         };
@@ -474,8 +564,17 @@ impl RuntimeMarketDataManager {
         now: chrono::DateTime<Utc>,
     ) {
         let Some(config) = self.config.clone() else {
+            let chart_bars = seed
+                .as_ref()
+                .map(|seed| sample_chart_bars_for_strategy(seed, now))
+                .unwrap_or_default();
             self.state = RuntimeMarketDataState::Unconfigured {
-                detail: "missing market-data configuration: market_data.api_key".to_owned(),
+                detail: if chart_bars.is_empty() {
+                    "missing market-data configuration: market_data.api_key".to_owned()
+                } else {
+                    "missing market-data configuration: market_data.api_key; showing illustrative sample candles until live market data is configured".to_owned()
+                },
+                chart_bars,
             };
             return;
         };
@@ -542,7 +641,7 @@ impl RuntimeMarketDataManager {
                     Some(snapshot)
                 })
                 .map_err(|error| format!("market-data warmup start failed: {error}")),
-            RuntimeMarketDataState::Unconfigured { detail }
+            RuntimeMarketDataState::Unconfigured { detail, .. }
             | RuntimeMarketDataState::PendingStrategy { detail }
             | RuntimeMarketDataState::StrategyBlocked { detail } => Err(detail.clone()),
             #[cfg(test)]
@@ -578,12 +677,18 @@ impl RuntimeMarketDataManager {
             RuntimeMarketDataState::Active { last_snapshot, .. } => RuntimeMarketDataView {
                 snapshot: last_snapshot.clone(),
                 detail: None,
+                sample_chart_active: false,
             },
-            RuntimeMarketDataState::Unconfigured { detail }
-            | RuntimeMarketDataState::PendingStrategy { detail }
+            RuntimeMarketDataState::Unconfigured { detail, chart_bars } => RuntimeMarketDataView {
+                snapshot: None,
+                detail: Some(detail.clone()),
+                sample_chart_active: !chart_bars.is_empty(),
+            },
+            RuntimeMarketDataState::PendingStrategy { detail }
             | RuntimeMarketDataState::StrategyBlocked { detail } => RuntimeMarketDataView {
                 snapshot: None,
                 detail: Some(detail.clone()),
+                sample_chart_active: false,
             },
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride {
@@ -591,6 +696,7 @@ impl RuntimeMarketDataManager {
             } => RuntimeMarketDataView {
                 snapshot: Some(snapshot.clone()),
                 detail: detail.clone(),
+                sample_chart_active: false,
             },
         }
     }
@@ -613,8 +719,10 @@ impl RuntimeMarketDataManager {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
-            RuntimeMarketDataState::Unconfigured { .. }
-            | RuntimeMarketDataState::PendingStrategy { .. }
+            RuntimeMarketDataState::Unconfigured { chart_bars, .. } => {
+                chart_bars.get(&timeframe).cloned().unwrap_or_default()
+            }
+            RuntimeMarketDataState::PendingStrategy { .. }
             | RuntimeMarketDataState::StrategyBlocked { .. } => Vec::new(),
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride { chart_bars, .. } => {
@@ -688,13 +796,19 @@ impl RuntimeMarketDataManager {
                 RuntimeMarketDataView {
                     snapshot: Some(snapshot),
                     detail,
+                    sample_chart_active: false,
                 }
             }
-            RuntimeMarketDataState::Unconfigured { detail }
-            | RuntimeMarketDataState::PendingStrategy { detail }
+            RuntimeMarketDataState::Unconfigured { detail, chart_bars } => RuntimeMarketDataView {
+                snapshot: None,
+                detail: Some(detail.clone()),
+                sample_chart_active: !chart_bars.is_empty(),
+            },
+            RuntimeMarketDataState::PendingStrategy { detail }
             | RuntimeMarketDataState::StrategyBlocked { detail } => RuntimeMarketDataView {
                 snapshot: None,
                 detail: Some(detail.clone()),
+                sample_chart_active: false,
             },
             #[cfg(test)]
             RuntimeMarketDataState::SnapshotOverride {
@@ -702,6 +816,7 @@ impl RuntimeMarketDataManager {
             } => RuntimeMarketDataView {
                 snapshot: Some(snapshot.clone()),
                 detail: detail.clone(),
+                sample_chart_active: false,
             },
         }
     }
@@ -2755,11 +2870,13 @@ async fn build_chart_config(state: &RuntimeHostState) -> RuntimeChartConfigRespo
         .as_ref()
         .map(|snapshot| snapshot.trade_ready)
         .unwrap_or(false);
+    let sample_data_active = market_data_view.sample_chart_active;
 
     match seed {
         None => RuntimeChartConfigResponse {
             available: false,
             detail: "load a strategy to chart the resolved contract".to_owned(),
+            sample_data_active,
             instrument: None,
             supported_timeframes: Vec::new(),
             default_timeframe: None,
@@ -2774,13 +2891,25 @@ async fn build_chart_config(state: &RuntimeHostState) -> RuntimeChartConfigRespo
             let instrument = chart_instrument_summary(&seed);
             let available = seed.instrument_mapping.is_some();
             let detail = if available {
-                format!(
-                    "charting the loaded strategy contract `{}`",
-                    instrument
-                        .tradovate_symbol
-                        .as_deref()
-                        .unwrap_or("unresolved symbol")
-                )
+                if sample_data_active {
+                    market_data_view.detail.clone().unwrap_or_else(|| {
+                        format!(
+                            "showing illustrative sample candles for `{}` until live market data is configured",
+                            instrument
+                                .tradovate_symbol
+                                .as_deref()
+                                .unwrap_or("unresolved symbol")
+                        )
+                    })
+                } else {
+                    format!(
+                        "charting the loaded strategy contract `{}`",
+                        instrument
+                            .tradovate_symbol
+                            .as_deref()
+                            .unwrap_or("unresolved symbol")
+                    )
+                }
             } else {
                 seed.instrument_resolution_error.unwrap_or_else(|| {
                     "instrument resolution must succeed before the live contract chart is available"
@@ -2791,6 +2920,7 @@ async fn build_chart_config(state: &RuntimeHostState) -> RuntimeChartConfigRespo
             RuntimeChartConfigResponse {
                 available,
                 detail,
+                sample_data_active,
                 instrument: Some(instrument),
                 supported_timeframes,
                 default_timeframe,
@@ -9929,9 +10059,95 @@ selection:
             ]
         );
         assert_eq!(config.default_timeframe, Some(Timeframe::OneSecond));
+        assert!(!config.sample_data_active);
         assert_eq!(
             config.market_data_health,
             Some(tv_bot_market_data::MarketDataHealth::Healthy)
+        );
+    }
+
+    #[tokio::test]
+    async fn chart_snapshot_route_returns_sample_bars_when_market_data_is_unconfigured() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        let app = build_http_router(state.clone());
+        let strategy_path = temp_strategy_path();
+        write_strategy_file(&strategy_path);
+
+        let load_response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/runtime/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeLifecycleRequest {
+                        source: ManualCommandSource::Cli,
+                        command: RuntimeLifecycleCommand::LoadStrategy {
+                            path: strategy_path.clone(),
+                        },
+                    })
+                    .expect("request should serialize"),
+                ))
+                .expect("request should build"),
+            "chart sample snapshot load strategy",
+        )
+        .await;
+        assert_eq!(load_response.status(), StatusCode::OK);
+
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/chart/snapshot?timeframe=1m&limit=60")
+                .body(Body::empty())
+                .expect("request should build"),
+            "chart sample snapshot route",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let snapshot: RuntimeChartSnapshot =
+            serde_json::from_slice(&body).expect("chart snapshot json should parse");
+
+        assert_eq!(snapshot.timeframe, Timeframe::OneMinute);
+        assert_eq!(snapshot.requested_limit, 60);
+        assert_eq!(snapshot.bars.len(), 60);
+        assert!(snapshot.config.available);
+        assert!(snapshot.config.sample_data_active);
+        assert!(snapshot.latest_price.is_some());
+        assert!(snapshot.can_load_older_history);
+        assert_eq!(snapshot.config.market_data_connection_state, None);
+        assert_eq!(snapshot.config.market_data_health, None);
+        assert!(
+            snapshot
+                .config
+                .detail
+                .contains("illustrative sample candles"),
+            "expected sample-data detail, got: {}",
+            snapshot.config.detail
         );
     }
 

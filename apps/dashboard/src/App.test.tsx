@@ -136,10 +136,12 @@ function installFetchMock(snapshotOverrides?: {
   reconnectRequired?: boolean;
   shutdownBlocked?: boolean;
   marketDataHealth?: "healthy" | "degraded" | "failed";
+  sampleDataActive?: boolean;
 }) {
   const reconnectRequired = snapshotOverrides?.reconnectRequired ?? false;
   const shutdownBlocked = snapshotOverrides?.shutdownBlocked ?? false;
   const marketDataHealth = snapshotOverrides?.marketDataHealth ?? "healthy";
+  const sampleDataActive = snapshotOverrides?.sampleDataActive ?? false;
   const currentStrategy: LoadedStrategySummary = {
     path: "strategies/sample.md",
     title: "Sample",
@@ -553,7 +555,10 @@ function installFetchMock(snapshotOverrides?: {
 
   const chartConfig = {
     available: true,
-    detail: "charting GCM2026 from the loaded strategy contract",
+    detail: sampleDataActive
+      ? "missing market-data configuration: market_data.api_key; showing illustrative sample candles until live market data is configured"
+      : "charting GCM2026 from the loaded strategy contract",
+    sample_data_active: sampleDataActive,
     instrument: {
       strategy_id: "gold-breakout",
       strategy_name: "Gold Breakout",
@@ -1435,6 +1440,23 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Live follow off" })).toBeInTheDocument();
   });
 
+  it("surfaces the sample-candle fallback when live market data is not configured", async () => {
+    installWebSocketMock();
+    installFetchMock({ sampleDataActive: true });
+
+    render(<App />);
+
+    expect(await screen.findByText("Sample candles")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /These candles are illustrative sample data from the local runtime host, not live market data\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Illustrative sample candles active"),
+    ).toBeInTheDocument();
+  });
+
   it("updates the contract chart summary when the dedicated chart stream publishes a new snapshot", async () => {
     const websocket = installWebSocketMock();
     installFetchMock();
@@ -1453,6 +1475,7 @@ describe("App", () => {
         config: {
           available: true,
           detail: "charting GCM2026 from the loaded strategy contract",
+          sample_data_active: false,
           instrument: {
             strategy_id: "gold-breakout",
             strategy_name: "Gold Breakout",
