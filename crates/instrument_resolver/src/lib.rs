@@ -333,7 +333,7 @@ fn futures_month_code(month: u8) -> char {
     }
 }
 
-const SUPPORTED_MARKETS: [MarketDefinition; 7] = [
+const SUPPORTED_MARKETS: [MarketDefinition; 8] = [
     MarketDefinition {
         market_family: "gold",
         display_name: "COMEX Gold",
@@ -351,6 +351,15 @@ const SUPPORTED_MARKETS: [MarketDefinition; 7] = [
         tradovate_symbol_root: "SI",
         databento_dataset: "GLBX.MDP3",
         aliases: &["si"],
+    },
+    MarketDefinition {
+        market_family: "micro_silver",
+        display_name: "COMEX Micro Silver",
+        venue: "COMEX",
+        symbol_root: "SIL",
+        tradovate_symbol_root: "SIL",
+        databento_dataset: "GLBX.MDP3",
+        aliases: &["sil", "micro silver", "microsilver"],
     },
     MarketDefinition {
         market_family: "crude_oil",
@@ -433,6 +442,10 @@ impl StaticContractChainProvider {
         provider.insert_chain(
             "silver",
             build_contract_chain("SI", &[3, 5, 7, 9, 12], year, 2, 26),
+        );
+        provider.insert_chain(
+            "micro_silver",
+            build_contract_chain("SIL", &[3, 5, 7, 9, 12], year, 2, 26),
         );
         provider.insert_chain(
             "crude_oil",
@@ -742,6 +755,26 @@ mod tests {
             mapping.resolution_basis,
             FrontMonthSelectionBasis::FirstNoticeDate
         );
+    }
+
+    #[test]
+    fn builtin_contract_chains_resolve_micro_silver_alias_for_current_runtime_window() {
+        let resolver = FrontMonthResolver::new(
+            StaticContractChainProvider::with_reference_date(
+                NaiveDate::from_ymd_opt(2026, 4, 10).expect("valid date"),
+            ),
+            fixed_clock(),
+        );
+
+        let mapping = resolver
+            .resolve_for_strategy(&compiled_strategy("sil"))
+            .expect("built-in chains should resolve micro silver alias");
+
+        assert_eq!(mapping.market_family, "micro_silver");
+        assert_eq!(mapping.market_display_name, "COMEX Micro Silver");
+        assert_eq!(mapping.databento_symbols[0].symbol, "SILK6");
+        assert_eq!(mapping.tradovate_symbol, "SILK2026");
+        assert_eq!(mapping.resolved_contract.canonical_symbol, "SILK2026");
     }
 
     #[test]
