@@ -346,21 +346,21 @@ But V1 should use a **fixed built-in indicator/rule library** with parameters, n
 ## 10. Example strategy shape
 
 ```md
-# Strategy: GC Momentum Fade
+# Strategy: Micro Silver Elephant Trend
 
 ## Metadata
 ```yaml
 schema_version: 1
-strategy_id: gc_momentum_fade_v1
-name: GC Momentum Fade
+strategy_id: micro_silver_elephant_tradovate_v1
+name: Micro Silver Elephant Trend
 version: 1.0.0
 author: internal
-description: Fade setup for front-month gold futures
+description: Trend strategy for front-month micro silver futures
 ```
 
 ## Market
 ```yaml
-market: gold
+market: silver
 selection:
   contract_mode: front_month_auto
 ```

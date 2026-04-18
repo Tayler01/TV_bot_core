@@ -1550,7 +1550,7 @@ mod tests {
     fn write_strategy_file(path: &Path) {
         fs::write(
             path,
-            include_str!("../../../strategies/examples/gc_momentum_fade_v1.md"),
+            include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md"),
         )
         .expect("strategy file should write");
     }
@@ -2182,7 +2182,7 @@ mod tests {
                             PathBuf::from("strategy.md"),
                             StrictStrategyCompiler
                                 .compile_markdown(include_str!(
-                                    "../../../strategies/examples/gc_momentum_fade_v1.md"
+                                    "../../../tests/fixtures/strategies/gc_momentum_fade_v1.md"
                                 ))
                                 .expect("strategy should compile"),
                         )

@@ -6178,7 +6178,7 @@ mod tests {
     fn write_strategy_file(path: &PathBuf) {
         fs::write(
             path,
-            include_str!("../../../strategies/examples/gc_momentum_fade_v1.md"),
+            include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md"),
         )
         .expect("strategy file should write");
     }
@@ -6773,7 +6773,7 @@ selection:
         .await;
         state.strategy_library_roots = vec![strategy_root.clone()];
         let app = build_http_router(state);
-        let markdown = include_str!("../../../strategies/examples/gc_momentum_fade_v1.md");
+        let markdown = include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md");
 
         let response = request_with_timeout(
             app.clone(),

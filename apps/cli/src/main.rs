@@ -818,7 +818,7 @@ mod tests {
             "tv-bot-cli",
             "launch",
             "--strategy",
-            "strategies/examples/gc_momentum_fade_v1.md",
+            "strategies/examples/micro_silver_elephant_tradovate_v1.md",
         ])
         .expect("cli should parse");
 
@@ -826,7 +826,9 @@ mod tests {
             CliCommand::Launch { strategy, .. } => {
                 assert_eq!(
                     strategy,
-                    Some(PathBuf::from("strategies/examples/gc_momentum_fade_v1.md"))
+                    Some(PathBuf::from(
+                        "strategies/examples/micro_silver_elephant_tradovate_v1.md"
+                    ))
                 );
             }
             other => panic!("unexpected command: {other:?}"),

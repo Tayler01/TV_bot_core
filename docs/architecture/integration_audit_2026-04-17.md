@@ -124,21 +124,21 @@ Status:
 
 ### Open Findings And Recommended Follow-Ups
 
-#### 8. Legacy GC example cleanup is still incomplete
+#### 8. Legacy GC example cleanup is now complete
 
-The micro-silver strategy is already the default runtime example in `config/runtime.example.toml`, and it should be treated as the canonical layout example going forward. However, the repository still contains the older GC example and several internal test references to it.
+The micro-silver strategy is now the only operator-facing example in `strategies/examples`, and the older GC sample has been reclassified as an internal test fixture.
 
-Recommended follow-up:
+Status:
 
-- migrate the remaining user-facing placeholders and examples to the micro-silver strategy
-- either remove `strategies/examples/gc_momentum_fade_v1.md` entirely or reclassify it as a legacy fixture used only by tests
+- fixed by removing `strategies/examples/gc_momentum_fade_v1.md`
+- GC now lives only in `tests/fixtures/strategies/gc_momentum_fade_v1.md`
+- user-facing path examples now point at `strategies/examples/micro_silver_elephant_tradovate_v1.md`
 
 ## Recommended Fix Order
 
 1. Land the documentation set from this audit and standardize operator setup around it.
 2. Keep the automated-cancel fix.
-3. Finish the legacy GC example cleanup and standardize on the micro-silver strategy as the canonical sample.
-4. Re-run the paper/demo runbook once Tradovate credentials are available.
+3. Re-run the paper/demo runbook once Tradovate credentials are available.
 
 ## Practical Operator Guidance
 
