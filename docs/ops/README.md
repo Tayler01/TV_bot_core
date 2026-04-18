@@ -4,6 +4,12 @@ This directory now holds the operator runbooks and release-check materials for V
 
 ## Available Runbooks
 
+- `credential_setup.md`
+  Standard credential and runtime-config setup for Databento, Tradovate, and storage.
+- `cli_standalone.md`
+  Standalone operator usage for `tv-bot-cli`.
+- `debugging_guide.md`
+  Runtime, dashboard, provider, and chart debug workflow.
 - `paper_demo_verification.md`
   Manual paper/demo verification flow for the release gate.
 - `storage_fallback_override.md`

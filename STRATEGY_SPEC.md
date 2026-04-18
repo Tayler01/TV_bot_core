@@ -145,11 +145,11 @@ Required fields:
 
 ```yaml
 schema_version: 1
-strategy_id: gc_momentum_fade_v1
-name: GC Momentum Fade
+strategy_id: micro_silver_elephant_tradovate_v1
+name: Micro Silver Elephant Trend
 version: 1.0.0
-author: internal
-description: Fade setup for front-month gold futures
+author: codex
+description: Canonical strict Markdown sample for the micro silver strategy layout
 ```
 
 ### Field rules
@@ -781,16 +781,16 @@ These are roadmap features, not V1 requirements.
 ## Example full strategy
 
 ```md
-# Strategy: GC Momentum Fade
+# Strategy: Micro Silver Elephant Trend
 
 ## Metadata
 ```yaml
 schema_version: 1
-strategy_id: gc_momentum_fade_v1
-name: GC Momentum Fade
+strategy_id: micro_silver_elephant_tradovate_v1
+name: Micro Silver Elephant Trend
 version: 1.0.0
-author: internal
-description: Fade setup for front-month gold futures
+author: codex
+description: Canonical strict Markdown sample for the micro silver strategy layout
 ```
 
 ## Market

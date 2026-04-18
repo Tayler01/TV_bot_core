@@ -252,7 +252,7 @@ function App() {
           </div>
           <div className="system-bar__status-strip" aria-label="Runtime posture">
             <Pill
-              label={snapshot ? `Mode ${formatMode(snapshot.status.mode)}` : "Mode waiting"}
+              label={snapshot ? formatMode(snapshot.status.mode) : "Mode"}
               tone={
                 snapshot
                   ? snapshot.status.mode === "live"
@@ -266,8 +266,8 @@ function App() {
             <Pill
               label={
                 snapshot
-                  ? `Arm ${formatMode(snapshot.status.arm_state)}`
-                  : "Arm waiting"
+                  ? formatMode(snapshot.status.arm_state)
+                  : "Arm"
               }
               tone={
                 snapshot
@@ -280,8 +280,8 @@ function App() {
             <Pill
               label={
                 snapshot
-                  ? `Warmup ${formatMode(snapshot.status.warmup_status)}`
-                  : "Warmup waiting"
+                  ? formatMode(snapshot.status.warmup_status)
+                  : "Warmup"
               }
               tone={snapshot ? warmupTone(snapshot.status.warmup_status) : "info"}
             />

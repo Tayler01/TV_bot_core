@@ -43,6 +43,36 @@ interface ChartOperationalAlert {
   detail: string;
 }
 
+function compactAlertDetail(detail: string | null | undefined, fallback: string): string {
+  const trimmed = detail?.replace(/\s+/g, " ").trim();
+
+  if (!trimmed) {
+    return fallback;
+  }
+
+  if (/missing broker configuration/i.test(trimmed)) {
+    return "Broker credentials missing.";
+  }
+
+  if (/authentication failed/i.test(trimmed)) {
+    return "Databento authentication failed.";
+  }
+
+  if (/polling failed/i.test(trimmed) || /next_record/i.test(trimmed)) {
+    return "Databento stream disconnected.";
+  }
+
+  if (/missing market data/i.test(trimmed) || /api key/i.test(trimmed)) {
+    return "Databento key missing.";
+  }
+
+  if (trimmed.length <= 96) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, 93).trimEnd()}...`;
+}
+
 function chartStreamLabel(streamState: ChartViewModel["streamState"]) {
   switch (streamState) {
     case "open":
@@ -798,9 +828,10 @@ function chartOperationalAlerts(
       id: "reconnect-review",
       tone: "warning",
       headline: "Reconnect review",
-      detail:
-        runtimeStatus.reconnect_review.reason ??
-        `${runtimeStatus.reconnect_review.open_position_count} pos | ${runtimeStatus.reconnect_review.working_order_count} orders need review before flow resumes.`,
+      detail: compactAlertDetail(
+        runtimeStatus.reconnect_review.reason,
+        `${runtimeStatus.reconnect_review.open_position_count} pos | ${runtimeStatus.reconnect_review.working_order_count} orders pending review.`,
+      ),
     });
   }
 
@@ -809,9 +840,10 @@ function chartOperationalAlerts(
       id: "shutdown-review",
       tone: "warning",
       headline: "Shutdown review",
-      detail:
-        runtimeStatus.shutdown_review.reason ??
+      detail: compactAlertDetail(
+        runtimeStatus.shutdown_review.reason,
         "Resolve broker exposure before shutdown completes.",
+      ),
     });
   }
 
@@ -824,10 +856,10 @@ function chartOperationalAlerts(
       id: "feed-degraded",
       tone: marketData?.health === "failed" ? "danger" : "warning",
       headline: "Feed degraded",
-      detail:
-        runtimeStatus?.market_data_detail ??
-        marketData?.last_disconnect_reason ??
+      detail: compactAlertDetail(
+        runtimeStatus?.market_data_detail ?? marketData?.last_disconnect_reason,
         "Entries stay blocked until the feed recovers.",
+      ),
     });
   }
 
@@ -845,9 +877,10 @@ function chartOperationalAlerts(
       id: "chart-stream",
       tone: chartViewModel.streamState === "error" ? "danger" : "warning",
       headline: "Stream reconnecting",
-      detail:
-        chartViewModel.error ??
+      detail: compactAlertDetail(
+        chartViewModel.error,
         "Buffered history stays visible while live updates reconnect.",
+      ),
     });
   } else if (chartViewModel.streamState === "connecting") {
     alerts.push({
@@ -863,7 +896,7 @@ function chartOperationalAlerts(
       id: "dispatch-unavailable",
       tone: "warning",
       headline: "Dispatch off",
-      detail: runtimeStatus.command_dispatch_detail,
+      detail: compactAlertDetail(runtimeStatus.command_dispatch_detail, "Runtime dispatch unavailable."),
     });
   }
 
@@ -933,19 +966,21 @@ export function LiveChartPanel({
         <div className="chart-toolbar__group chart-toolbar__group--status">
           <Pill
             label={
-              config?.available ? `Feed ${config?.market_data_health ?? "unknown"}` : "Chart unavailable"
+              config?.available
+                ? `Feed ${config?.market_data_health ?? "unknown"}`
+                : "Chart unavailable"
             }
             tone={config?.available ? healthTone(config?.market_data_health ?? null) : "warning"}
           />
           <Pill
-            label={`Stream ${chartStreamLabel(chartViewModel.streamState)}`}
+            label={chartStreamLabel(chartViewModel.streamState)}
             tone={chartStreamTone(chartViewModel.streamState)}
           />
           {config?.sample_data_active ? (
-            <Pill label="Sample candles" tone="info" />
+            <Pill label="Sample" tone="info" />
           ) : null}
           <Pill
-            label={config?.trade_ready ? "Ready" : "Warming"}
+            label={config?.trade_ready ? "Ready" : "Warmup"}
             tone={config?.trade_ready ? "healthy" : "warning"}
           />
         </div>
@@ -1076,7 +1111,10 @@ export function LiveChartPanel({
                   <p>
                     {runtimeStatus?.command_dispatch_ready
                       ? "Dispatch ok"
-                      : runtimeStatus?.command_dispatch_detail ?? "Dispatch off"}
+                      : compactAlertDetail(
+                          runtimeStatus?.command_dispatch_detail,
+                          "Dispatch off",
+                        )}
                   </p>
                 </div>
                 <div className="live-chart__readout-card">

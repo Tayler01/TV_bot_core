@@ -824,7 +824,7 @@ where
             .cancel_order(TradovateCancelOrderRequest {
                 context: self.execution_context()?,
                 order_id,
-                is_automated: false,
+                is_automated: true,
             })
             .await?;
 

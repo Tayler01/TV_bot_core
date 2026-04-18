@@ -161,7 +161,13 @@ export function ControlCenterPanel({
               <p className="control-card__title">Posture</p>
               <div className="pill-row pill-row--compact">
                 <Pill
-                  label={`Warmup ${formatMode(snapshot.status.warmup_status)}`}
+                  label={
+                    snapshot.status.warmup_status === "ready"
+                      ? "Ready"
+                      : snapshot.status.warmup_status === "failed"
+                        ? "Failed"
+                        : "Warmup"
+                  }
                   tone={
                     snapshot.status.warmup_status === "ready"
                       ? "healthy"
@@ -185,7 +191,7 @@ export function ControlCenterPanel({
                   tone={snapshot.readiness.report.hard_override_required ? "warning" : "healthy"}
                 />
                 <Pill
-                  label={snapshot.status.mode === "paused" ? "Paused" : "Flow on"}
+                  label={snapshot.status.mode === "paused" ? "Paused" : "Running"}
                   tone={snapshot.status.mode === "paused" ? "warning" : modePillTone}
                 />
               </div>
@@ -704,7 +710,7 @@ export function StrategySetupPanel({
                   <span>Default strategy path</span>
                   <input
                     aria-label="Default strategy path"
-                    placeholder="strategies/examples/gc_momentum_fade_v1.md"
+                    placeholder="strategies/examples/micro_silver_elephant_tradovate_v1.md"
                     value={
                       settingsDraft?.defaultStrategyPath ??
                       (snapshot.settings.editable.default_strategy_path ?? "")

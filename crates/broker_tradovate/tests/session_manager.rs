@@ -866,3 +866,46 @@ async fn session_manager_submits_order_requests_with_selected_account_context() 
     assert_eq!(state.liquidations.len(), 1);
     assert_eq!(state.liquidations[0].contract_id, 555);
 }
+
+#[tokio::test]
+async fn session_manager_marks_cancel_requests_as_automated() {
+    let now = Utc::now();
+    let clock = MutableClock::new(now);
+    let execution_api = FakeExecutionApi::default();
+
+    let mut manager = TradovateSessionManager::new(
+        sample_config(BrokerEnvironment::Demo),
+        sample_credentials(),
+        TradovateRoutingPreferences {
+            paper_account_name: Some("paper-primary".to_owned()),
+            live_account_name: None,
+        },
+        FakeAuthApi::with_request_token(sample_token(now, 90)),
+        FakeAccountApi::with_accounts(vec![sample_account(101, "paper-primary")]),
+        FakeSyncApi::with_initial_sync(empty_sync_snapshot(now)),
+        clock,
+    )
+    .expect("manager should be created");
+
+    manager.authenticate().await.expect("auth should succeed");
+    manager
+        .select_account_for_mode(&RuntimeMode::Paper)
+        .await
+        .expect("paper account should select");
+
+    let result = manager
+        .cancel_order(&execution_api, 8102)
+        .await
+        .expect("cancel should succeed");
+
+    let state = execution_api
+        .state
+        .lock()
+        .expect("execution mutex should not poison");
+
+    assert_eq!(result.order_id, 8102);
+    assert_eq!(state.cancel_orders.len(), 1);
+    assert_eq!(state.cancel_orders[0].context.account_id, 101);
+    assert_eq!(state.cancel_orders[0].order_id, 8102);
+    assert!(state.cancel_orders[0].is_automated);
+}

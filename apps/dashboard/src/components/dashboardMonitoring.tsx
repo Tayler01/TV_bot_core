@@ -504,61 +504,63 @@ export function HistoryPanel({
       title="Trade state and PnL projection"
       detail="Projected orders, fills, trade summaries, and floating P&L from the local runtime host."
     >
-      <div className="metric-row">
-        <Metric
-          label="Open positions"
-          value={formatInteger(snapshot.history.projection.open_position_symbols.length)}
-        />
-        <Metric
-          label="Working orders"
-          value={formatInteger(snapshot.history.projection.working_order_ids.length)}
-        />
-        <Metric
-          label="Closed trades"
-          value={formatInteger(snapshot.history.projection.closed_trade_count)}
-        />
-        <Metric
-          label="Open trades"
-          value={formatInteger(snapshot.history.projection.open_trade_ids.length)}
-        />
-      </div>
-      <div className="subgrid subgrid--wide">
-        <MiniMetric
-          label="Gross PnL"
-          value={formatSignedCurrency(snapshot.history.projection.closed_trade_gross_pnl)}
-        />
-        <MiniMetric
-          label="Net PnL"
-          value={formatSignedCurrency(snapshot.history.projection.closed_trade_net_pnl)}
-        />
-        <MiniMetric
-          label="Fees"
-          value={formatCurrency(snapshot.history.projection.closed_trade_fees)}
-        />
-        <MiniMetric
-          label="Commissions"
-          value={formatCurrency(snapshot.history.projection.closed_trade_commissions)}
-        />
-        <MiniMetric
-          label="Slippage"
-          value={formatCurrency(snapshot.history.projection.closed_trade_slippage)}
-        />
-        <MiniMetric
-          label="Last activity"
-          value={formatDateTime(snapshot.history.projection.last_activity_at)}
-        />
-      </div>
-      <div className="metric-row">
-        <Metric label="Win rate" value={formatPercentage(tradePerformance?.winRate)} />
-        <Metric label="Avg net/trade" value={formatSignedCurrency(tradePerformance?.averageNet)} />
-        <Metric
-          label="Avg hold"
-          value={formatDurationMinutes(tradePerformance?.averageHoldMinutes)}
-        />
-        <Metric
-          label="Floating net"
-          value={formatSignedCurrency(tradePerformance?.floatingNet)}
-        />
+      <div className="history-summary-stack">
+        <div className="metric-row history-summary-grid history-summary-grid--primary">
+          <Metric
+            label="Open positions"
+            value={formatInteger(snapshot.history.projection.open_position_symbols.length)}
+          />
+          <Metric
+            label="Working orders"
+            value={formatInteger(snapshot.history.projection.working_order_ids.length)}
+          />
+          <Metric
+            label="Closed trades"
+            value={formatInteger(snapshot.history.projection.closed_trade_count)}
+          />
+          <Metric
+            label="Open trades"
+            value={formatInteger(snapshot.history.projection.open_trade_ids.length)}
+          />
+        </div>
+        <div className="subgrid subgrid--wide history-summary-grid history-summary-grid--pnl">
+          <MiniMetric
+            label="Gross PnL"
+            value={formatSignedCurrency(snapshot.history.projection.closed_trade_gross_pnl)}
+          />
+          <MiniMetric
+            label="Net PnL"
+            value={formatSignedCurrency(snapshot.history.projection.closed_trade_net_pnl)}
+          />
+          <MiniMetric
+            label="Fees"
+            value={formatCurrency(snapshot.history.projection.closed_trade_fees)}
+          />
+          <MiniMetric
+            label="Commissions"
+            value={formatCurrency(snapshot.history.projection.closed_trade_commissions)}
+          />
+          <MiniMetric
+            label="Slippage"
+            value={formatCurrency(snapshot.history.projection.closed_trade_slippage)}
+          />
+          <MiniMetric
+            label="Last activity"
+            value={formatDateTime(snapshot.history.projection.last_activity_at)}
+          />
+        </div>
+        <div className="metric-row history-summary-grid history-summary-grid--performance">
+          <Metric label="Win rate" value={formatPercentage(tradePerformance?.winRate)} />
+          <Metric label="Avg net/trade" value={formatSignedCurrency(tradePerformance?.averageNet)} />
+          <Metric
+            label="Avg hold"
+            value={formatDurationMinutes(tradePerformance?.averageHoldMinutes)}
+          />
+          <Metric
+            label="Floating net"
+            value={formatSignedCurrency(tradePerformance?.floatingNet)}
+          />
+        </div>
       </div>
       <dl className="definition-list">
         <Definition

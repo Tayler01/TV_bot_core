@@ -14,6 +14,8 @@ dataset = "GLBX.MDP3"
 
 [broker]
 environment = "demo"
+# One runtime process should target one Tradovate environment at a time:
+# demo for paper routing, live for live routing.
 http_base_url = "https://demo.tradovateapi.com/v1"
 websocket_url = "wss://demo.tradovateapi.com/v1/websocket"
 # Prefer supplying sensitive auth fields through environment variables:
@@ -24,6 +26,8 @@ websocket_url = "wss://demo.tradovateapi.com/v1/websocket"
 app_id = "tv-bot-core"
 app_version = "0.1.0"
 device_id = "local-dev"
+# Set the paper or live account name explicitly when you want deterministic
+# routing instead of automatic selection.
 # paper_account_name = "SIM123456"
 # live_account_name = "LIVE123456"
 

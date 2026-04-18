@@ -1789,6 +1789,7 @@ mod tests {
         assert_eq!(cancel_orders.len(), 1);
         assert_eq!(cancel_orders[0].context.account_id, 101);
         assert_eq!(cancel_orders[0].order_id, 8102);
+        assert!(cancel_orders[0].is_automated);
         drop(cancel_orders);
 
         assert!(execution_api

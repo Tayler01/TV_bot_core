@@ -7248,6 +7248,7 @@ selection:
         assert_eq!(cancel_orders.len(), 1);
         assert_eq!(cancel_orders[0].context.account_id, 101);
         assert_eq!(cancel_orders[0].order_id, 8102);
+        assert!(cancel_orders[0].is_automated);
         drop(cancel_orders);
 
         let place_orders = execution_api
@@ -10047,6 +10048,7 @@ selection:
             assert_eq!(cancel_orders.len(), 1);
             assert_eq!(cancel_orders[0].context.account_id, 101);
             assert_eq!(cancel_orders[0].order_id, 8102);
+            assert!(cancel_orders[0].is_automated);
             drop(cancel_orders);
 
             let liquidations = execution_api

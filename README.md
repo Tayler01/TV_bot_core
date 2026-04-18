@@ -5,7 +5,7 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 ## Current Status
 
 - Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, viewport-aware chart-history bootstrapping, a tighter chart toolbar/readout/utility strip, and a chart-dominant workspace shell where the header now behaves like a compact utility strip, the chart stage holds more width, the left rail now carries the lower-frequency mode and entry-gate tools, the right rail stays focused on posture/ticket/exit actions, strategy/setup workflows move into a flatter lower detail dock, the latest polish pass trims alert copy, toolbar labels, and utility-header wording further so the workspace scans faster above the fold, and the newest refinement trims duplicated chart context out of the left rail and flattens the lower dock again so the chart reads more cleanly as the primary surface.
+- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, viewport-aware chart-history bootstrapping, a tighter chart toolbar/readout/utility strip, and a chart-dominant workspace shell where the header now behaves like a compact utility strip, the chart stage holds more width, the left rail now carries the lower-frequency mode and entry-gate tools, the right rail stays focused on posture/ticket/exit actions, strategy/setup workflows move into a flatter lower detail dock, the latest polish pass trims alert copy, toolbar labels, utility-header wording, and pill spacing further so the workspace scans faster above the fold, and the newest refinement trims duplicated chart context out of the left rail and flattens the lower dock again so the chart reads more cleanly as the primary surface.
 - Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
 - Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
 
@@ -107,6 +107,13 @@ cargo test -j 1
 ## API Key And Credential Setup
 
 The runtime is designed to read secrets from environment variables instead of storing them in Git-tracked config files.
+Use `docs/ops/credential_setup.md` as the source of truth for credential management. The short version is:
+
+- prefer `DATABENTO_API_KEY` for Databento
+- keep non-secret defaults in `config/runtime.local.toml`
+- treat one runtime process as one Tradovate environment
+- restart the runtime after changing environment variables
+
 At minimum, you usually need:
 
 - `DATABENTO_API_KEY` or `TV_BOT__MARKET_DATA__API_KEY` for Databento
@@ -336,7 +343,7 @@ For a quick local smoke test on Windows:
 - open `http://127.0.0.1:4173`
 - use `http://127.0.0.1:8080/status` or the root API landing page at `http://127.0.0.1:8080/` instead of expecting a UI on the runtime port
 
-For a Databento-only observation smoke test on Windows, set `DATABENTO_API_KEY` or `TV_BOT__MARKET_DATA__API_KEY` in the current PowerShell session and run:
+For a Databento-only observation smoke test on Windows, set `DATABENTO_API_KEY` in the current PowerShell session and run:
 
 ```powershell
 .\scripts\dev\start_databento_observation.ps1 -StartDashboard
@@ -361,7 +368,12 @@ For the release-hardening path, the repository now includes:
 - `V1_ACCEPTANCE_CRITERIA.md`
 - `docs/architecture/phase_0_phase_1_foundations.md`
 - `docs/architecture/current_status.md`
+- `docs/architecture/integration_audit_2026-04-17.md`
 - `docs/architecture/dashboard_production_ui_plan.md`
 - `docs/architecture/dashboard_live_chart_plan.md`
 - `docs/ops/README.md`
+- `docs/ops/credential_setup.md`
+- `docs/ops/cli_standalone.md`
+- `docs/ops/debugging_guide.md`
 - `docs/ops/release_readiness_review.md`
+- `strategies/docs/authoring.md`
