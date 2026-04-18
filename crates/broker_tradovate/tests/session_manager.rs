@@ -453,6 +453,13 @@ fn sample_config(environment: BrokerEnvironment) -> TradovateSessionConfig {
 }
 
 #[tokio::test]
+async fn session_config_defaults_to_doc_aligned_renew_margin() {
+    let config = sample_config(BrokerEnvironment::Demo);
+
+    assert_eq!(config.renew_before_expiry, Duration::minutes(15));
+}
+
+#[tokio::test]
 async fn authenticate_select_account_and_connect_sync() {
     let now = Utc::now();
     let clock = MutableClock::new(now);
@@ -511,7 +518,7 @@ async fn authenticate_select_account_and_connect_sync() {
 async fn renews_access_token_before_expiry() {
     let now = Utc::now();
     let clock = MutableClock::new(now);
-    let auth_api = FakeAuthApi::with_request_token(sample_token(now, 2));
+    let auth_api = FakeAuthApi::with_request_token(sample_token(now, 10));
     auth_api.push_renewed_token(sample_token(now + Duration::minutes(1), 90));
 
     let mut manager = TradovateSessionManager::new(
@@ -539,6 +546,37 @@ async fn renews_access_token_before_expiry() {
             .token_expires_at
             .expect("token expiry should exist")
             > now + Duration::minutes(30)
+    );
+}
+
+#[tokio::test]
+async fn does_not_renew_access_token_outside_default_margin() {
+    let now = Utc::now();
+    let clock = MutableClock::new(now);
+    let auth_api = FakeAuthApi::with_request_token(sample_token(now, 16));
+
+    let mut manager = TradovateSessionManager::new(
+        sample_config(BrokerEnvironment::Demo),
+        sample_credentials(),
+        TradovateRoutingPreferences::default(),
+        auth_api.clone(),
+        FakeAccountApi::with_accounts(vec![sample_account(101, "paper-primary")]),
+        FakeSyncApi::with_initial_sync(empty_sync_snapshot(now)),
+        clock,
+    )
+    .expect("manager should be created");
+
+    manager.authenticate().await.expect("auth should succeed");
+    let renewed = manager
+        .renew_access_token_if_needed()
+        .await
+        .expect("renewal check should succeed");
+
+    assert!(!renewed);
+    assert_eq!(auth_api.renewal_count(), 0);
+    assert_eq!(
+        manager.snapshot().token_expires_at,
+        Some(now + Duration::minutes(16))
     );
 }
 
@@ -865,6 +903,65 @@ async fn session_manager_submits_order_requests_with_selected_account_context() 
     assert_eq!(state.place_osos.len(), 1);
     assert_eq!(state.liquidations.len(), 1);
     assert_eq!(state.liquidations[0].contract_id, 555);
+}
+
+#[tokio::test]
+async fn session_manager_renews_near_expiry_token_before_order_submission() {
+    let now = Utc::now();
+    let clock = MutableClock::new(now);
+    let execution_api = FakeExecutionApi::default();
+    let auth_api = FakeAuthApi::with_request_token(sample_token(now, 10));
+    auth_api.push_renewed_token(sample_token(now + Duration::minutes(1), 90));
+
+    let mut manager = TradovateSessionManager::new(
+        sample_config(BrokerEnvironment::Demo),
+        sample_credentials(),
+        TradovateRoutingPreferences {
+            paper_account_name: Some("paper-primary".to_owned()),
+            live_account_name: None,
+        },
+        auth_api.clone(),
+        FakeAccountApi::with_accounts(vec![sample_account(101, "paper-primary")]),
+        FakeSyncApi::with_initial_sync(empty_sync_snapshot(now)),
+        clock,
+    )
+    .expect("manager should be created");
+
+    manager.authenticate().await.expect("auth should succeed");
+    manager
+        .select_account_for_mode(&RuntimeMode::Paper)
+        .await
+        .expect("paper account should select");
+
+    manager
+        .place_order(
+            &execution_api,
+            TradovateOrderPlacement {
+                symbol: "GCM6".to_owned(),
+                side: TradeSide::Buy,
+                quantity: 1,
+                order_type: TradovateOrderType::Market,
+                limit_price: None,
+                stop_price: None,
+                time_in_force: Some(TradovateTimeInForce::Day),
+                expire_time: None,
+                text: Some("entry".to_owned()),
+                activation_time: None,
+                custom_tag_50: Some("bot".to_owned()),
+                is_automated: true,
+            },
+        )
+        .await
+        .expect("place order should succeed");
+
+    assert_eq!(auth_api.renewal_count(), 1);
+    assert!(
+        manager
+            .snapshot()
+            .token_expires_at
+            .expect("token expiry should exist")
+            > now + Duration::minutes(30)
+    );
 }
 
 #[tokio::test]

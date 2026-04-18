@@ -374,3 +374,96 @@ async fn replay_warmup_waits_for_replay_completion_before_trade_ready() {
         .expect("subscription request should be recorded");
     assert_eq!(request.replay_from, Some(replay_from));
 }
+
+#[tokio::test]
+async fn replay_reconnect_requires_fresh_catchup_before_trade_ready_resumes() {
+    let now = Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap();
+    let replay_from = now - Duration::minutes(15);
+    let mut service = MarketDataService::from_strategy(
+        FakeDatabentoTransport::with_updates(vec![
+            trade(1),
+            bar(1),
+            bar(2),
+            bar(3),
+            DatabentoTransportUpdate::ReplayCompleted {
+                occurred_at: now + Duration::minutes(3),
+                detail: "initial replay caught up".to_owned(),
+            },
+            trade(5),
+            DatabentoTransportUpdate::ReplayCompleted {
+                occurred_at: now + Duration::minutes(4),
+                detail: "reconnect replay caught up".to_owned(),
+            },
+        ]),
+        &sample_strategy(),
+        &sample_mapping(),
+        now,
+    )
+    .expect("service should build");
+
+    service
+        .start_warmup(DatabentoWarmupMode::ReplayFrom(replay_from), now)
+        .await
+        .expect("replay warmup should start");
+
+    for _ in 0..5 {
+        service
+            .poll_next_update()
+            .await
+            .expect("poll should succeed")
+            .expect("initial update should be present");
+    }
+
+    let pre_disconnect_ready = service.snapshot(now + Duration::minutes(3));
+    assert!(pre_disconnect_ready.replay_caught_up);
+    assert!(pre_disconnect_ready.trade_ready);
+
+    service
+        .session_mut()
+        .disconnect(
+            "network interruption",
+            now + Duration::minutes(3) + Duration::seconds(5),
+        )
+        .await
+        .expect("disconnect should succeed");
+
+    let reconnected = service
+        .reconnect(now + Duration::minutes(3) + Duration::seconds(10))
+        .await
+        .expect("reconnect should succeed");
+
+    assert_eq!(reconnected.session.market_data.reconnect_count, 1);
+    assert_eq!(
+        reconnected.session.market_data.connection_state,
+        MarketDataConnectionState::Subscribed
+    );
+    assert_eq!(
+        reconnected.session.market_data.warmup.status,
+        WarmupStatus::Ready
+    );
+    assert!(!reconnected.replay_caught_up);
+    assert!(!reconnected.trade_ready);
+
+    let requests = &service.session().transport().subscribed_requests;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].replay_from, Some(replay_from));
+    assert_eq!(requests[1].replay_from, Some(replay_from));
+
+    service
+        .poll_next_update()
+        .await
+        .expect("poll should succeed")
+        .expect("reconnect update should be present");
+    let still_catching_up = service.snapshot(now + Duration::minutes(3) + Duration::seconds(30));
+    assert!(!still_catching_up.replay_caught_up);
+    assert!(!still_catching_up.trade_ready);
+
+    service
+        .poll_next_update()
+        .await
+        .expect("poll should succeed")
+        .expect("replay completed should be present");
+    let resumed = service.snapshot(now + Duration::minutes(4));
+    assert!(resumed.replay_caught_up);
+    assert!(resumed.trade_ready);
+}

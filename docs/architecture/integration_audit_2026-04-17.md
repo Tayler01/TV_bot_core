@@ -35,9 +35,9 @@ This audit compares the current Databento and Tradovate integration code against
 ### Databento
 
 - The runtime supports Databento API-key auth and now documents `DATABENTO_API_KEY` as the preferred operator-facing variable.
-- The live transport is dataset-scoped, which matches Databento’s one-session-per-dataset model.
+- The live transport is dataset-scoped, which matches Databento's one-session-per-dataset model.
 - The live transport supports replay-style startup via `start(...)` on subscriptions before session start.
-- The transport maps the configured slow-reader policy to the Databento client’s `warn` behavior, which matches the documented supported modes.
+- The transport maps the configured slow-reader policy to the Databento client's `warn` behavior, which matches the documented supported modes.
 - The runtime already treats Databento system records as first-class state transitions, including replay completion and degraded-feed signaling.
 
 ### Tradovate
@@ -46,7 +46,7 @@ This audit compares the current Databento and Tradovate integration code against
 - Access-token renewal uses `GET /auth/renewaccesstoken` instead of creating a new session every time.
 - The WebSocket auth message uses the documented `authorize\n<requestId>\n\n<token>` format.
 - `user/syncrequest` is sent over the user-data WebSocket, not over HTTP.
-- Heartbeat handling responds to the server heartbeat frame with `[]`, matching Tradovate’s WebSocket guidance.
+- Heartbeat handling responds to the server heartbeat frame with `[]`, matching Tradovate's WebSocket guidance.
 - Environment routing is already guarded so demo can only back paper routing and live can only back live routing.
 - Automated entry paths already set `isAutomated: true` on `placeorder` and `placeoso`.
 
@@ -56,7 +56,7 @@ This audit compares the current Databento and Tradovate integration code against
 
 #### 1. Automated cancel requests were not marked automated
 
-Tradovate’s best-practices and order docs are explicit that automated order activity must carry `isAutomated: true`. The entry paths already did this, but the session-manager convenience path for order cancellation was still emitting `isAutomated: false`.
+Tradovate's best-practices and order docs are explicit that automated order activity must carry `isAutomated: true`. The entry paths already did this, but the session-manager convenience path for order cancellation was still emitting `isAutomated: false`.
 
 Status:
 
@@ -102,30 +102,27 @@ Status:
 - fixed with `strategies/docs/authoring.md`
 - `strategies/docs/README.md` now points to the canonical sample and authoring guide
 
+#### 6. Tradovate renewal margin is now aligned with published guidance
+
+Tradovate's partner docs advise renewing about 15 minutes before a 90-minute token expires, with the evaluation-partner overview normalizing that into an 85-minute refresh rhythm. The session manager was previously using a 5-minute default margin.
+
+Status:
+
+- fixed in `crates/broker_tradovate/src/lib.rs`
+- default renewal margin is now 15 minutes
+- covered with focused session-manager tests for default timing, no-renewal outside the window, explicit near-expiry renewal, and renewal on the order-submission path
+
+#### 7. Databento reconnect and replay recovery are now regression-tested
+
+Databento's live replay guidance says reconnect recovery should resubscribe, replay from the stored timestamp boundary, and only consider the stream caught up once replay completion is observed. The market-data service already carried most of that shape, but it did not explicitly clear `replay_caught_up` on replay-backed reconnects, which could let `trade_ready` remain true across a replay catch-up gap.
+
+Status:
+
+- fixed in `crates/market_data/src/service.rs`
+- covered with a `MarketDataService` regression proving replay-backed reconnect keeps `trade_ready` false until a fresh `ReplayCompleted` arrives
+- covered with transport-level request assertions showing replay subscriptions continue to use the stored `replay_from` timestamp
+
 ### Open Findings And Recommended Follow-Ups
-
-#### 6. Tradovate renewal margin is tighter than the docs recommend
-
-Tradovate’s partner docs advise renewing roughly 15 minutes before expiry, and the auth overview examples normalize that into an 85-minute refresh rhythm for 90-minute tokens. Our session manager currently renews 5 minutes before expiry.
-
-Current status:
-
-- functional, but tighter than the published guidance
-
-Recommended follow-up:
-
-- move the default renewal margin from 5 minutes to 15 minutes
-- keep the timing configurable for tests and special environments
-- add a focused session-manager test for renewal timing against a near-expiry token
-
-#### 7. Databento reconnect recovery should be explicitly regression-tested against replay guidance
-
-Databento’s reconnect guidance is clear: clients should resubscribe and recover via replay using stored `ts_event` plus duplicate filtering strategy where needed. The runtime already uses replay-aware warmup and reconnect-capable session management, but the repo should have a dedicated operator-grade regression around disconnect -> replay catch-up -> resumed readiness.
-
-Recommended follow-up:
-
-- add an integration-style market-data recovery test that simulates disconnect and replay resume
-- document the exact expected operator/runtime behavior when replay catch-up is in progress
 
 #### 8. Legacy GC example cleanup is still incomplete
 
@@ -140,10 +137,8 @@ Recommended follow-up:
 
 1. Land the documentation set from this audit and standardize operator setup around it.
 2. Keep the automated-cancel fix.
-3. Widen the default Tradovate renewal margin to align with published guidance.
-4. Add a dedicated Databento reconnect/replay recovery regression.
-5. Finish the legacy GC example cleanup and standardize on the micro-silver strategy as the canonical sample.
-6. Re-run the paper/demo runbook once Tradovate credentials are available.
+3. Finish the legacy GC example cleanup and standardize on the micro-silver strategy as the canonical sample.
+4. Re-run the paper/demo runbook once Tradovate credentials are available.
 
 ## Practical Operator Guidance
 

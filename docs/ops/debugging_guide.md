@@ -140,11 +140,12 @@ See:
 - confirm the configured dataset is correct
 - confirm the strategy warmup window is reasonable
 - confirm live replay is catching up after a restart or disconnect
+- if replay-backed warmup reconnects, expect `trade_ready` to stay false until a fresh `ReplayCompleted` is observed
 
 ### Tradovate
 
 - confirm token acquisition succeeds
-- confirm token renewal is not failing
+- confirm token renewal is not failing and is happening before the 15-minute pre-expiry window is missed
 - confirm user-sync WebSocket is connected
 - confirm the selected account matches the expected demo or live routing target
 

@@ -114,6 +114,9 @@ where
         &mut self,
         now: DateTime<Utc>,
     ) -> Result<MarketDataServiceSnapshot, MarketDataError> {
+        if self.warmup_requested {
+            self.replay_caught_up = matches!(self.warmup_mode, DatabentoWarmupMode::LiveOnly);
+        }
         self.session.reconnect(now).await?;
         self.updated_at = now;
         Ok(self.snapshot(now))

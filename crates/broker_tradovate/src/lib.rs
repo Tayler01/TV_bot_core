@@ -24,7 +24,7 @@ pub use execution::{
 pub use live::{TradovateLiveClient, TradovateLiveClientConfig};
 
 const PROVIDER_NAME: &str = "tradovate";
-const DEFAULT_RENEW_BEFORE_EXPIRY: i64 = 5;
+const DEFAULT_RENEW_BEFORE_EXPIRY: i64 = 15;
 const DEFAULT_HEARTBEAT_STALE_AFTER_SECONDS: i64 = 30;
 const DEFAULT_SYNC_STALE_AFTER_SECONDS: i64 = 15;
 
