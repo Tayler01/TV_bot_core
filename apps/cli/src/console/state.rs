@@ -1520,6 +1520,15 @@ mod tests {
             latest_trade_latency: None,
             recorded_trade_latency_count: 0,
             current_account_name: None,
+            authenticated_operator: None,
+            authorization: tv_bot_control_api::RuntimeAuthorizationSnapshot {
+                can_view: true,
+                can_manage_runtime: true,
+                can_manage_strategies: true,
+                can_update_settings: true,
+                can_trade: true,
+                detail: "local cli test fixture".to_owned(),
+            },
             instrument_mapping: None,
             instrument_resolution_error: None,
             reconnect_review: tv_bot_control_api::RuntimeReconnectReviewStatus {

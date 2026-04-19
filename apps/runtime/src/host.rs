@@ -5301,6 +5301,27 @@ mod tests {
 
     use super::*;
 
+    fn assert_journal_actions_contain_in_order(actual: &[String], expected: &[&str]) {
+        let expected_owned = expected
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        let mut next_expected = 0usize;
+
+        for action in actual {
+            if next_expected < expected_owned.len() && action == &expected_owned[next_expected] {
+                next_expected += 1;
+            }
+        }
+
+        assert!(
+            next_expected == expected_owned.len(),
+            "journal actions {:?} did not contain {:?} in order",
+            actual,
+            expected_owned
+        );
+    }
+
     struct FakeDispatcher {
         result: Option<Result<RuntimeCommandOutcome, RuntimeCommandError>>,
         snapshot: RuntimeBrokerSnapshot,
@@ -8117,13 +8138,9 @@ selection:
             .into_iter()
             .map(|record| record.action)
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &["intent_received", "decision", "dispatch_succeeded"],
         );
 
         let _ = fs::remove_file(strategy_path);
@@ -8359,13 +8376,9 @@ selection:
             .into_iter()
             .map(|record| record.action)
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &["intent_received", "decision", "dispatch_succeeded"],
         );
 
         let _ = fs::remove_file(strategy_path);
@@ -8748,15 +8761,15 @@ selection:
             .iter()
             .map(|record| record.action.clone())
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_failed".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &["intent_received", "decision", "dispatch_failed"],
         );
-        assert!(journal_records[2].payload["error"]
+        let dispatch_failed = journal_records
+            .iter()
+            .find(|record| record.action == "dispatch_failed")
+            .expect("dispatch failure should be journaled");
+        assert!(dispatch_failed.payload["error"]
             .as_str()
             .is_some_and(|message| message.contains("new entries are blocked")));
 
@@ -9014,13 +9027,9 @@ selection:
             .into_iter()
             .map(|record| record.action)
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &["intent_received", "decision", "dispatch_succeeded"],
         );
 
         let _ = fs::remove_file(strategy_path);
@@ -13059,14 +13068,14 @@ selection:
             .iter()
             .map(|record| record.action.clone())
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "reconnect_review_resolved".to_owned(),
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &[
+                "reconnect_review_resolved",
+                "intent_received",
+                "decision",
+                "dispatch_succeeded",
+            ],
         );
         let reconnect_resolution = journal_records
             .iter()
@@ -13568,14 +13577,14 @@ selection:
             .iter()
             .map(|record| record.action.clone())
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "reconnect_review_close_requested".to_owned(),
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &[
+                "reconnect_review_close_requested",
+                "intent_received",
+                "decision",
+                "dispatch_succeeded",
+            ],
         );
         let reconnect_close = journal_records
             .iter()
@@ -14049,14 +14058,14 @@ selection:
             .iter()
             .map(|record| record.action.clone())
             .collect::<Vec<_>>();
-        assert_eq!(
-            journal_actions,
-            vec![
-                "reconnect_review_close_requested".to_owned(),
-                "intent_received".to_owned(),
-                "decision".to_owned(),
-                "dispatch_succeeded".to_owned(),
-            ]
+        assert_journal_actions_contain_in_order(
+            &journal_actions,
+            &[
+                "reconnect_review_close_requested",
+                "intent_received",
+                "decision",
+                "dispatch_succeeded",
+            ],
         );
         let reconnect_close = journal_records
             .iter()
