@@ -9,6 +9,8 @@ This runbook assumes:
 - Caddy is serving the dashboard
 - the runtime host remains bound to localhost on the server
 
+For the full Aurora-side host setup and test pass, use [aurora_remote_setup_and_test.md](/C:/repos/TV_bot_core/docs/ops/aurora_remote_setup_and_test.md).
+
 ## Remote Access Model
 
 The V1 operator path is:
@@ -30,6 +32,23 @@ Before you operate remotely:
 - confirm the dashboard hostname resolves to the intended server
 - confirm the dashboard loads over the intended private path
 - confirm the runtime mode shown in the dashboard is the expected mode before you do anything else
+- confirm the dashboard shows your authenticated operator identity and expected access level
+
+## Current Access Levels
+
+The dashboard and runtime currently understand:
+
+- `viewer`
+- `operator`
+- `trade_operator`
+
+Expected behavior:
+
+- `viewer` is read-only
+- `operator` can manage setup and runtime posture
+- `trade_operator` can also use trade-capable actions such as arm, manual entry, cancel, flatten, and close
+
+If the UI posture does not match the account you intended to use, stop and fix the Aurora-side role mapping before operating remotely.
 
 ## Recommended Operator Workflow
 
@@ -159,6 +178,8 @@ Verify the dashboard or CLI history and journal views capture:
 - fills, order changes, position changes, and PnL changes
 
 Remote production use should not be treated as complete until authenticated operator identity is also preserved in those records.
+
+The current implementation now includes authenticated operator identity and role payloads for privileged actions, so this should be explicitly checked during the Aurora-side paper validation pass.
 
 ## Release-Gate Checks For Remote Operation
 

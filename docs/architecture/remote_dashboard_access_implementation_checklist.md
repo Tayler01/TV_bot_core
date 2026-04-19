@@ -11,6 +11,14 @@ This document is the working implementation map for:
 - documentation work
 - validation and release gating
 
+Current implementation status:
+
+- phases 1 and 2 docs and deployment assets are already in the repo
+- phase 3 trusted identity contract is implemented
+- phase 5 backend authorization is implemented
+- phase 6 dashboard identity and authorization UX is implemented
+- the remaining major work is Aurora-side ingress wiring and end-to-end remote paper validation
+
 ## Execution Rules
 
 These rules stay fixed while implementing this checklist:

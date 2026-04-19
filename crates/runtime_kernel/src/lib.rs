@@ -12,9 +12,9 @@ use tv_bot_broker_tradovate::{
 };
 use tv_bot_core_types::{
     ActionSource, ActiveRuntimeMode, ArmReadinessReport, ArmState, AuthenticatedOperator,
-    BrokerAccountRouting, BrokerHealth, BrokerStatusSnapshot, BrokerSyncState,
-    EventJournalRecord, EventSeverity, ReadinessCheck, ReadinessCheckStatus, RiskDecisionStatus,
-    RuntimeMode, WarmupStatus,
+    BrokerAccountRouting, BrokerHealth, BrokerStatusSnapshot, BrokerSyncState, EventJournalRecord,
+    EventSeverity, ReadinessCheck, ReadinessCheckStatus, RiskDecisionStatus, RuntimeMode,
+    WarmupStatus,
 };
 use tv_bot_execution_engine::{
     plan_and_execute_tradovate, ExecutionDispatchError, ExecutionDispatchReport, ExecutionRequest,
@@ -705,14 +705,13 @@ mod tests {
         TradovateSyncSnapshot, TradovateTimeInForce, TradovateUserSyncRequest,
     };
     use tv_bot_core_types::{
-        ActionSource, AuthenticatedOperator, BreakEvenRule, BrokerEnvironment,
-        BrokerOrderUpdate, BrokerPreference, CompiledStrategy, ContractMode, DailyLossLimit,
-        DashboardDisplay, DataFeedRequirement, DataRequirements, EntryOrderType, EntryRules,
-        ExecutionIntent, ExecutionSpec, ExitRules, FailsafeRules, FeedType, MarketConfig,
-        MarketSelection, PartialTakeProfitRule, PositionSizing, PositionSizingMode,
-        ReversalMode, RiskLimits, ScalingConfig, SessionMode, SessionRules,
-        SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata, Timeframe,
-        TradeManagement, TradeSide, TrailingRule,
+        ActionSource, AuthenticatedOperator, BreakEvenRule, BrokerEnvironment, BrokerOrderUpdate,
+        BrokerPreference, CompiledStrategy, ContractMode, DailyLossLimit, DashboardDisplay,
+        DataFeedRequirement, DataRequirements, EntryOrderType, EntryRules, ExecutionIntent,
+        ExecutionSpec, ExitRules, FailsafeRules, FeedType, MarketConfig, MarketSelection,
+        PartialTakeProfitRule, PositionSizing, PositionSizingMode, ReversalMode, RiskLimits,
+        ScalingConfig, SessionMode, SessionRules, SignalCombinationMode, SignalConfirmation,
+        StateBehavior, StrategyMetadata, Timeframe, TradeManagement, TradeSide, TrailingRule,
     };
     use tv_bot_execution_engine::{ExecutionInstrumentContext, ExecutionStateContext};
     use tv_bot_journal::{EventJournal, InMemoryJournal};
@@ -1624,6 +1623,7 @@ mod tests {
             session_id: Some("session-123".to_owned()),
             device_id: Some("desktop-01".to_owned()),
             provider: Some("tailscale".to_owned()),
+            roles: vec![tv_bot_core_types::OperatorRole::TradeOperator],
         });
 
         RuntimeControlLoop::handle_command(

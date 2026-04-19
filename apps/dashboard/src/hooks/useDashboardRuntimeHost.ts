@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import {
+  ControlApiError,
   controlApiEventsUrl,
   loadDashboardSnapshot,
   parseControlApiEvent,
@@ -96,8 +97,10 @@ export function useDashboardRuntimeHost(): DashboardRuntimeHostController {
       }
 
       const message =
-        error instanceof Error
-          ? error.message
+        error instanceof ControlApiError && error.statusCode === 403
+          ? `Dashboard access denied. ${error.message}`
+          : error instanceof Error
+            ? error.message
           : "Dashboard failed to read the local control API.";
 
       setViewModel((current) => ({
@@ -154,12 +157,14 @@ export function useDashboardRuntimeHost(): DashboardRuntimeHostController {
         return result;
       } catch (error) {
         const message =
-          error instanceof Error
-            ? error.message
+          error instanceof ControlApiError && error.statusCode === 403
+            ? `Access denied. ${error.message}`
+            : error instanceof Error
+              ? error.message
             : "Runtime command failed before the dashboard received a valid response.";
 
         setCommandFeedback({
-          tone: "danger",
+          tone: error instanceof ControlApiError && error.statusCode === 403 ? "warning" : "danger",
           message,
         });
         return null;

@@ -8,7 +8,8 @@ use rust_decimal::Decimal;
 use thiserror::Error;
 use tv_bot_control_api::{
     ControlApiCommand, HttpCommandRequest, HttpStatusCode, LoadedStrategySummary,
-    ManualCommandSource, RuntimeJournalStatus, RuntimeLifecycleCommand, RuntimeReadinessSnapshot,
+    ManualCommandSource, RuntimeAuthenticatedOperatorSnapshot, RuntimeAuthorizationSnapshot,
+    RuntimeJournalStatus, RuntimeLifecycleCommand, RuntimeReadinessSnapshot,
     RuntimeReconnectReviewStatus, RuntimeShutdownReviewStatus, RuntimeStatusSnapshot,
     RuntimeStorageStatus,
 };
@@ -73,6 +74,8 @@ pub struct RuntimeStatusContext {
     pub recorded_trade_latency_count: usize,
     pub open_positions: Vec<BrokerPositionSnapshot>,
     pub working_orders: Vec<BrokerOrderUpdate>,
+    pub authenticated_operator: Option<RuntimeAuthenticatedOperatorSnapshot>,
+    pub authorization: RuntimeAuthorizationSnapshot,
     pub reconnect_review: RuntimeReconnectReviewStatus,
     pub shutdown_review: RuntimeShutdownReviewStatus,
 }
@@ -160,6 +163,8 @@ impl RuntimeOperatorState {
                 .as_ref()
                 .and_then(|snapshot| snapshot.selected_account.as_ref())
                 .map(|selection| selection.account_name.clone()),
+            authenticated_operator: context.authenticated_operator.clone(),
+            authorization: context.authorization.clone(),
             instrument_mapping: self
                 .loaded_strategy
                 .as_ref()
@@ -1118,6 +1123,15 @@ mod tests {
             recorded_trade_latency_count: 1,
             open_positions: Vec::new(),
             working_orders: Vec::new(),
+            authenticated_operator: None,
+            authorization: RuntimeAuthorizationSnapshot {
+                can_view: true,
+                can_manage_runtime: true,
+                can_manage_strategies: true,
+                can_update_settings: true,
+                can_trade: true,
+                detail: "local runtime access allows full control".to_owned(),
+            },
             reconnect_review: RuntimeReconnectReviewStatus {
                 required: false,
                 reason: None,

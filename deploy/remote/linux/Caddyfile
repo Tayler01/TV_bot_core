@@ -3,6 +3,10 @@
 }
 
 # Replace this host with your real tailnet DNS name or approved private hostname.
+# This file is transport-only. If you enable remote_access trusted headers in the
+# runtime, put a trusted identity-capable ingress in front of this local origin
+# and forward the configured authenticated-user/session/device/provider/roles
+# headers from there.
 bot.tailnet.example {
     encode zstd gzip
 

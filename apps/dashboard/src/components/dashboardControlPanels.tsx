@@ -140,6 +140,7 @@ export function ControlCenterPanel({
       : snapshot.status.mode === "paper"
         ? "warning"
         : "info";
+  const canManageRuntime = snapshot.status.authorization.can_manage_runtime;
 
   return (
     <Panel
@@ -199,7 +200,11 @@ export function ControlCenterPanel({
                 <button
                   className="command-button"
                   type="button"
-                  disabled={pendingAction !== null || !snapshot.status.strategy_loaded}
+                  disabled={
+                    pendingAction !== null ||
+                    !canManageRuntime ||
+                    !snapshot.status.strategy_loaded
+                  }
                   onClick={onStartWarmup}
                 >
                   Warmup
@@ -211,7 +216,12 @@ export function ControlCenterPanel({
                       : "command-button command-button--danger"
                   }
                   type="button"
-                  disabled={pendingAction !== null}
+                  disabled={
+                    pendingAction !== null ||
+                    (snapshot.status.arm_state === "armed"
+                      ? !canManageRuntime
+                      : !snapshot.status.authorization.can_trade)
+                  }
                   onClick={onArmToggle}
                 >
                   {armButtonLabel}
@@ -219,7 +229,7 @@ export function ControlCenterPanel({
                 <button
                   className="command-button"
                   type="button"
-                  disabled={pendingAction !== null}
+                  disabled={pendingAction !== null || !canManageRuntime}
                   onClick={onPauseResume}
                 >
                   {pauseButtonLabel}
@@ -470,6 +480,9 @@ export function StrategySetupPanel({
   onSaveRuntimeSettings,
   onResetSettings,
 }: StrategySetupPanelProps) {
+  const canManageStrategies = snapshot.status.authorization.can_manage_strategies;
+  const canUpdateSettings = snapshot.status.authorization.can_update_settings;
+
   return (
     <Panel
       className="panel--full panel--setup-dock panel--dock-terminal"
@@ -493,6 +506,7 @@ export function StrategySetupPanel({
                     aria-label="Available strategy"
                     value={strategyViewModel.selectedPath}
                     disabled={
+                      !canManageStrategies ||
                       strategyViewModel.libraryState === "loading" ||
                       !strategyViewModel.library?.strategies.length
                     }
@@ -518,7 +532,7 @@ export function StrategySetupPanel({
                     aria-label="Upload strategy file"
                     type="file"
                     accept=".md,text/markdown"
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canManageStrategies}
                     onChange={(event) => {
                       onStrategyUploadFileChange(event.target.files?.[0] ?? null);
                     }}
@@ -536,7 +550,7 @@ export function StrategySetupPanel({
                   <button
                     className="command-button"
                     type="button"
-                    disabled={strategyViewModel.libraryState === "loading"}
+                    disabled={!canManageStrategies || strategyViewModel.libraryState === "loading"}
                     onClick={onRefreshStrategyLibrary}
                   >
                     Refresh library
@@ -545,6 +559,7 @@ export function StrategySetupPanel({
                     className="command-button"
                     type="button"
                     disabled={
+                      !canManageStrategies ||
                       !strategyViewModel.selectedPath ||
                       strategyViewModel.validationState === "loading"
                     }
@@ -695,7 +710,7 @@ export function StrategySetupPanel({
                   <select
                     aria-label="Runtime startup mode"
                     value={settingsDraft?.startupMode ?? snapshot.settings.editable.startup_mode}
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canUpdateSettings}
                     onChange={(event) => {
                       onSettingsStartupModeChange(event.target.value as RuntimeMode);
                     }}
@@ -715,7 +730,7 @@ export function StrategySetupPanel({
                       settingsDraft?.defaultStrategyPath ??
                       (snapshot.settings.editable.default_strategy_path ?? "")
                     }
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canUpdateSettings}
                     onChange={(event) => {
                       onSettingsDefaultStrategyPathChange(event.target.value);
                     }}
@@ -731,7 +746,7 @@ export function StrategySetupPanel({
                         ? "allow"
                         : "block"
                     }
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canUpdateSettings}
                     onChange={(event) => {
                       onSettingsAllowSqliteFallbackChange(event.target.value === "allow");
                     }}
@@ -749,7 +764,7 @@ export function StrategySetupPanel({
                       settingsDraft?.paperAccountName ??
                       (snapshot.settings.editable.paper_account_name ?? "")
                     }
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canUpdateSettings}
                     onChange={(event) => {
                       onSettingsPaperAccountNameChange(event.target.value);
                     }}
@@ -764,7 +779,7 @@ export function StrategySetupPanel({
                       settingsDraft?.liveAccountName ??
                       (snapshot.settings.editable.live_account_name ?? "")
                     }
-                    disabled={pendingAction !== null}
+                    disabled={pendingAction !== null || !canUpdateSettings}
                     onChange={(event) => {
                       onSettingsLiveAccountNameChange(event.target.value);
                     }}
@@ -783,7 +798,7 @@ export function StrategySetupPanel({
                 <button
                   className="command-button"
                   type="button"
-                  disabled={!settingsDirty || pendingAction !== null}
+                  disabled={!canUpdateSettings || !settingsDirty || pendingAction !== null}
                   onClick={onResetSettings}
                 >
                   Reset form

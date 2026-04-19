@@ -20,6 +20,7 @@ const DEFAULT_AUTHENTICATED_DISPLAY_NAME_HEADER: &str = "x-authenticated-name";
 const DEFAULT_AUTHENTICATED_SESSION_HEADER: &str = "x-authenticated-session";
 const DEFAULT_AUTHENTICATED_DEVICE_HEADER: &str = "x-authenticated-device";
 const DEFAULT_AUTHENTICATED_PROVIDER_HEADER: &str = "x-authenticated-provider";
+const DEFAULT_AUTHENTICATED_ROLES_HEADER: &str = "x-authenticated-roles";
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -89,6 +90,7 @@ pub struct RemoteAccessConfig {
     pub authenticated_session_header: String,
     pub authenticated_device_header: String,
     pub authenticated_provider_header: String,
+    pub authenticated_roles_header: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,6 +297,7 @@ struct PartialRemoteAccessConfig {
     authenticated_session_header: Option<String>,
     authenticated_device_header: Option<String>,
     authenticated_provider_header: Option<String>,
+    authenticated_roles_header: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -352,7 +355,8 @@ impl PartialAppConfig {
         let startup_mode = runtime
             .startup_mode
             .ok_or(ConfigError::MissingRequiredField("runtime.startup_mode"))?;
-        let trust_local_identity_headers = remote_access.trust_local_identity_headers.unwrap_or(false);
+        let trust_local_identity_headers =
+            remote_access.trust_local_identity_headers.unwrap_or(false);
         let require_authenticated_identity_for_privileged_commands = remote_access
             .require_authenticated_identity_for_privileged_commands
             .unwrap_or(false);
@@ -434,6 +438,11 @@ impl PartialAppConfig {
                     remote_access.authenticated_provider_header,
                     DEFAULT_AUTHENTICATED_PROVIDER_HEADER,
                     "remote_access.authenticated_provider_header",
+                )?,
+                authenticated_roles_header: normalized_header_name(
+                    remote_access.authenticated_roles_header,
+                    DEFAULT_AUTHENTICATED_ROLES_HEADER,
+                    "remote_access.authenticated_roles_header",
                 )?,
             },
             logging: LoggingConfig {
@@ -548,12 +557,14 @@ fn apply_env_overrides(
         partial.control_api_mut().websocket_bind = Some(value);
     });
     if let Some(value) = env.get("TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS") {
-        partial.remote_access_mut().trust_local_identity_headers =
-            Some(parse_bool("TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS", &value)?);
+        partial.remote_access_mut().trust_local_identity_headers = Some(parse_bool(
+            "TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS",
+            &value,
+        )?);
     }
-    if let Some(value) = env.get(
-        "TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS",
-    ) {
+    if let Some(value) =
+        env.get("TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS")
+    {
         partial
             .remote_access_mut()
             .require_authenticated_identity_for_privileged_commands = Some(parse_bool(
@@ -572,7 +583,9 @@ fn apply_env_overrides(
         env,
         "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_DISPLAY_NAME_HEADER",
         |value| {
-            partial.remote_access_mut().authenticated_display_name_header = Some(value);
+            partial
+                .remote_access_mut()
+                .authenticated_display_name_header = Some(value);
         },
     );
     apply_string_override(
@@ -594,6 +607,13 @@ fn apply_env_overrides(
         "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_PROVIDER_HEADER",
         |value| {
             partial.remote_access_mut().authenticated_provider_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_ROLES_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_roles_header = Some(value);
         },
     );
     apply_string_override(env, "TV_BOT__LOGGING__LEVEL", |value| {
@@ -824,12 +844,18 @@ mod tests {
         assert_eq!(config.control_api.http_bind, DEFAULT_HTTP_BIND);
         assert_eq!(config.control_api.websocket_bind, DEFAULT_WEBSOCKET_BIND);
         assert!(!config.remote_access.trust_local_identity_headers);
-        assert!(!config
-            .remote_access
-            .require_authenticated_identity_for_privileged_commands);
+        assert!(
+            !config
+                .remote_access
+                .require_authenticated_identity_for_privileged_commands
+        );
         assert_eq!(
             config.remote_access.authenticated_user_header,
             DEFAULT_AUTHENTICATED_USER_HEADER
+        );
+        assert_eq!(
+            config.remote_access.authenticated_roles_header,
+            DEFAULT_AUTHENTICATED_ROLES_HEADER
         );
         assert_eq!(config.logging.level, DEFAULT_LOG_LEVEL);
         assert!(!config.persistence.sqlite_fallback.enabled);
@@ -858,7 +884,10 @@ mod tests {
                 ("TV_BOT__CONTROL_API__HTTP_BIND", "127.0.0.1:9000"),
                 ("TV_BOT__BROKER__ENVIRONMENT", "live"),
                 ("TV_BOT__PERSISTENCE__SQLITE_FALLBACK_ENABLED", "true"),
-                ("TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS", "true"),
+                (
+                    "TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS",
+                    "true",
+                ),
                 (
                     "TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS",
                     "true",
@@ -866,6 +895,10 @@ mod tests {
                 (
                     "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_USER_HEADER",
                     "X-Remote-User",
+                ),
+                (
+                    "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_ROLES_HEADER",
+                    "X-Remote-Roles",
                 ),
             ]),
         )
@@ -876,10 +909,19 @@ mod tests {
         assert!(config.persistence.sqlite_fallback.enabled);
         assert_eq!(config.broker.environment, Some(BrokerEnvironment::Live));
         assert!(config.remote_access.trust_local_identity_headers);
-        assert!(config
-            .remote_access
-            .require_authenticated_identity_for_privileged_commands);
-        assert_eq!(config.remote_access.authenticated_user_header, "x-remote-user");
+        assert!(
+            config
+                .remote_access
+                .require_authenticated_identity_for_privileged_commands
+        );
+        assert_eq!(
+            config.remote_access.authenticated_user_header,
+            "x-remote-user"
+        );
+        assert_eq!(
+            config.remote_access.authenticated_roles_header,
+            "x-remote-roles"
+        );
     }
 
     #[test]

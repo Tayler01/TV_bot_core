@@ -39,6 +39,7 @@ import { Pill } from "./components/dashboardPrimitives";
 import type { LatencyStageViewModel } from "./dashboardModels";
 import { useDashboardController } from "./hooks/useDashboardController";
 import { useDashboardChart } from "./hooks/useDashboardChart";
+import type { DashboardSnapshot } from "./lib/api";
 
 type WorkspaceDockSection =
   | "readiness"
@@ -61,6 +62,42 @@ const workspaceDockSections: ReadonlyArray<{
   { section: "journal", label: "Journal" },
   { section: "events", label: "Events" },
 ];
+
+function operatorIdentityLabel(snapshot: DashboardSnapshot) {
+  const authenticatedOperator = snapshot.status.authenticated_operator;
+  if (!authenticatedOperator) {
+    return snapshot.status.authorization.can_trade
+      ? "Local operator access"
+      : snapshot.status.authorization.detail;
+  }
+
+  return authenticatedOperator.display_name ?? authenticatedOperator.user_id;
+}
+
+function authorizationLabel(snapshot: DashboardSnapshot) {
+  const authorization = snapshot.status.authorization;
+  if (authorization.can_trade) {
+    return "Auth trade";
+  }
+  if (authorization.can_manage_runtime) {
+    return "Auth operator";
+  }
+  if (snapshot.status.authenticated_operator) {
+    return "Auth viewer";
+  }
+  return "Auth local";
+}
+
+function authorizationTone(snapshot: DashboardSnapshot) {
+  const authorization = snapshot.status.authorization;
+  if (authorization.can_trade) {
+    return "healthy" as const;
+  }
+  if (authorization.can_manage_runtime) {
+    return "info" as const;
+  }
+  return "warning" as const;
+}
 
 function App() {
   const {
@@ -126,6 +163,12 @@ function App() {
     useState<WorkspaceDockSection>("history");
 
   const snapshot = viewModel.snapshot;
+  const authorization = snapshot?.status.authorization ?? null;
+  const authenticatedOperator = snapshot?.status.authenticated_operator ?? null;
+  const canManageRuntime = authorization?.can_manage_runtime === true;
+  const canManageStrategies = authorization?.can_manage_strategies === true;
+  const canUpdateSettings = authorization?.can_update_settings === true;
+  const canTrade = authorization?.can_trade === true;
   const selectedStrategyEntry =
     strategyViewModel.library?.strategies.find(
       (entry) => entry.path === strategyViewModel.selectedPath,
@@ -197,6 +240,7 @@ function App() {
       snapshot.status.shutdown_review.awaiting_flatten);
   const canManualEntry =
     snapshot != null &&
+    canTrade &&
     snapshot.status.strategy_loaded === true &&
     snapshot.status.command_dispatch_ready === true &&
     snapshot.status.operator_new_entries_enabled === true &&
@@ -209,38 +253,50 @@ function App() {
     (manualEntryTickValueUsd.trim().length === 0 ||
       isPositiveNumberInput(manualEntryTickValueUsd));
   const canClosePosition =
+    canTrade &&
     (snapshot?.history.projection.open_position_symbols.length ?? 0) > 0 &&
     closePositionReason.trim().length > 0 &&
     snapshot?.status.command_dispatch_ready === true;
   const canCancelWorkingOrders =
+    canTrade &&
     openWorkingOrders.length > 0 &&
     cancelWorkingOrdersReason.trim().length > 0 &&
     snapshot?.status.command_dispatch_ready === true;
   const canLoadSelectedStrategy =
+    canManageStrategies &&
     strategyViewModel.selectedPath.length > 0 &&
     strategyViewModel.validation?.valid === true &&
     pendingAction === null;
   const canUploadSelectedStrategyFile =
-    selectedStrategyUploadFile !== null && pendingAction === null;
+    canManageStrategies && selectedStrategyUploadFile !== null && pendingAction === null;
   const canDisableNewEntries =
     snapshot != null &&
+    canManageRuntime &&
     pendingAction === null &&
     snapshot.status.operator_new_entries_enabled === true;
   const canEnableNewEntries =
     snapshot != null &&
+    canManageRuntime &&
     pendingAction === null &&
     snapshot.status.operator_new_entries_enabled === false;
   const canSaveSettings =
-    snapshot != null && settingsDraft != null && settingsDirty && pendingAction === null;
-  const reviewActionsDisabled = reviewButtonDisabled(pendingAction, snapshot);
+    snapshot != null &&
+    canUpdateSettings &&
+    settingsDraft != null &&
+    settingsDirty &&
+    pendingAction === null;
+  const reviewActionsDisabled =
+    reviewButtonDisabled(pendingAction, snapshot) || !canManageRuntime;
   const reconnectCloseDisabled =
-    reviewActionsDisabled || snapshot?.status.reconnect_review.required !== true;
+    reviewActionsDisabled ||
+    !canTrade ||
+    snapshot?.status.reconnect_review.required !== true;
   const shutdownLeaveDisabled =
     reviewActionsDisabled ||
     snapshot?.status.shutdown_review.blocked !== true ||
     snapshot.status.shutdown_review.all_positions_broker_protected !== true;
   const shutdownFlattenDisabled =
-    reviewActionsDisabled || snapshot?.status.shutdown_review.blocked !== true;
+    reviewActionsDisabled || !canTrade || snapshot?.status.shutdown_review.blocked !== true;
 
   return (
     <main className="shell">
@@ -317,6 +373,10 @@ function App() {
               }
               tone={snapshot ? (showSafetyPanel ? "warning" : "healthy") : "info"}
             />
+            <Pill
+              label={snapshot ? authorizationLabel(snapshot) : "Auth waiting"}
+              tone={snapshot ? authorizationTone(snapshot) : "info"}
+            />
           </div>
           <div className="system-bar__actions">
             <button
@@ -328,6 +388,14 @@ function App() {
             >
               Sync
             </button>
+            {snapshot ? (
+              <p className="system-bar__timestamp">
+                {operatorIdentityLabel(snapshot)}
+                {authenticatedOperator?.roles.length
+                  ? ` | ${authenticatedOperator.roles.join(", ")}`
+                  : ""}
+              </p>
+            ) : null}
             {showSafetyPanel ? (
               <p className="system-bar__timestamp">{activeReviewSummary}</p>
             ) : null}
@@ -345,6 +413,16 @@ function App() {
         <section className="banner banner--warning" role="status">
           <strong>Control read failed.</strong>
           <span>{viewModel.error}</span>
+        </section>
+      ) : null}
+
+      {snapshot &&
+      authenticatedOperator &&
+      authorization &&
+      !authorization.can_manage_runtime ? (
+        <section className="banner banner--warning" role="status">
+          <strong>Read-only access.</strong>
+          <span>{authorization.detail}</span>
         </section>
       ) : null}
 

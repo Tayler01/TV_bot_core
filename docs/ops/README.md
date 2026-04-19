@@ -18,6 +18,8 @@ This directory now holds the operator runbooks and release-check materials for V
   Linux deployment runbook for the exchange-near server, Caddy, Tailscale, and localhost-only runtime hosting.
 - `remote_operator_access.md`
   Remote operator workflow, Tailscale checks, and break-glass SSH and CLI guidance.
+- `aurora_remote_setup_and_test.md`
+  Aurora-side exchange-near host setup, trusted operator role wiring, and the full remote paper validation sequence.
 - `storage_fallback_override.md`
   What to do when Postgres is unavailable and the runtime asks for a temporary SQLite override.
 - `reconnect_and_shutdown_review.md`

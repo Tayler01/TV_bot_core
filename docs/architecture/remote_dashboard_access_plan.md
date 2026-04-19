@@ -24,8 +24,15 @@ Current state as of 2026-04-19:
 - The control plane is intentionally local-first today, with default binds of `127.0.0.1:8080` and `127.0.0.1:8081` in [config/runtime.example.toml](/C:/repos/TV_bot_core/config/runtime.example.toml) and [crates/config/src/lib.rs](/C:/repos/TV_bot_core/crates/config/src/lib.rs).
 - The dashboard already consumes only that control plane through [apps/dashboard/src/lib/api.ts](/C:/repos/TV_bot_core/apps/dashboard/src/lib/api.ts) and [apps/dashboard/vite.config.ts](/C:/repos/TV_bot_core/apps/dashboard/vite.config.ts).
 - The runtime host already serves sensitive read and write routes including status, readiness, settings, strategy upload and validation, runtime commands, journal, history, event streaming, and chart streaming.
-- The current runtime host does not yet implement a built-in authenticated remote operator layer.
-- The current command and journal model distinguishes `dashboard` and `cli` action sources, but does not yet preserve a strong remote operator identity such as operator email, user id, device id, or session id for remote web use.
+- The current runtime host now supports trusted authenticated operator identity and role propagation for privileged remote use.
+- The current command and journal model now preserves authenticated operator metadata for privileged actions, including user id, display name, session id, device id, provider, and roles.
+
+Implementation status update:
+
+- trusted operator identity propagation is now implemented in the current branch
+- backend role-based authorization for privileged runtime routes is now implemented in the current branch
+- dashboard operator identity and capability gating is now implemented in the current branch
+- see [remote_dashboard_access_status.md](/C:/repos/TV_bot_core/docs/architecture/remote_dashboard_access_status.md) for the concrete shipped contract
 
 ## Current Repo Reality
 

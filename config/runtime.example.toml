@@ -52,6 +52,7 @@ require_authenticated_identity_for_privileged_commands = false
 # authenticated_session_header = "x-authenticated-session"
 # authenticated_device_header = "x-authenticated-device"
 # authenticated_provider_header = "x-authenticated-provider"
+# authenticated_roles_header = "x-authenticated-roles"
 
 [logging]
 level = "info"

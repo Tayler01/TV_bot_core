@@ -18,6 +18,7 @@ export type RuntimeReconnectDecision =
   | "reattach_bot_management";
 export type RuntimeShutdownDecision = "flatten_first" | "leave_broker_protected";
 export type ManualCommandSource = "dashboard" | "cli";
+export type OperatorRole = "viewer" | "operator" | "trade_operator";
 export type HttpStatusCode =
   | "Ok"
   | "Conflict"
@@ -50,6 +51,24 @@ export interface RuntimeStorageStatus {
 export interface RuntimeJournalStatus {
   backend: string;
   durable: boolean;
+  detail: string;
+}
+
+export interface RuntimeAuthenticatedOperatorSnapshot {
+  user_id: string;
+  display_name: string | null;
+  session_id: string | null;
+  device_id: string | null;
+  provider: string | null;
+  roles: OperatorRole[];
+}
+
+export interface RuntimeAuthorizationSnapshot {
+  can_view: boolean;
+  can_manage_runtime: boolean;
+  can_manage_strategies: boolean;
+  can_update_settings: boolean;
+  can_trade: boolean;
   detail: string;
 }
 
@@ -200,6 +219,8 @@ export interface RuntimeStatusSnapshot {
   latest_trade_latency: TradePathLatencyRecord | null;
   recorded_trade_latency_count: number;
   current_account_name: string | null;
+  authenticated_operator: RuntimeAuthenticatedOperatorSnapshot | null;
+  authorization: RuntimeAuthorizationSnapshot;
   instrument_mapping: InstrumentMapping | null;
   instrument_resolution_error: string | null;
   reconnect_review: RuntimeReconnectReviewStatus;

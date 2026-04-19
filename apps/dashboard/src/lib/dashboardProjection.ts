@@ -57,7 +57,7 @@ export function feedbackToneFromHttpStatus(httpStatus: number): BannerTone {
     return "danger";
   }
 
-  if (httpStatus === 409 || httpStatus === 428) {
+  if (httpStatus === 403 || httpStatus === 409 || httpStatus === 428) {
     return "warning";
   }
 

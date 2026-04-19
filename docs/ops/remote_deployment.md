@@ -9,6 +9,8 @@ This runbook follows the V1 remote-access recommendation in [remote_dashboard_ac
 - use Caddy to serve the dashboard and proxy the runtime host
 - do not expose runtime or Postgres ports publicly
 
+For the Aurora-side host bring-up and remote paper validation flow, also use [aurora_remote_setup_and_test.md](/C:/repos/TV_bot_core/docs/ops/aurora_remote_setup_and_test.md).
+
 ## Recommended Host Layout
 
 Recommended services on the exchange-near Linux host:
@@ -59,6 +61,22 @@ Do not change these binds to `0.0.0.0` for the standard remote dashboard deploym
 
 Keep secrets out of the TOML file.
 Use [credential_setup.md](/C:/repos/TV_bot_core/docs/ops/credential_setup.md) as the credential source of truth.
+
+If you are enabling authenticated remote operator roles, also configure:
+
+```toml
+[remote_access]
+trust_local_identity_headers = true
+require_authenticated_identity_for_privileged_commands = true
+authenticated_user_header = "x-authenticated-user"
+authenticated_display_name_header = "x-authenticated-name"
+authenticated_session_header = "x-authenticated-session"
+authenticated_device_header = "x-authenticated-device"
+authenticated_provider_header = "x-authenticated-provider"
+authenticated_roles_header = "x-authenticated-roles"
+```
+
+Only enable this when the Aurora-side ingress path is trusted to inject those headers locally.
 
 ## Release Bundle
 
@@ -177,6 +195,9 @@ The example config serves:
 - runtime HTTP routes through `127.0.0.1:8080`
 - runtime WebSocket routes through `127.0.0.1:8081`
 
+The checked-in Caddyfile is intentionally transport-only.
+Authenticated operator identity still needs a trusted ingress-capable layer in front of the local dashboard origin if you want the runtime to enforce `viewer`, `operator`, and `trade_operator` roles.
+
 ## Tailscale Access
 
 Install Tailscale on the server and join it to your tailnet.
@@ -232,6 +253,7 @@ After deployment:
 3. Verify the dashboard from the operator PC through Tailscale.
 4. Verify the event and chart WebSockets load through the browser.
 5. Verify runtime ports are not exposed externally.
+6. Verify `/status` shows the expected authenticated operator and authorization state when reached through the private ingress path.
 
 ## Update Flow
 

@@ -16,8 +16,8 @@ use tv_bot_broker_tradovate::{
 use tv_bot_core_types::{
     ActionSource, ArmReadinessReport, ArmState, BrokerFillUpdate, BrokerOrderUpdate,
     BrokerPositionSnapshot, BrokerStatusSnapshot, EventJournalRecord, InstrumentMapping,
-    RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot, Timeframe, TradePathLatencyRecord,
-    TradeSide, WarmupStatus,
+    OperatorRole, RiskDecisionStatus, RuntimeMode, SystemHealthSnapshot, Timeframe,
+    TradePathLatencyRecord, TradeSide, WarmupStatus,
 };
 use tv_bot_execution_engine::{ExecutionDispatchError, ExecutionEngineError};
 use tv_bot_journal::EventJournal;
@@ -132,6 +132,29 @@ pub struct RuntimeJournalStatus {
     pub detail: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeAuthenticatedOperatorSnapshot {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub session_id: Option<String>,
+    pub device_id: Option<String>,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<OperatorRole>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeAuthorizationSnapshot {
+    pub can_view: bool,
+    pub can_manage_runtime: bool,
+    pub can_manage_strategies: bool,
+    pub can_update_settings: bool,
+    pub can_trade: bool,
+    pub detail: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeStatusSnapshot {
@@ -152,6 +175,8 @@ pub struct RuntimeStatusSnapshot {
     pub latest_trade_latency: Option<TradePathLatencyRecord>,
     pub recorded_trade_latency_count: usize,
     pub current_account_name: Option<String>,
+    pub authenticated_operator: Option<RuntimeAuthenticatedOperatorSnapshot>,
+    pub authorization: RuntimeAuthorizationSnapshot,
     pub instrument_mapping: Option<InstrumentMapping>,
     pub instrument_resolution_error: Option<String>,
     pub reconnect_review: RuntimeReconnectReviewStatus,
