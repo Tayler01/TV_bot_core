@@ -643,6 +643,7 @@ fn print_lifecycle_response(response: &RuntimeLifecycleResponse) {
         match response.status_code {
             tv_bot_control_api::HttpStatusCode::Ok => "ok",
             tv_bot_control_api::HttpStatusCode::Conflict => "conflict",
+            tv_bot_control_api::HttpStatusCode::Forbidden => "forbidden",
             tv_bot_control_api::HttpStatusCode::PreconditionRequired => {
                 "precondition_required"
             }

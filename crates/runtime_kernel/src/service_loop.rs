@@ -5,7 +5,7 @@ use tv_bot_broker_tradovate::{
     Clock as TradovateClock, TradovateAccountApi, TradovateAuthApi, TradovateExecutionApi,
     TradovateSessionManager, TradovateSyncApi,
 };
-use tv_bot_core_types::{ActionSource, EventJournalRecord, EventSeverity};
+use tv_bot_core_types::{ActionSource, AuthenticatedOperator, EventJournalRecord, EventSeverity};
 use tv_bot_execution_engine::{
     ExecutionDispatchError, ExecutionDispatchReport, ExecutionDispatchResult,
 };
@@ -114,11 +114,14 @@ fn journal_intent_received<J: EventJournal>(
         source: request.action_source,
         severity: EventSeverity::Info,
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+            }),
+        ),
     })
 }
 
@@ -135,14 +138,17 @@ fn journal_dispatch_succeeded<J: EventJournal>(
         source: request.action_source,
         severity: EventSeverity::Info,
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-            "result_count": dispatch.results.len(),
-            "result_types": dispatch.results.iter().map(dispatch_result_name).collect::<Vec<_>>(),
-            "warnings": dispatch.warnings,
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+                "result_count": dispatch.results.len(),
+                "result_types": dispatch.results.iter().map(dispatch_result_name).collect::<Vec<_>>(),
+                "warnings": dispatch.warnings,
+            }),
+        ),
     })
 }
 
@@ -159,13 +165,16 @@ fn journal_dispatch_skipped<J: EventJournal>(
         source: request.action_source,
         severity: EventSeverity::Warning,
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-            "decision_status": outcome.risk.decision.status,
-            "decision_reason": outcome.risk.decision.reason,
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+                "decision_status": outcome.risk.decision.status,
+                "decision_reason": outcome.risk.decision.reason,
+            }),
+        ),
     })
 }
 
@@ -182,13 +191,33 @@ fn journal_dispatch_failed<J: EventJournal>(
         source: request.action_source,
         severity: EventSeverity::Error,
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-            "error": error.to_string(),
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+                "error": error.to_string(),
+            }),
+        ),
     })
+}
+
+fn journal_payload(
+    authenticated_operator: Option<&AuthenticatedOperator>,
+    mut payload: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(authenticated_operator) = authenticated_operator {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "authenticated_operator".to_owned(),
+                serde_json::to_value(authenticated_operator)
+                    .expect("authenticated operator should serialize"),
+            );
+        }
+    }
+
+    payload
 }
 
 fn category_for_source(source: ActionSource) -> &'static str {

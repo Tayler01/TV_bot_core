@@ -1,0 +1,22 @@
+[Unit]
+Description=TV Bot Core Runtime Host
+After=network-online.target postgresql.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tvbot
+Group=tvbot
+WorkingDirectory=/opt/tv-bot-core/current
+EnvironmentFile=/etc/tv-bot-core/runtime.env
+ExecStart=/opt/tv-bot-core/current/bin/tv-bot-runtime /opt/tv-bot-core/current/config/runtime.remote.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/tv-bot-core /var/log/tv-bot-core /opt/tv-bot-core/current
+
+[Install]
+WantedBy=multi-user.target

@@ -876,6 +876,7 @@ impl ConsoleState {
         let level = match response.status_code {
             tv_bot_control_api::HttpStatusCode::Ok => ActivityLevel::Success,
             tv_bot_control_api::HttpStatusCode::Conflict
+            | tv_bot_control_api::HttpStatusCode::Forbidden
             | tv_bot_control_api::HttpStatusCode::PreconditionRequired => ActivityLevel::Warning,
             tv_bot_control_api::HttpStatusCode::InternalServerError => ActivityLevel::Error,
         };

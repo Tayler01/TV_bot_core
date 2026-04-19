@@ -41,7 +41,7 @@ archive_path="${output_dir}/${bundle_name}.tar.gz"
 
 rm -rf "${bundle_dir}"
 rm -f "${archive_path}"
-mkdir -p "${bundle_dir}/bin" "${bundle_dir}/dashboard" "${bundle_dir}/config" "${bundle_dir}/docs/ops" "${bundle_dir}/strategies/examples"
+mkdir -p "${bundle_dir}/bin" "${bundle_dir}/dashboard" "${bundle_dir}/config" "${bundle_dir}/docs/ops" "${bundle_dir}/deploy" "${bundle_dir}/strategies/examples"
 
 pushd "${repo_root}" >/dev/null
 cargo build --release -p tv-bot-runtime -p tv-bot-cli
@@ -60,6 +60,7 @@ cp "${repo_root}/README.md" "${bundle_dir}/README.md"
 cp "${repo_root}/LICENSE" "${bundle_dir}/LICENSE"
 cp "${repo_root}/STRATEGY_SPEC.md" "${bundle_dir}/STRATEGY_SPEC.md"
 cp -R "${repo_root}/docs/ops/." "${bundle_dir}/docs/ops/"
+cp -R "${repo_root}/deploy/." "${bundle_dir}/deploy/"
 cp -R "${repo_root}/strategies/examples/." "${bundle_dir}/strategies/examples/"
 
 cat > "${bundle_dir}/release-manifest.json" <<EOF
@@ -75,6 +76,7 @@ cat > "${bundle_dir}/release-manifest.json" <<EOF
     "dashboard": "dashboard",
     "runtime_config": "config/runtime.example.toml",
     "ops_docs": "docs/ops",
+    "deploy_examples": "deploy",
     "strategy_examples": "strategies/examples"
   }
 }

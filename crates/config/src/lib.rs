@@ -15,6 +15,12 @@ const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WEBSOCKET_BIND: &str = "127.0.0.1:8081";
 const DEFAULT_SQLITE_PATH: &str = "data/tv_bot_core.sqlite";
 const DEFAULT_LOG_LEVEL: &str = "info";
+const DEFAULT_AUTHENTICATED_USER_HEADER: &str = "x-authenticated-user";
+const DEFAULT_AUTHENTICATED_DISPLAY_NAME_HEADER: &str = "x-authenticated-name";
+const DEFAULT_AUTHENTICATED_SESSION_HEADER: &str = "x-authenticated-session";
+const DEFAULT_AUTHENTICATED_DEVICE_HEADER: &str = "x-authenticated-device";
+const DEFAULT_AUTHENTICATED_PROVIDER_HEADER: &str = "x-authenticated-provider";
+const DEFAULT_AUTHENTICATED_ROLES_HEADER: &str = "x-authenticated-roles";
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -23,6 +29,7 @@ pub struct AppConfig {
     pub broker: BrokerConfig,
     pub persistence: PersistenceConfig,
     pub control_api: ControlApiConfig,
+    pub remote_access: RemoteAccessConfig,
     pub logging: LoggingConfig,
 }
 
@@ -72,6 +79,18 @@ pub struct SqliteFallbackConfig {
 pub struct ControlApiConfig {
     pub http_bind: String,
     pub websocket_bind: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteAccessConfig {
+    pub trust_local_identity_headers: bool,
+    pub require_authenticated_identity_for_privileged_commands: bool,
+    pub authenticated_user_header: String,
+    pub authenticated_display_name_header: String,
+    pub authenticated_session_header: String,
+    pub authenticated_device_header: String,
+    pub authenticated_provider_header: String,
+    pub authenticated_roles_header: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +160,8 @@ pub enum ConfigError {
         value: String,
         message: String,
     },
+    #[error("invalid config: {0}")]
+    InvalidConfig(String),
 }
 
 #[derive(Debug, Error)]
@@ -208,6 +229,7 @@ struct PartialAppConfig {
     broker: Option<PartialBrokerConfig>,
     persistence: Option<PartialPersistenceConfig>,
     control_api: Option<PartialControlApiConfig>,
+    remote_access: Option<PartialRemoteAccessConfig>,
     logging: Option<PartialLoggingConfig>,
 }
 
@@ -267,6 +289,19 @@ struct PartialControlApiConfig {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PartialRemoteAccessConfig {
+    trust_local_identity_headers: Option<bool>,
+    require_authenticated_identity_for_privileged_commands: Option<bool>,
+    authenticated_user_header: Option<String>,
+    authenticated_display_name_header: Option<String>,
+    authenticated_session_header: Option<String>,
+    authenticated_device_header: Option<String>,
+    authenticated_provider_header: Option<String>,
+    authenticated_roles_header: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PartialLoggingConfig {
     level: Option<String>,
     json: Option<bool>,
@@ -297,6 +332,11 @@ impl PartialAppConfig {
             .get_or_insert_with(PartialControlApiConfig::default)
     }
 
+    fn remote_access_mut(&mut self) -> &mut PartialRemoteAccessConfig {
+        self.remote_access
+            .get_or_insert_with(PartialRemoteAccessConfig::default)
+    }
+
     fn logging_mut(&mut self) -> &mut PartialLoggingConfig {
         self.logging
             .get_or_insert_with(PartialLoggingConfig::default)
@@ -309,11 +349,23 @@ impl PartialAppConfig {
         let persistence = self.persistence.unwrap_or_default();
         let sqlite_fallback = persistence.sqlite_fallback.unwrap_or_default();
         let control_api = self.control_api.unwrap_or_default();
+        let remote_access = self.remote_access.unwrap_or_default();
         let logging = self.logging.unwrap_or_default();
 
         let startup_mode = runtime
             .startup_mode
             .ok_or(ConfigError::MissingRequiredField("runtime.startup_mode"))?;
+        let trust_local_identity_headers =
+            remote_access.trust_local_identity_headers.unwrap_or(false);
+        let require_authenticated_identity_for_privileged_commands = remote_access
+            .require_authenticated_identity_for_privileged_commands
+            .unwrap_or(false);
+
+        if require_authenticated_identity_for_privileged_commands && !trust_local_identity_headers {
+            return Err(ConfigError::InvalidConfig(
+                "remote_access.require_authenticated_identity_for_privileged_commands requires remote_access.trust_local_identity_headers to be enabled".to_owned(),
+            ));
+        }
 
         Ok(AppConfig {
             runtime: RuntimeConfig {
@@ -358,6 +410,40 @@ impl PartialAppConfig {
                 websocket_bind: control_api
                     .websocket_bind
                     .unwrap_or_else(|| DEFAULT_WEBSOCKET_BIND.to_owned()),
+            },
+            remote_access: RemoteAccessConfig {
+                trust_local_identity_headers,
+                require_authenticated_identity_for_privileged_commands,
+                authenticated_user_header: normalized_header_name(
+                    remote_access.authenticated_user_header,
+                    DEFAULT_AUTHENTICATED_USER_HEADER,
+                    "remote_access.authenticated_user_header",
+                )?,
+                authenticated_display_name_header: normalized_header_name(
+                    remote_access.authenticated_display_name_header,
+                    DEFAULT_AUTHENTICATED_DISPLAY_NAME_HEADER,
+                    "remote_access.authenticated_display_name_header",
+                )?,
+                authenticated_session_header: normalized_header_name(
+                    remote_access.authenticated_session_header,
+                    DEFAULT_AUTHENTICATED_SESSION_HEADER,
+                    "remote_access.authenticated_session_header",
+                )?,
+                authenticated_device_header: normalized_header_name(
+                    remote_access.authenticated_device_header,
+                    DEFAULT_AUTHENTICATED_DEVICE_HEADER,
+                    "remote_access.authenticated_device_header",
+                )?,
+                authenticated_provider_header: normalized_header_name(
+                    remote_access.authenticated_provider_header,
+                    DEFAULT_AUTHENTICATED_PROVIDER_HEADER,
+                    "remote_access.authenticated_provider_header",
+                )?,
+                authenticated_roles_header: normalized_header_name(
+                    remote_access.authenticated_roles_header,
+                    DEFAULT_AUTHENTICATED_ROLES_HEADER,
+                    "remote_access.authenticated_roles_header",
+                )?,
             },
             logging: LoggingConfig {
                 level: logging
@@ -470,6 +556,66 @@ fn apply_env_overrides(
     apply_string_override(env, "TV_BOT__CONTROL_API__WEBSOCKET_BIND", |value| {
         partial.control_api_mut().websocket_bind = Some(value);
     });
+    if let Some(value) = env.get("TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS") {
+        partial.remote_access_mut().trust_local_identity_headers = Some(parse_bool(
+            "TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS",
+            &value,
+        )?);
+    }
+    if let Some(value) =
+        env.get("TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS")
+    {
+        partial
+            .remote_access_mut()
+            .require_authenticated_identity_for_privileged_commands = Some(parse_bool(
+            "TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS",
+            &value,
+        )?);
+    }
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_USER_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_user_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_DISPLAY_NAME_HEADER",
+        |value| {
+            partial
+                .remote_access_mut()
+                .authenticated_display_name_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_SESSION_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_session_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_DEVICE_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_device_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_PROVIDER_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_provider_header = Some(value);
+        },
+    );
+    apply_string_override(
+        env,
+        "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_ROLES_HEADER",
+        |value| {
+            partial.remote_access_mut().authenticated_roles_header = Some(value);
+        },
+    );
     apply_string_override(env, "TV_BOT__LOGGING__LEVEL", |value| {
         partial.logging_mut().level = Some(value);
     });
@@ -524,6 +670,24 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
             message: "expected a boolean value".to_owned(),
         }),
     }
+}
+
+fn normalized_header_name(
+    value: Option<String>,
+    default: &str,
+    field_name: &str,
+) -> Result<String, ConfigError> {
+    let normalized = value
+        .unwrap_or_else(|| default.to_owned())
+        .trim()
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(ConfigError::InvalidConfig(format!(
+            "{field_name} must not be empty"
+        )));
+    }
+
+    Ok(normalized)
 }
 
 pub fn persist_runtime_settings_update(
@@ -679,6 +843,20 @@ mod tests {
         ));
         assert_eq!(config.control_api.http_bind, DEFAULT_HTTP_BIND);
         assert_eq!(config.control_api.websocket_bind, DEFAULT_WEBSOCKET_BIND);
+        assert!(!config.remote_access.trust_local_identity_headers);
+        assert!(
+            !config
+                .remote_access
+                .require_authenticated_identity_for_privileged_commands
+        );
+        assert_eq!(
+            config.remote_access.authenticated_user_header,
+            DEFAULT_AUTHENTICATED_USER_HEADER
+        );
+        assert_eq!(
+            config.remote_access.authenticated_roles_header,
+            DEFAULT_AUTHENTICATED_ROLES_HEADER
+        );
         assert_eq!(config.logging.level, DEFAULT_LOG_LEVEL);
         assert!(!config.persistence.sqlite_fallback.enabled);
         assert_eq!(
@@ -706,6 +884,22 @@ mod tests {
                 ("TV_BOT__CONTROL_API__HTTP_BIND", "127.0.0.1:9000"),
                 ("TV_BOT__BROKER__ENVIRONMENT", "live"),
                 ("TV_BOT__PERSISTENCE__SQLITE_FALLBACK_ENABLED", "true"),
+                (
+                    "TV_BOT__REMOTE_ACCESS__TRUST_LOCAL_IDENTITY_HEADERS",
+                    "true",
+                ),
+                (
+                    "TV_BOT__REMOTE_ACCESS__REQUIRE_AUTHENTICATED_IDENTITY_FOR_PRIVILEGED_COMMANDS",
+                    "true",
+                ),
+                (
+                    "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_USER_HEADER",
+                    "X-Remote-User",
+                ),
+                (
+                    "TV_BOT__REMOTE_ACCESS__AUTHENTICATED_ROLES_HEADER",
+                    "X-Remote-Roles",
+                ),
             ]),
         )
         .expect("config should load");
@@ -714,6 +908,20 @@ mod tests {
         assert_eq!(config.control_api.http_bind, "127.0.0.1:9000");
         assert!(config.persistence.sqlite_fallback.enabled);
         assert_eq!(config.broker.environment, Some(BrokerEnvironment::Live));
+        assert!(config.remote_access.trust_local_identity_headers);
+        assert!(
+            config
+                .remote_access
+                .require_authenticated_identity_for_privileged_commands
+        );
+        assert_eq!(
+            config.remote_access.authenticated_user_header,
+            "x-remote-user"
+        );
+        assert_eq!(
+            config.remote_access.authenticated_roles_header,
+            "x-remote-roles"
+        );
     }
 
     #[test]
@@ -799,6 +1007,43 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn requiring_authenticated_identity_without_trusted_headers_fails() {
+        let error = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+
+                [remote_access]
+                require_authenticated_identity_for_privileged_commands = true
+            "#,
+            &MapEnvironment::default(),
+        )
+        .expect_err("config should fail when remote auth enforcement cannot work");
+
+        assert!(matches!(error, ConfigError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn blank_remote_access_header_name_fails() {
+        let error = AppConfig::from_toml_str(
+            "runtime.example.toml",
+            r#"
+                [runtime]
+                startup_mode = "observation"
+
+                [remote_access]
+                trust_local_identity_headers = true
+                authenticated_user_header = "   "
+            "#,
+            &MapEnvironment::default(),
+        )
+        .expect_err("blank trusted header name should fail");
+
+        assert!(matches!(error, ConfigError::InvalidConfig(_)));
     }
 
     #[test]

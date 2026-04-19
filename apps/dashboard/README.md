@@ -47,6 +47,7 @@ The current dashboard now covers:
 - a clearly-labeled sample-candle fallback when live market data is unavailable, including local setup and rejected market-data credentials, so the chart workspace still renders cleanly during documentation/demo flows and smoke tests
 - a chart-first shell where the right rail stays focused on mode, gating, warmup, arming, manual entry, flatten, cancel, and safety review while strategy-library and runtime-settings work now live in a dedicated lower-dock `Setup` tab
 - a browser-verified responsive QA pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow in the current dark UI
+- authenticated operator identity display plus backend-driven authorization gating for `viewer`, `operator`, and `trade_operator` remote sessions
 
 The chart now renders the currently loaded strategy contract through the local control plane and does not call Databento or Tradovate directly.
 The chart module now also surfaces reconnect, shutdown, degraded-feed, chart-stream, dispatch posture, and the no-market-data sample fallback directly inside the chart itself, and the latest browser sign-off sweep cleared the fresh-open local console path plus responsive width sweeps without page-level overflow. The chart-first shell is now beyond the first reset: the header behaves more like a compact utility strip, the center chart stage carries more width, readiness moved out of the left rail into the lower dock, safety review only appears in the action rail when active, the chart sidebar now drops below the canvas so price action stays visually dominant, the right rail has been compressed into denser posture, ticket, and exit blocks so it reads more like a trade sidebar than a general admin panel, the chart now boots with viewport-aware history loading plus left-edge prefetching so it opens with a fuller stage, the chart surface itself now uses a tighter three-part toolbar, calmer readout strip, and flatter under-chart utility tiles so it feels more like a platform module than a card, and the rails plus lower dock now carry thinner chrome and shorter copy so the chart reads more clearly as the product surface. The latest polish pass also moved low-frequency mode and gate controls into the left context rail, tightened the trade ticket/action rail further, reduced chart-alert and toolbar chrome, reordered the mobile layout so the chart stays ahead of the rails on narrow screens, trimmed the remaining chart alerts, toolbar labels, utility-header wording, and pill spacing so the workspace scans more like a trading console than a dashboard, and then pared back duplicated chart context in the left rail while flattening the lower dock so the center stage reads more cleanly above the fold. The remaining dashboard work is now centered on finishing that chart-first redesign around the live chart rather than on first chart delivery itself, with status tracked in [docs/architecture/dashboard_production_ui_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_production_ui_plan.md>) and [docs/architecture/dashboard_live_chart_plan.md](</C:/repos/TV_bot_core/docs/architecture/dashboard_live_chart_plan.md>).
@@ -74,6 +75,38 @@ If the runtime uses different binds, set:
 
 For static builds or alternate local reverse proxies, `VITE_CONTROL_API_BASE_URL` can point the dashboard at a different local control-plane origin.
 If the event stream is served from a separate WebSocket origin instead of the same host, set `VITE_CONTROL_API_EVENTS_URL`.
+
+## Production Serving
+
+The recommended production hosting model is:
+
+- build the dashboard with `npm run build`
+- serve the static files from the exchange-near server
+- keep the runtime host on `127.0.0.1`
+- let a reverse proxy such as Caddy serve the dashboard and proxy runtime HTTP and WebSocket routes
+
+The intended production path is one browser origin that serves:
+
+- dashboard assets from `apps/dashboard/dist`
+- runtime HTTP routes such as `/status`, `/readiness`, `/history`, `/journal`, `/settings`, and `/runtime/commands`
+- runtime WebSocket routes `/events` and `/chart/stream`
+
+In that production setup:
+
+- `VITE_CONTROL_API_BASE_URL` may be left empty so the dashboard uses the same origin
+- `VITE_CONTROL_API_EVENTS_URL` may be left empty so WebSockets also use the same origin
+
+The recommended V1 remote deployment uses:
+
+- Tailscale for private operator access
+- Caddy for static serving and reverse proxying
+- localhost runtime binds for the control plane
+
+See:
+
+- [remote_dashboard_access_plan.md](/C:/repos/TV_bot_core/docs/architecture/remote_dashboard_access_plan.md)
+- [remote_deployment.md](/C:/repos/TV_bot_core/docs/ops/remote_deployment.md)
+- [deploy/remote/linux/Caddyfile](/C:/repos/TV_bot_core/deploy/remote/linux/Caddyfile)
 
 ## Follow-up Note
 

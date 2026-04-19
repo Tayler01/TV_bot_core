@@ -183,6 +183,26 @@ pub enum ActionSource {
     System,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticatedOperator {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub session_id: Option<String>,
+    pub device_id: Option<String>,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<OperatorRole>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorRole {
+    Viewer,
+    Operator,
+    TradeOperator,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventSeverity {

@@ -149,6 +149,7 @@ function installFetchMock(snapshotOverrides?: {
   marketDataHealth?: "healthy" | "degraded" | "failed" | "initializing";
   systemFeedDegraded?: boolean;
   sampleDataActive?: boolean;
+  accessLevel?: "local" | "viewer" | "operator" | "trade_operator";
 }) {
   const reconnectRequired = snapshotOverrides?.reconnectRequired ?? false;
   const shutdownBlocked = snapshotOverrides?.shutdownBlocked ?? false;
@@ -156,6 +157,53 @@ function installFetchMock(snapshotOverrides?: {
   const systemFeedDegraded =
     snapshotOverrides?.systemFeedDegraded ?? marketDataHealth !== "healthy";
   const sampleDataActive = snapshotOverrides?.sampleDataActive ?? false;
+  const accessLevel = snapshotOverrides?.accessLevel ?? "trade_operator";
+  const authenticatedOperator =
+    accessLevel === "local"
+      ? null
+      : {
+          user_id: "operator@example.com",
+          display_name: "Primary Operator",
+          session_id: "session-123",
+          device_id: "desktop-01",
+          provider: "tailscale",
+          roles:
+            accessLevel === "viewer"
+              ? ["viewer"]
+              : accessLevel === "operator"
+                ? ["operator"]
+                : ["trade_operator"],
+        };
+  const authorization =
+    accessLevel === "viewer"
+      ? {
+          can_view: true,
+          can_manage_runtime: false,
+          can_manage_strategies: false,
+          can_update_settings: false,
+          can_trade: false,
+          detail: "viewer access granted; runtime changes remain blocked",
+        }
+      : accessLevel === "operator"
+        ? {
+            can_view: true,
+            can_manage_runtime: true,
+            can_manage_strategies: true,
+            can_update_settings: true,
+            can_trade: false,
+            detail: "operator access granted; trading actions remain blocked",
+          }
+        : {
+            can_view: true,
+            can_manage_runtime: true,
+            can_manage_strategies: true,
+            can_update_settings: true,
+            can_trade: true,
+            detail:
+              accessLevel === "local"
+                ? "local runtime access allows full control"
+                : "trade operator access granted",
+          };
   const currentStrategy: LoadedStrategySummary = {
     path: "strategies/sample.md",
     title: "Sample",
@@ -287,6 +335,8 @@ function installFetchMock(snapshotOverrides?: {
     },
     recorded_trade_latency_count: 4,
     current_account_name: "paper-primary",
+    authenticated_operator: authenticatedOperator,
+    authorization,
     instrument_mapping: {
       market_family: "metals",
       market_display_name: "Gold",
@@ -2063,5 +2113,41 @@ describe("App", () => {
         reason: "dashboard breakout probe",
       },
     });
+  });
+
+  it("renders operator access without trading privileges and keeps runtime setup available", async () => {
+    installWebSocketMock();
+    installFetchMock({ accessLevel: "operator" });
+
+    render(<App />);
+
+    expect(await screen.findByText("Auth operator")).toBeInTheDocument();
+    expect(await screen.findByText("Primary Operator | operator")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Send order" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Warmup" })).toBeEnabled();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
+    expect(await screen.findByRole("button", { name: "Load selected strategy" })).toBeEnabled();
+
+    fireEvent.change(await screen.findByLabelText("Default strategy path"), {
+      target: { value: "strategies/uploads/operator.md" },
+    });
+    expect(await screen.findByRole("button", { name: "Save runtime settings" })).toBeEnabled();
+  });
+
+  it("renders viewer access as read-only and disables privileged controls", async () => {
+    installWebSocketMock();
+    installFetchMock({ accessLevel: "viewer" });
+
+    render(<App />);
+
+    expect(await screen.findByText("Read-only access.")).toBeInTheDocument();
+    expect(await screen.findByText("Auth viewer")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Warmup" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Send order" })).toBeDisabled();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
+    expect(await screen.findByRole("button", { name: "Load selected strategy" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Save runtime settings" })).toBeDisabled();
   });
 });

@@ -100,6 +100,18 @@ export function RuntimeSummaryPanel({
       : "Route unavailable";
   const openPositionCount = snapshot.history.projection.open_position_symbols.length;
   const workingOrderCount = snapshot.history.projection.working_order_ids.length;
+  const authenticatedOperator = snapshot.status.authenticated_operator;
+  const authorization = snapshot.status.authorization;
+  const operatorLabel = authenticatedOperator
+    ? authenticatedOperator.display_name ?? authenticatedOperator.user_id
+    : authorization.can_trade
+      ? "Local operator access"
+      : authorization.detail;
+  const roleLabel = authenticatedOperator?.roles.length
+    ? authenticatedOperator.roles.join(", ")
+    : authorization.can_trade
+      ? "local"
+      : "viewer";
 
   return (
     <Panel
@@ -148,6 +160,8 @@ export function RuntimeSummaryPanel({
           value={marketRouteLabel}
         />
         <Definition label="Databento" value={databentoLabel} />
+        <Definition label="Operator" value={operatorLabel} />
+        <Definition label="Access" value={roleLabel} />
         <Definition
           label="Review"
           value={
@@ -166,7 +180,11 @@ export function RuntimeSummaryPanel({
             <button
               className="command-button"
               type="button"
-              disabled={pendingAction !== null || snapshot.status.mode === "paper"}
+              disabled={
+                pendingAction !== null ||
+                !snapshot.status.authorization.can_manage_runtime ||
+                snapshot.status.mode === "paper"
+              }
               onClick={() => {
                 onSetMode("paper");
               }}
@@ -176,7 +194,11 @@ export function RuntimeSummaryPanel({
             <button
               className="command-button"
               type="button"
-              disabled={pendingAction !== null || snapshot.status.mode === "observation"}
+              disabled={
+                pendingAction !== null ||
+                !snapshot.status.authorization.can_manage_runtime ||
+                snapshot.status.mode === "observation"
+              }
               onClick={() => {
                 onSetMode("observation");
               }}
@@ -186,7 +208,11 @@ export function RuntimeSummaryPanel({
             <button
               className="command-button command-button--danger"
               type="button"
-              disabled={pendingAction !== null || snapshot.status.mode === "live"}
+              disabled={
+                pendingAction !== null ||
+                !snapshot.status.authorization.can_manage_runtime ||
+                snapshot.status.mode === "live"
+              }
               onClick={() => {
                 onSetMode("live");
               }}
@@ -213,6 +239,7 @@ export function RuntimeSummaryPanel({
               aria-label="New entry gate reason"
               placeholder="operator gate"
               value={newEntriesReason}
+              disabled={!snapshot.status.authorization.can_manage_runtime}
               onChange={(event) => {
                 onNewEntriesReasonChange(event.target.value);
               }}
