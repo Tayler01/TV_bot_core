@@ -14,6 +14,10 @@ This directory now holds the operator runbooks and release-check materials for V
   Runtime, dashboard, provider, and chart debug workflow.
 - `paper_demo_verification.md`
   Manual paper/demo verification flow for the release gate.
+- `remote_deployment.md`
+  Linux deployment runbook for the exchange-near server, Caddy, Tailscale, and localhost-only runtime hosting.
+- `remote_operator_access.md`
+  Remote operator workflow, Tailscale checks, and break-glass SSH and CLI guidance.
 - `storage_fallback_override.md`
   What to do when Postgres is unavailable and the runtime asks for a temporary SQLite override.
 - `reconnect_and_shutdown_review.md`
@@ -38,13 +42,15 @@ Both scripts produce release artifacts under `dist/releases/` and include:
 - the built dashboard bundle
 - sample runtime config
 - operator runbooks
+- deployment examples for Linux remote hosting
 - example strategies
 - a release manifest with commit and build metadata
 
 ## Scope
 
-These docs are for local operator/runtime behavior only:
+These docs now cover both local and recommended remote operator workflows:
 
-- the dashboard still talks only to the local control API
+- the dashboard still talks only to the runtime control API
 - runtime decisions remain the source of truth
 - dangerous actions must remain explicit, reviewable, and journaled
+- remote access must stay behind the intended ingress and access-control layers

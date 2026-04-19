@@ -416,6 +416,7 @@ impl RuntimeOperatorState {
                 request: RuntimeExecutionRequest {
                     mode: self.runtime.current_mode(),
                     action_source: source.into(),
+                    authenticated_operator: None,
                     execution: ExecutionRequest {
                         strategy: strategy.compiled.clone(),
                         instrument: ExecutionInstrumentContext {
@@ -487,6 +488,7 @@ impl RuntimeOperatorState {
                 request: RuntimeExecutionRequest {
                     mode: self.runtime.current_mode(),
                     action_source: source.into(),
+                    authenticated_operator: None,
                     execution: ExecutionRequest {
                         strategy: strategy.compiled.clone(),
                         instrument: ExecutionInstrumentContext {
@@ -549,6 +551,7 @@ impl RuntimeOperatorState {
                 request: RuntimeExecutionRequest {
                     mode: self.runtime.current_mode(),
                     action_source: source.into(),
+                    authenticated_operator: None,
                     execution: ExecutionRequest {
                         strategy: strategy.compiled.clone(),
                         instrument: ExecutionInstrumentContext {
@@ -2194,6 +2197,7 @@ mod tests {
                 request: RuntimeExecutionRequest {
                     mode: RuntimeMode::Paper,
                     action_source: ManualCommandSource::Cli.into(),
+                    authenticated_operator: None,
                     execution: ExecutionRequest {
                         strategy: compile_loaded_strategy(
                             PathBuf::from("strategy.md"),

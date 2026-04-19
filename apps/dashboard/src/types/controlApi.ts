@@ -21,6 +21,7 @@ export type ManualCommandSource = "dashboard" | "cli";
 export type HttpStatusCode =
   | "Ok"
   | "Conflict"
+  | "Forbidden"
   | "PreconditionRequired"
   | "InternalServerError";
 

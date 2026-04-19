@@ -13,7 +13,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -35,29 +35,29 @@ use tv_bot_broker_tradovate::{
     TradovateRoutingPreferences, TradovateSessionConfig,
 };
 use tv_bot_config::{
-    persist_runtime_settings_update, AppConfig, ConfigUpdateError, RuntimeSettingsFileUpdate,
+    persist_runtime_settings_update, AppConfig, ConfigUpdateError, RemoteAccessConfig,
+    RuntimeSettingsFileUpdate,
 };
-#[cfg(test)]
-use tv_bot_control_api::ControlApiCommand;
 use tv_bot_control_api::{
-    ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest, HttpCommandResponse,
-    HttpResponseBody, HttpStatusCode, LoadedStrategySummary, LocalControlApi, RuntimeChartBar,
-    RuntimeChartConfigResponse, RuntimeChartHistoryResponse, RuntimeChartInstrumentSummary,
-    RuntimeChartSnapshot, RuntimeChartStreamEvent, RuntimeCommandDispatcher,
-    RuntimeEditableSettings, RuntimeHistorySnapshot, RuntimeJournalSnapshot, RuntimeJournalStatus,
-    RuntimeKernelCommandDispatcher, RuntimeLifecycleCommand, RuntimeLifecycleRequest,
-    RuntimeLifecycleResponse, RuntimeReadinessSnapshot, RuntimeReconnectDecision,
-    RuntimeReconnectReviewStatus, RuntimeSettingsPersistenceMode, RuntimeSettingsSnapshot,
-    RuntimeSettingsUpdateRequest, RuntimeSettingsUpdateResponse, RuntimeShutdownDecision,
-    RuntimeShutdownReviewStatus, RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus,
-    RuntimeStrategyCatalogEntry, RuntimeStrategyIssue, RuntimeStrategyIssueSeverity,
-    RuntimeStrategyLibraryResponse, RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
+    ControlApiCommand, ControlApiEventPublisher, HttpCommandHandler, HttpCommandRequest,
+    HttpCommandResponse, HttpResponseBody, HttpStatusCode, LoadedStrategySummary,
+    LocalControlApi, RuntimeChartBar, RuntimeChartConfigResponse, RuntimeChartHistoryResponse,
+    RuntimeChartInstrumentSummary, RuntimeChartSnapshot, RuntimeChartStreamEvent,
+    RuntimeCommandDispatcher, RuntimeEditableSettings, RuntimeHistorySnapshot,
+    RuntimeJournalSnapshot, RuntimeJournalStatus, RuntimeKernelCommandDispatcher,
+    RuntimeLifecycleCommand, RuntimeLifecycleRequest, RuntimeLifecycleResponse,
+    RuntimeReadinessSnapshot, RuntimeReconnectDecision, RuntimeReconnectReviewStatus,
+    RuntimeSettingsPersistenceMode, RuntimeSettingsSnapshot, RuntimeSettingsUpdateRequest,
+    RuntimeSettingsUpdateResponse, RuntimeShutdownDecision, RuntimeShutdownReviewStatus,
+    RuntimeStatusSnapshot, RuntimeStorageMode, RuntimeStorageStatus, RuntimeStrategyCatalogEntry,
+    RuntimeStrategyIssue, RuntimeStrategyIssueSeverity, RuntimeStrategyLibraryResponse,
+    RuntimeStrategyUploadRequest, RuntimeStrategyValidationRequest,
     RuntimeStrategyValidationResponse, WebSocketEventHub, WebSocketEventHubError,
     WebSocketEventStreamError,
 };
 use tv_bot_core_types::{
-    ActionSource, EventJournalRecord, EventSeverity, MarketEvent, SystemHealthSnapshot, Timeframe,
-    TradePathLatencyRecord, TradePathTimestamps,
+    ActionSource, AuthenticatedOperator, EventJournalRecord, EventSeverity, MarketEvent,
+    SystemHealthSnapshot, Timeframe, TradePathLatencyRecord, TradePathTimestamps,
 };
 #[cfg(test)]
 use tv_bot_core_types::{BrokerStatusSnapshot, RuntimeMode};
@@ -1080,6 +1080,7 @@ pub struct RuntimeHostState {
     journal_status: RuntimeJournalStatus,
     strategy_library_roots: Vec<PathBuf>,
     runtime_settings: Arc<Mutex<RuntimeSettingsState>>,
+    remote_access: RemoteAccessConfig,
     shutdown_signal: watch::Sender<bool>,
     shutdown_review: Arc<Mutex<ShutdownReviewState>>,
 }
@@ -1295,6 +1296,7 @@ pub async fn run_runtime_host(
         "shutdown_completed",
         ActionSource::System,
         EventSeverity::Info,
+        None,
         json!({
             "reason": "runtime host shutdown approved",
         }),
@@ -1483,6 +1485,7 @@ fn build_runtime_host_state_with_config_path(
             config,
             config_file_path,
         ))),
+        remote_access: config.remote_access.clone(),
         shutdown_signal,
         shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
     })
@@ -1997,10 +2000,38 @@ async fn settings_handler(State(state): State<RuntimeHostState>) -> Json<Runtime
 
 async fn update_settings_handler(
     State(state): State<RuntimeHostState>,
+    headers: HeaderMap,
     Json(request): Json<RuntimeSettingsUpdateRequest>,
 ) -> Response {
     let normalized = normalize_runtime_settings(request.settings);
     let source = request.source.into();
+    let authenticated_operator = match authenticated_operator_from_headers(&headers, &state.remote_access)
+    {
+        Ok(authenticated_operator) => authenticated_operator,
+        Err(message) => {
+            return privileged_json_forbidden_response(
+                &state,
+                "/settings",
+                source,
+                message,
+            )
+            .await;
+        }
+    };
+    if state
+        .remote_access
+        .require_authenticated_identity_for_privileged_commands
+        && authenticated_operator.is_none()
+    {
+        return privileged_json_forbidden_response(
+            &state,
+            "/settings",
+            source,
+            "authenticated operator identity is required for privileged runtime commands"
+                .to_owned(),
+        )
+        .await;
+    }
 
     let (config_file_path, next_settings, settings_snapshot, file_update) = {
         let current = state.runtime_settings.lock().await.clone();
@@ -2026,6 +2057,7 @@ async fn update_settings_handler(
                 "settings_update_failed",
                 source,
                 EventSeverity::Error,
+                authenticated_operator.as_ref(),
                 json!({
                     "config_file_path": path,
                     "message": error.to_string(),
@@ -2048,6 +2080,7 @@ async fn update_settings_handler(
         "settings_updated",
         source,
         EventSeverity::Info,
+        authenticated_operator.as_ref(),
         json!({
             "startup_mode": settings_snapshot.editable.startup_mode,
             "default_strategy_path": settings_snapshot.editable.default_strategy_path,
@@ -2090,6 +2123,7 @@ async fn strategy_library_handler(State(state): State<RuntimeHostState>) -> Resp
 
 async fn strategy_upload_handler(
     State(state): State<RuntimeHostState>,
+    headers: HeaderMap,
     Json(request): Json<RuntimeStrategyUploadRequest>,
 ) -> Response {
     let upload_root = match state.strategy_library_roots.first().cloned() {
@@ -2102,6 +2136,33 @@ async fn strategy_upload_handler(
         }
     };
     let source = request.source.into();
+    let authenticated_operator = match authenticated_operator_from_headers(&headers, &state.remote_access)
+    {
+        Ok(authenticated_operator) => authenticated_operator,
+        Err(message) => {
+            return privileged_json_forbidden_response(
+                &state,
+                "/strategies/upload",
+                source,
+                message,
+            )
+            .await;
+        }
+    };
+    if state
+        .remote_access
+        .require_authenticated_identity_for_privileged_commands
+        && authenticated_operator.is_none()
+    {
+        return privileged_json_forbidden_response(
+            &state,
+            "/strategies/upload",
+            source,
+            "authenticated operator identity is required for privileged runtime commands"
+                .to_owned(),
+        )
+        .await;
+    }
     let requested_filename = request.filename.clone();
 
     match tokio::task::spawn_blocking(move || {
@@ -2122,6 +2183,7 @@ async fn strategy_upload_handler(
                 "upload_saved",
                 source,
                 severity,
+                authenticated_operator.as_ref(),
                 json!({
                     "path": response.display_path,
                     "valid": response.valid,
@@ -2144,13 +2206,41 @@ async fn strategy_upload_handler(
 
 async fn strategy_validation_handler(
     State(state): State<RuntimeHostState>,
+    headers: HeaderMap,
     Json(request): Json<RuntimeStrategyValidationRequest>,
 ) -> Response {
     let path = request.path.clone();
+    let source = request.source.into();
+    let authenticated_operator = match authenticated_operator_from_headers(&headers, &state.remote_access)
+    {
+        Ok(authenticated_operator) => authenticated_operator,
+        Err(message) => {
+            return privileged_json_forbidden_response(
+                &state,
+                "/strategies/validate",
+                source,
+                message,
+            )
+            .await;
+        }
+    };
+    if state
+        .remote_access
+        .require_authenticated_identity_for_privileged_commands
+        && authenticated_operator.is_none()
+    {
+        return privileged_json_forbidden_response(
+            &state,
+            "/strategies/validate",
+            source,
+            "authenticated operator identity is required for privileged runtime commands"
+                .to_owned(),
+        )
+        .await;
+    }
 
     match tokio::task::spawn_blocking(move || validate_strategy_path(path)).await {
         Ok(Ok(response)) => {
-            let source = request.source.into();
             let severity = if response.valid {
                 EventSeverity::Info
             } else {
@@ -2168,6 +2258,7 @@ async fn strategy_validation_handler(
                 action,
                 source,
                 severity,
+                authenticated_operator.as_ref(),
                 json!({
                     "path": response.display_path,
                     "valid": response.valid,
@@ -2189,14 +2280,50 @@ async fn strategy_validation_handler(
 
 async fn runtime_command_handler(
     State(state): State<RuntimeHostState>,
+    headers: HeaderMap,
     Json(request): Json<RuntimeLifecycleRequest>,
 ) -> Response {
+    let source = request.source.into();
+    let authenticated_operator = match authenticated_operator_from_headers(&headers, &state.remote_access)
+    {
+        Ok(authenticated_operator) => authenticated_operator,
+        Err(message) => {
+            return privileged_lifecycle_forbidden_response(
+                &state,
+                "/runtime/commands",
+                source,
+                message,
+            )
+            .await;
+        }
+    };
+    if state
+        .remote_access
+        .require_authenticated_identity_for_privileged_commands
+        && authenticated_operator.is_none()
+    {
+        return privileged_lifecycle_forbidden_response(
+            &state,
+            "/runtime/commands",
+            source,
+            "authenticated operator identity is required for privileged runtime commands"
+                .to_owned(),
+        )
+        .await;
+    }
+
     match request.command {
         RuntimeLifecycleCommand::LoadStrategy { path } => {
-            load_strategy_runtime_command_handler(state, path, request.source).await
+            load_strategy_runtime_command_handler(
+                state,
+                path,
+                request.source,
+                authenticated_operator,
+            )
+            .await
         }
         RuntimeLifecycleCommand::StartWarmup => {
-            start_warmup_runtime_command_handler(state, request.source).await
+            start_warmup_runtime_command_handler(state, request.source, authenticated_operator).await
         }
         RuntimeLifecycleCommand::ResolveReconnectReview {
             decision,
@@ -2209,6 +2336,7 @@ async fn runtime_command_handler(
                 decision,
                 contract_id,
                 reason,
+                authenticated_operator,
             )
             .await
         }
@@ -2217,14 +2345,28 @@ async fn runtime_command_handler(
             contract_id,
             reason,
         } => {
-            shutdown_runtime_command_handler(state, request.source, decision, contract_id, reason)
-                .await
+            shutdown_runtime_command_handler(
+                state,
+                request.source,
+                decision,
+                contract_id,
+                reason,
+                authenticated_operator,
+            )
+            .await
         }
         RuntimeLifecycleCommand::ClosePosition {
             contract_id,
             reason,
         } => {
-            close_position_runtime_command_handler(state, request.source, contract_id, reason).await
+            close_position_runtime_command_handler(
+                state,
+                request.source,
+                contract_id,
+                reason,
+                authenticated_operator,
+            )
+            .await
         }
         RuntimeLifecycleCommand::ManualEntry {
             side,
@@ -2243,17 +2385,36 @@ async fn runtime_command_handler(
                 entry_reference_price,
                 tick_value_usd,
                 reason,
+                authenticated_operator,
             )
             .await
         }
         RuntimeLifecycleCommand::CancelWorkingOrders { reason } => {
-            cancel_working_orders_runtime_command_handler(state, request.source, reason).await
+            cancel_working_orders_runtime_command_handler(
+                state,
+                request.source,
+                reason,
+                authenticated_operator,
+            )
+            .await
         }
         RuntimeLifecycleCommand::Flatten {
             contract_id,
             reason,
-        } => flatten_runtime_command_handler(state, request.source, contract_id, reason).await,
-        command => lifecycle_state_command_handler(state, command, request.source).await,
+        } => {
+            flatten_runtime_command_handler(
+                state,
+                request.source,
+                contract_id,
+                reason,
+                authenticated_operator,
+            )
+            .await
+        }
+        command => {
+            lifecycle_state_command_handler(state, command, request.source, authenticated_operator)
+                .await
+        }
     }
 }
 
@@ -2261,6 +2422,7 @@ async fn lifecycle_state_command_handler(
     state: RuntimeHostState,
     command: RuntimeLifecycleCommand,
     source: tv_bot_control_api::ManualCommandSource,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let history_command = command.clone();
@@ -2275,7 +2437,13 @@ async fn lifecycle_state_command_handler(
         }
     };
 
-    journal_lifecycle_state_command(&state, &history_command, source).await;
+    journal_lifecycle_state_command(
+        &state,
+        &history_command,
+        source,
+        authenticated_operator.as_ref(),
+    )
+    .await;
 
     if let Err(error) = sync_history_for_lifecycle_command(&state, &history_command, source).await {
         let _ = state.health_supervisor.note_error();
@@ -2289,8 +2457,99 @@ async fn journal_lifecycle_state_command(
     state: &RuntimeHostState,
     command: &RuntimeLifecycleCommand,
     source: tv_bot_control_api::ManualCommandSource,
+    authenticated_operator: Option<&AuthenticatedOperator>,
 ) {
     match command {
+        RuntimeLifecycleCommand::SetMode { mode } => {
+            journal_host_event(
+                state,
+                "runtime",
+                "mode_changed",
+                source.into(),
+                EventSeverity::Info,
+                authenticated_operator,
+                json!({
+                    "mode": mode,
+                }),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::Arm { allow_override } => {
+            journal_host_event(
+                state,
+                "runtime",
+                "armed",
+                source.into(),
+                EventSeverity::Warning,
+                authenticated_operator,
+                json!({
+                    "allow_override": allow_override,
+                }),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::Disarm => {
+            journal_host_event(
+                state,
+                "runtime",
+                "disarmed",
+                source.into(),
+                EventSeverity::Info,
+                authenticated_operator,
+                json!({}),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::Pause => {
+            journal_host_event(
+                state,
+                "runtime",
+                "paused",
+                source.into(),
+                EventSeverity::Warning,
+                authenticated_operator,
+                json!({}),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::Resume => {
+            journal_host_event(
+                state,
+                "runtime",
+                "resumed",
+                source.into(),
+                EventSeverity::Info,
+                authenticated_operator,
+                json!({}),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::MarkWarmupReady => {
+            journal_host_event(
+                state,
+                "strategy",
+                "warmup_marked_ready",
+                source.into(),
+                EventSeverity::Info,
+                authenticated_operator,
+                json!({}),
+            )
+            .await;
+        }
+        RuntimeLifecycleCommand::MarkWarmupFailed { reason } => {
+            journal_host_event(
+                state,
+                "strategy",
+                "warmup_marked_failed",
+                source.into(),
+                EventSeverity::Warning,
+                authenticated_operator,
+                json!({
+                    "reason": reason,
+                }),
+            )
+            .await;
+        }
         RuntimeLifecycleCommand::SetNewEntriesEnabled { enabled, reason } => {
             journal_host_event(
                 state,
@@ -2302,6 +2561,7 @@ async fn journal_lifecycle_state_command(
                 } else {
                     EventSeverity::Warning
                 },
+                authenticated_operator,
                 json!({
                     "enabled": enabled,
                     "reason": reason,
@@ -2317,12 +2577,15 @@ async fn load_strategy_runtime_command_handler(
     state: RuntimeHostState,
     path: std::path::PathBuf,
     source: tv_bot_control_api::ManualCommandSource,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let command_result = {
         let mut operator = state.operator_state.lock().await;
-        let message = operator
-            .apply_lifecycle_command(RuntimeLifecycleCommand::LoadStrategy { path }, &context);
+        let message = operator.apply_lifecycle_command(
+            RuntimeLifecycleCommand::LoadStrategy { path: path.clone() },
+            &context,
+        );
         let market_data_seed = operator.market_data_seed().ok();
         let current_mode = operator.status_snapshot(&context).mode;
         (message, market_data_seed, current_mode)
@@ -2338,6 +2601,21 @@ async fn load_strategy_runtime_command_handler(
     }
 
     if let Some(seed) = market_data_seed {
+        journal_host_event(
+            &state,
+            "strategy",
+            "loaded",
+            source.into(),
+            EventSeverity::Info,
+            authenticated_operator.as_ref(),
+            json!({
+                "path": path,
+                "strategy_id": seed.strategy.metadata.strategy_id,
+                "mode": current_mode,
+            }),
+        )
+        .await;
+
         match state.history.record_strategy_loaded(
             seed.strategy.metadata.strategy_id.clone(),
             current_mode,
@@ -2359,6 +2637,7 @@ async fn load_strategy_runtime_command_handler(
 async fn start_warmup_runtime_command_handler(
     state: RuntimeHostState,
     source: tv_bot_control_api::ManualCommandSource,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let market_data_result = {
         let mut market_data = state.market_data.lock().await;
@@ -2380,6 +2659,17 @@ async fn start_warmup_runtime_command_handler(
         Err(error) => return runtime_lifecycle_error_response(&state, error).await,
     };
 
+    journal_host_event(
+        &state,
+        "strategy",
+        "warmup_started",
+        source.into(),
+        EventSeverity::Info,
+        authenticated_operator.as_ref(),
+        json!({}),
+    )
+    .await;
+
     if let Err(error) =
         sync_history_for_lifecycle_command(&state, &RuntimeLifecycleCommand::StartWarmup, source)
             .await
@@ -2396,6 +2686,7 @@ async fn flatten_runtime_command_handler(
     source: tv_bot_control_api::ManualCommandSource,
     contract_id: i64,
     reason: String,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let request_result = {
@@ -2407,8 +2698,13 @@ async fn flatten_runtime_command_handler(
         Err(error) => return runtime_lifecycle_error_response(&state, error).await,
     };
 
-    dispatch_lifecycle_execution_request(&state, request, "flatten command dispatched".to_owned())
-        .await
+    dispatch_lifecycle_execution_request(
+        &state,
+        request,
+        authenticated_operator,
+        "flatten command dispatched".to_owned(),
+    )
+    .await
 }
 
 async fn close_position_runtime_command_handler(
@@ -2416,6 +2712,7 @@ async fn close_position_runtime_command_handler(
     source: tv_bot_control_api::ManualCommandSource,
     contract_id: Option<i64>,
     reason: Option<String>,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let request_result = {
@@ -2430,6 +2727,7 @@ async fn close_position_runtime_command_handler(
     dispatch_lifecycle_execution_request(
         &state,
         request,
+        authenticated_operator,
         "close position command dispatched".to_owned(),
     )
     .await
@@ -2444,6 +2742,7 @@ async fn manual_entry_runtime_command_handler(
     entry_reference_price: rust_decimal::Decimal,
     tick_value_usd: Option<rust_decimal::Decimal>,
     reason: Option<String>,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let request_result = {
@@ -2467,6 +2766,7 @@ async fn manual_entry_runtime_command_handler(
     dispatch_lifecycle_execution_request(
         &state,
         request,
+        authenticated_operator,
         "manual entry command dispatched".to_owned(),
     )
     .await
@@ -2476,6 +2776,7 @@ async fn cancel_working_orders_runtime_command_handler(
     state: RuntimeHostState,
     source: tv_bot_control_api::ManualCommandSource,
     reason: Option<String>,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let request_result = {
@@ -2490,6 +2791,7 @@ async fn cancel_working_orders_runtime_command_handler(
     dispatch_lifecycle_execution_request(
         &state,
         request,
+        authenticated_operator,
         "working-order cancellation dispatched".to_owned(),
     )
     .await
@@ -2501,6 +2803,7 @@ async fn reconnect_review_runtime_command_handler(
     decision: RuntimeReconnectDecision,
     contract_id: Option<i64>,
     reason: Option<String>,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     if !context.reconnect_review.required {
@@ -2533,6 +2836,7 @@ async fn reconnect_review_runtime_command_handler(
                 "reconnect_review_close_requested",
                 source.into(),
                 EventSeverity::Warning,
+                authenticated_operator.as_ref(),
                 json!({
                     "decision": decision,
                     "contract_id": contract_id,
@@ -2553,6 +2857,7 @@ async fn reconnect_review_runtime_command_handler(
             dispatch_lifecycle_execution_request(
                 &state,
                 request,
+                authenticated_operator,
                 "reconnect close command dispatched".to_owned(),
             )
             .await
@@ -2581,6 +2886,7 @@ async fn reconnect_review_runtime_command_handler(
                 "reconnect_review_resolved",
                 source.into(),
                 EventSeverity::Warning,
+                authenticated_operator.as_ref(),
                 json!({
                     "decision": decision,
                     "reason": reason,
@@ -2612,6 +2918,7 @@ async fn shutdown_runtime_command_handler(
     decision: RuntimeShutdownDecision,
     contract_id: Option<i64>,
     reason: Option<String>,
+    authenticated_operator: Option<AuthenticatedOperator>,
 ) -> Response {
     let context = status_context(&state, true).await;
     let open_position_count = active_open_position_count(&context.open_positions);
@@ -2623,6 +2930,7 @@ async fn shutdown_runtime_command_handler(
             decision,
             message.clone(),
             source.into(),
+            authenticated_operator.as_ref(),
             json!({
                 "decision": decision,
                 "open_position_count": 0,
@@ -2649,6 +2957,7 @@ async fn shutdown_runtime_command_handler(
                     "shutdown_blocked",
                     source.into(),
                     EventSeverity::Warning,
+                    authenticated_operator.as_ref(),
                     json!({
                         "decision": decision,
                         "reason": message,
@@ -2675,6 +2984,7 @@ async fn shutdown_runtime_command_handler(
                 decision,
                 message.clone(),
                 source.into(),
+                authenticated_operator.as_ref(),
                 json!({
                     "decision": decision,
                     "open_position_count": open_position_count,
@@ -2703,6 +3013,7 @@ async fn shutdown_runtime_command_handler(
                 "shutdown_flatten_requested",
                 source.into(),
                 EventSeverity::Warning,
+                authenticated_operator.as_ref(),
                 json!({
                     "decision": decision,
                     "contract_id": contract_id,
@@ -2722,7 +3033,12 @@ async fn shutdown_runtime_command_handler(
             };
 
             let (status_code, command_result, error_message) =
-                match execute_lifecycle_execution_request(&state, request).await {
+                match execute_lifecycle_execution_request(
+                    &state,
+                    inject_authenticated_operator(request, authenticated_operator),
+                )
+                .await
+                {
                     Ok(result) => result,
                     Err(message) => {
                         return runtime_lifecycle_success_response(
@@ -2761,8 +3077,10 @@ async fn shutdown_runtime_command_handler(
 async fn dispatch_lifecycle_execution_request(
     state: &RuntimeHostState,
     request: HttpCommandRequest,
+    authenticated_operator: Option<AuthenticatedOperator>,
     success_message: String,
 ) -> Response {
+    let request = inject_authenticated_operator(request, authenticated_operator);
     let context = status_context(state, true).await;
     let request = {
         let operator = state.operator_state.lock().await;
@@ -2834,8 +3152,39 @@ async fn execute_lifecycle_execution_request(
 
 async fn command_handler(
     State(state): State<RuntimeHostState>,
-    Json(request): Json<HttpCommandRequest>,
+    headers: HeaderMap,
+    Json(mut request): Json<HttpCommandRequest>,
 ) -> Response {
+    let source = action_source_for_control_command(&request.command);
+    let authenticated_operator = match authenticated_operator_from_headers(&headers, &state.remote_access)
+    {
+        Ok(authenticated_operator) => authenticated_operator,
+        Err(message) => {
+            return privileged_command_forbidden_response(
+                &state,
+                "/commands",
+                source,
+                message,
+            )
+            .await;
+        }
+    };
+    if state
+        .remote_access
+        .require_authenticated_identity_for_privileged_commands
+        && authenticated_operator.is_none()
+    {
+        return privileged_command_forbidden_response(
+            &state,
+            "/commands",
+            source,
+            "authenticated operator identity is required for privileged runtime commands"
+                .to_owned(),
+        )
+        .await;
+    }
+    request = inject_authenticated_operator(request, authenticated_operator);
+
     let context = status_context(&state, true).await;
     let request_result = {
         let operator = state.operator_state.lock().await;
@@ -3156,6 +3505,7 @@ fn status_code(code: HttpStatusCode) -> StatusCode {
     match code {
         HttpStatusCode::Ok => StatusCode::OK,
         HttpStatusCode::Conflict => StatusCode::CONFLICT,
+        HttpStatusCode::Forbidden => StatusCode::FORBIDDEN,
         HttpStatusCode::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
         HttpStatusCode::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -3545,6 +3895,7 @@ async fn handle_runtime_shutdown_signal(state: &RuntimeHostState) -> bool {
             RuntimeShutdownDecision::LeaveBrokerProtected,
             "shutdown approved after signal; no open broker position is active".to_owned(),
             ActionSource::System,
+            None,
             json!({
                 "decision": RuntimeShutdownDecision::LeaveBrokerProtected,
                 "open_position_count": 0,
@@ -3572,6 +3923,7 @@ async fn handle_runtime_shutdown_signal(state: &RuntimeHostState) -> bool {
         "shutdown_blocked",
         ActionSource::System,
         EventSeverity::Warning,
+        None,
         json!({
             "decision": RuntimeShutdownDecision::LeaveBrokerProtected,
             "open_position_count": open_position_count,
@@ -3621,6 +3973,7 @@ async fn finalize_pending_flatten_shutdown(state: &RuntimeHostState) -> bool {
         "shutdown_flatten_confirmed",
         ActionSource::System,
         EventSeverity::Info,
+        None,
         json!({
             "decision": RuntimeShutdownDecision::FlattenFirst,
             "open_position_count": 0,
@@ -3656,6 +4009,7 @@ async fn approve_runtime_shutdown(
     decision: RuntimeShutdownDecision,
     reason: String,
     source: ActionSource,
+    authenticated_operator: Option<&AuthenticatedOperator>,
     payload: serde_json::Value,
 ) {
     {
@@ -3674,6 +4028,7 @@ async fn approve_runtime_shutdown(
         "shutdown_approved",
         source,
         EventSeverity::Warning,
+        authenticated_operator,
         payload,
     )
     .await;
@@ -4057,6 +4412,64 @@ fn json_message_response(status: StatusCode, message: String) -> Response {
     (status, Json(json!({ "message": message }))).into_response()
 }
 
+async fn privileged_json_forbidden_response(
+    state: &RuntimeHostState,
+    route: &str,
+    source: ActionSource,
+    message: String,
+) -> Response {
+    journal_privileged_auth_rejection(state, route, source, &message).await;
+    json_message_response(StatusCode::FORBIDDEN, message)
+}
+
+async fn privileged_lifecycle_forbidden_response(
+    state: &RuntimeHostState,
+    route: &str,
+    source: ActionSource,
+    message: String,
+) -> Response {
+    journal_privileged_auth_rejection(state, route, source, &message).await;
+    runtime_lifecycle_success_response(state, HttpStatusCode::Forbidden, message, None).await
+}
+
+async fn privileged_command_forbidden_response(
+    state: &RuntimeHostState,
+    route: &str,
+    source: ActionSource,
+    message: String,
+) -> Response {
+    journal_privileged_auth_rejection(state, route, source, &message).await;
+    (
+        StatusCode::FORBIDDEN,
+        Json(HttpCommandResponse {
+            status_code: HttpStatusCode::Forbidden,
+            body: HttpResponseBody::Error { message },
+        }),
+    )
+        .into_response()
+}
+
+async fn journal_privileged_auth_rejection(
+    state: &RuntimeHostState,
+    route: &str,
+    source: ActionSource,
+    message: &str,
+) {
+    journal_host_event(
+        state,
+        "auth",
+        "privileged_command_rejected",
+        source,
+        EventSeverity::Warning,
+        None,
+        json!({
+            "route": route,
+            "message": message,
+        }),
+    )
+    .await;
+}
+
 async fn runtime_lifecycle_success_response(
     state: &RuntimeHostState,
     response_status: HttpStatusCode,
@@ -4164,6 +4577,7 @@ async fn journal_host_event(
     action: &str,
     source: ActionSource,
     severity: EventSeverity,
+    authenticated_operator: Option<&AuthenticatedOperator>,
     payload: serde_json::Value,
 ) {
     let occurred_at = Utc::now();
@@ -4174,7 +4588,7 @@ async fn journal_host_event(
         source,
         severity,
         occurred_at,
-        payload,
+        payload: journal_payload(authenticated_operator, payload),
     };
 
     let started_at = Instant::now();
@@ -4197,6 +4611,104 @@ async fn journal_host_event(
                 category, action, "failed to persist runtime host journal event"
             );
         }
+    }
+}
+
+fn journal_payload(
+    authenticated_operator: Option<&AuthenticatedOperator>,
+    mut payload: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(authenticated_operator) = authenticated_operator {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "authenticated_operator".to_owned(),
+                serde_json::to_value(authenticated_operator)
+                    .expect("authenticated operator should serialize"),
+            );
+        }
+    }
+
+    payload
+}
+
+fn inject_authenticated_operator(
+    mut request: HttpCommandRequest,
+    authenticated_operator: Option<AuthenticatedOperator>,
+) -> HttpCommandRequest {
+    match &mut request.command {
+        ControlApiCommand::ManualIntent { request, .. }
+        | ControlApiCommand::StrategyIntent { request } => {
+            request.authenticated_operator = authenticated_operator;
+        }
+    }
+
+    request
+}
+
+fn action_source_for_control_command(command: &ControlApiCommand) -> ActionSource {
+    match command {
+        ControlApiCommand::ManualIntent { source, .. } => source.action_source(),
+        ControlApiCommand::StrategyIntent { .. } => ActionSource::System,
+    }
+}
+
+fn authenticated_operator_from_headers(
+    headers: &HeaderMap,
+    remote_access: &RemoteAccessConfig,
+) -> Result<Option<AuthenticatedOperator>, String> {
+    if !remote_access.trust_local_identity_headers {
+        return Ok(None);
+    }
+
+    let user_id = optional_identity_header(headers, &remote_access.authenticated_user_header)?;
+    let display_name = optional_identity_header(
+        headers,
+        &remote_access.authenticated_display_name_header,
+    )?;
+    let session_id =
+        optional_identity_header(headers, &remote_access.authenticated_session_header)?;
+    let device_id = optional_identity_header(headers, &remote_access.authenticated_device_header)?;
+    let provider =
+        optional_identity_header(headers, &remote_access.authenticated_provider_header)?;
+    let any_present = user_id.is_some()
+        || display_name.is_some()
+        || session_id.is_some()
+        || device_id.is_some()
+        || provider.is_some();
+
+    if !any_present {
+        return Ok(None);
+    }
+
+    let user_id = user_id.ok_or_else(|| {
+        format!(
+            "trusted identity header `{}` is required when remote access identity headers are present",
+            remote_access.authenticated_user_header
+        )
+    })?;
+
+    Ok(Some(AuthenticatedOperator {
+        user_id,
+        display_name,
+        session_id,
+        device_id,
+        provider: Some(provider.unwrap_or_else(|| "trusted_proxy".to_owned())),
+    }))
+}
+
+fn optional_identity_header(headers: &HeaderMap, name: &str) -> Result<Option<String>, String> {
+    let value = match headers.get(name) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| format!("trusted identity header `{name}` must be valid UTF-8"))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_owned()))
     }
 }
 
@@ -5552,6 +6064,15 @@ mod tests {
                 websocket_bind: "127.0.0.1:8081".to_owned(),
                 config_file_path,
             })),
+            remote_access: tv_bot_config::RemoteAccessConfig {
+                trust_local_identity_headers: false,
+                require_authenticated_identity_for_privileged_commands: false,
+                authenticated_user_header: "x-authenticated-user".to_owned(),
+                authenticated_display_name_header: "x-authenticated-name".to_owned(),
+                authenticated_session_header: "x-authenticated-session".to_owned(),
+                authenticated_device_header: "x-authenticated-device".to_owned(),
+                authenticated_provider_header: "x-authenticated-provider".to_owned(),
+            },
             shutdown_signal: watch::channel(false).0,
             shutdown_review: Arc::new(Mutex::new(ShutdownReviewState::default())),
         }
@@ -5603,6 +6124,7 @@ mod tests {
                 request: RuntimeExecutionRequest {
                     mode: RuntimeMode::Paper,
                     action_source: ActionSource::Cli,
+                    authenticated_operator: None,
                     execution: ExecutionRequest {
                         strategy: sample_strategy(),
                         instrument: ExecutionInstrumentContext {
@@ -5644,6 +6166,24 @@ mod tests {
                 },
             },
         }
+    }
+
+    fn require_authenticated_operator(state: &mut RuntimeHostState) {
+        state.remote_access.trust_local_identity_headers = true;
+        state
+            .remote_access
+            .require_authenticated_identity_for_privileged_commands = true;
+    }
+
+    fn request_with_trusted_operator(
+        builder: axum::http::request::Builder,
+    ) -> axum::http::request::Builder {
+        builder
+            .header("x-authenticated-user", "operator@example.com")
+            .header("x-authenticated-name", "Primary Operator")
+            .header("x-authenticated-session", "session-123")
+            .header("x-authenticated-device", "desktop-01")
+            .header("x-authenticated-provider", "tailscale")
     }
 
     fn sample_market_data_snapshot(
@@ -6063,6 +6603,15 @@ mod tests {
                 http_bind: "127.0.0.1:8080".to_owned(),
                 websocket_bind: "127.0.0.1:8081".to_owned(),
             },
+            remote_access: tv_bot_config::RemoteAccessConfig {
+                trust_local_identity_headers: false,
+                require_authenticated_identity_for_privileged_commands: false,
+                authenticated_user_header: "x-authenticated-user".to_owned(),
+                authenticated_display_name_header: "x-authenticated-name".to_owned(),
+                authenticated_session_header: "x-authenticated-session".to_owned(),
+                authenticated_device_header: "x-authenticated-device".to_owned(),
+                authenticated_provider_header: "x-authenticated-provider".to_owned(),
+            },
             logging: tv_bot_config::LoggingConfig {
                 level: "info".to_owned(),
                 json: false,
@@ -6131,6 +6680,15 @@ mod tests {
             control_api: tv_bot_config::ControlApiConfig {
                 http_bind: "127.0.0.1:8080".to_owned(),
                 websocket_bind: "127.0.0.1:8081".to_owned(),
+            },
+            remote_access: tv_bot_config::RemoteAccessConfig {
+                trust_local_identity_headers: false,
+                require_authenticated_identity_for_privileged_commands: false,
+                authenticated_user_header: "x-authenticated-user".to_owned(),
+                authenticated_display_name_header: "x-authenticated-name".to_owned(),
+                authenticated_session_header: "x-authenticated-session".to_owned(),
+                authenticated_device_header: "x-authenticated-device".to_owned(),
+                authenticated_provider_header: "x-authenticated-provider".to_owned(),
             },
             logging: tv_bot_config::LoggingConfig {
                 level: "info".to_owned(),
@@ -13698,5 +14256,210 @@ selection:
         );
 
         let _ = fs::remove_file(sqlite_path);
+    }
+
+    #[tokio::test]
+    async fn settings_route_rejects_missing_authenticated_operator_when_required() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let execution_api = TestExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let mut state = build_kernel_backed_state_with_manager(
+            sample_session_manager().await,
+            execution_api,
+            journal,
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        require_authenticated_operator(&mut state);
+
+        let app = build_http_router(state);
+        let response = request_with_timeout(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&RuntimeSettingsUpdateRequest {
+                        source: ManualCommandSource::Dashboard,
+                        settings: RuntimeEditableSettings {
+                            startup_mode: RuntimeMode::Observation,
+                            default_strategy_path: None,
+                            allow_sqlite_fallback: false,
+                            paper_account_name: Some("paper-primary".to_owned()),
+                            live_account_name: Some("live-primary".to_owned()),
+                        },
+                    })
+                    .expect("settings update should serialize"),
+                ))
+                .expect("settings request should build"),
+            "settings auth rejection request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("json body should parse");
+        assert!(payload["message"]
+            .as_str()
+            .expect("message should be present")
+            .contains("authenticated operator identity is required"));
+
+        let journal_response = request_with_timeout(
+            app,
+            Request::builder()
+                .uri("/journal")
+                .body(Body::empty())
+                .expect("journal request should build"),
+            "journal after auth rejection",
+        )
+        .await;
+
+        assert_eq!(journal_response.status(), StatusCode::OK);
+        let journal_body = journal_response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let snapshot: RuntimeJournalSnapshot =
+            serde_json::from_slice(&journal_body).expect("journal json should parse");
+        let record = snapshot
+            .records
+            .iter()
+            .find(|record| record.action == "privileged_command_rejected")
+            .expect("auth rejection should be journaled");
+        assert_eq!(record.category, "auth");
+        assert_eq!(record.payload["route"], "/settings");
+    }
+
+    #[tokio::test]
+    async fn command_route_rejects_missing_authenticated_operator_when_required() {
+        let history = test_history();
+        let latency_collector = test_latency_collector();
+        let health_supervisor = test_health_supervisor();
+        let dispatched_commands = empty_dispatch_log();
+        let mut state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_dispatched_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: dispatched_commands.clone(),
+                }),
+                history.clone(),
+                latency_collector.clone(),
+                health_supervisor.clone(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            history,
+            latency_collector,
+            health_supervisor,
+        );
+        require_authenticated_operator(&mut state);
+
+        let app = build_http_router(state);
+        let response = request_with_timeout(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&sample_request()).expect("request should serialize"),
+                ))
+                .expect("command request should build"),
+            "command auth rejection request",
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body should collect")
+            .to_bytes();
+        let command_response: HttpCommandResponse =
+            serde_json::from_slice(&body).expect("command response should parse");
+        assert_eq!(command_response.status_code, HttpStatusCode::Forbidden);
+        assert!(matches!(
+            command_response.body,
+            HttpResponseBody::Error { .. }
+        ));
+        assert!(dispatched_commands
+            .lock()
+            .expect("dispatch log should not poison")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn trusted_identity_headers_are_extracted_and_injected_into_manual_requests() {
+        let mut state = test_state(
+            BoxedDispatcher::new(
+                Box::new(FakeDispatcher {
+                    result: Some(Ok(sample_dispatched_outcome())),
+                    snapshot: sample_dispatch_snapshot(),
+                    dispatched_commands: empty_dispatch_log(),
+                }),
+                test_history(),
+                test_latency_collector(),
+                test_health_supervisor(),
+                WebSocketEventHub::new(EVENT_HUB_CAPACITY).expect("hub should build"),
+            ),
+            test_history(),
+            test_latency_collector(),
+            test_health_supervisor(),
+        );
+        require_authenticated_operator(&mut state);
+
+        let request = request_with_trusted_operator(Request::builder())
+            .body(Body::empty())
+            .expect("header-only request should build");
+        let authenticated_operator =
+            authenticated_operator_from_headers(request.headers(), &state.remote_access)
+                .expect("trusted operator should parse")
+                .expect("trusted operator should be present");
+
+        let injected_request =
+            inject_authenticated_operator(sample_request(), Some(authenticated_operator.clone()));
+        let request = match injected_request.command {
+            ControlApiCommand::ManualIntent { request, .. } => request,
+            ControlApiCommand::StrategyIntent { .. } => {
+                panic!("sample request should stay manual")
+            }
+        };
+        assert_eq!(authenticated_operator.user_id, "operator@example.com");
+        assert_eq!(
+            authenticated_operator.display_name.as_deref(),
+            Some("Primary Operator")
+        );
+        assert_eq!(
+            authenticated_operator.session_id.as_deref(),
+            Some("session-123")
+        );
+        assert_eq!(
+            authenticated_operator.device_id.as_deref(),
+            Some("desktop-01")
+        );
+        assert_eq!(
+            authenticated_operator.provider.as_deref(),
+            Some("tailscale")
+        );
+        assert_eq!(
+            request
+                .authenticated_operator
+                .as_ref()
+                .map(|operator| operator.user_id.as_str()),
+            Some("operator@example.com")
+        );
     }
 }

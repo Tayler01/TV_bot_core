@@ -1,0 +1,17 @@
+{
+    auto_https disable_redirects
+}
+
+# Replace this host with your real tailnet DNS name or approved private hostname.
+bot.tailnet.example {
+    encode zstd gzip
+
+    root * /opt/tv-bot-core/current/dashboard
+    file_server
+
+    @runtime_http path /health /status /readiness /history /journal /settings /strategies /strategies/upload /strategies/validate /runtime/commands /commands /chart/config /chart/snapshot /chart/history
+    reverse_proxy @runtime_http 127.0.0.1:8080
+
+    @runtime_ws path /events /chart/stream
+    reverse_proxy @runtime_ws 127.0.0.1:8081
+}

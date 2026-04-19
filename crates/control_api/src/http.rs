@@ -13,6 +13,7 @@ use crate::{
 pub enum HttpStatusCode {
     Ok = 200,
     Conflict = 409,
+    Forbidden = 403,
     PreconditionRequired = 428,
     InternalServerError = 500,
 }

@@ -75,6 +75,38 @@ If the runtime uses different binds, set:
 For static builds or alternate local reverse proxies, `VITE_CONTROL_API_BASE_URL` can point the dashboard at a different local control-plane origin.
 If the event stream is served from a separate WebSocket origin instead of the same host, set `VITE_CONTROL_API_EVENTS_URL`.
 
+## Production Serving
+
+The recommended production hosting model is:
+
+- build the dashboard with `npm run build`
+- serve the static files from the exchange-near server
+- keep the runtime host on `127.0.0.1`
+- let a reverse proxy such as Caddy serve the dashboard and proxy runtime HTTP and WebSocket routes
+
+The intended production path is one browser origin that serves:
+
+- dashboard assets from `apps/dashboard/dist`
+- runtime HTTP routes such as `/status`, `/readiness`, `/history`, `/journal`, `/settings`, and `/runtime/commands`
+- runtime WebSocket routes `/events` and `/chart/stream`
+
+In that production setup:
+
+- `VITE_CONTROL_API_BASE_URL` may be left empty so the dashboard uses the same origin
+- `VITE_CONTROL_API_EVENTS_URL` may be left empty so WebSockets also use the same origin
+
+The recommended V1 remote deployment uses:
+
+- Tailscale for private operator access
+- Caddy for static serving and reverse proxying
+- localhost runtime binds for the control plane
+
+See:
+
+- [remote_dashboard_access_plan.md](/C:/repos/TV_bot_core/docs/architecture/remote_dashboard_access_plan.md)
+- [remote_deployment.md](/C:/repos/TV_bot_core/docs/ops/remote_deployment.md)
+- [deploy/remote/linux/Caddyfile](/C:/repos/TV_bot_core/deploy/remote/linux/Caddyfile)
+
 ## Follow-up Note
 
 Reconnect hardening now includes startup review-required gating plus paper startup/reconnect `close_position`, `leave_broker_protected`, and `reattach_bot_management` coverage through the real runtime host, and the broader paper release-sweep regression is also in place.

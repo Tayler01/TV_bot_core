@@ -11,9 +11,10 @@ use tv_bot_broker_tradovate::{
     TradovateSessionManager, TradovateSyncApi,
 };
 use tv_bot_core_types::{
-    ActionSource, ActiveRuntimeMode, ArmReadinessReport, ArmState, BrokerAccountRouting,
-    BrokerHealth, BrokerStatusSnapshot, BrokerSyncState, EventJournalRecord, EventSeverity,
-    ReadinessCheck, ReadinessCheckStatus, RiskDecisionStatus, RuntimeMode, WarmupStatus,
+    ActionSource, ActiveRuntimeMode, ArmReadinessReport, ArmState, AuthenticatedOperator,
+    BrokerAccountRouting, BrokerHealth, BrokerStatusSnapshot, BrokerSyncState,
+    EventJournalRecord, EventSeverity, ReadinessCheck, ReadinessCheckStatus, RiskDecisionStatus,
+    RuntimeMode, WarmupStatus,
 };
 use tv_bot_execution_engine::{
     plan_and_execute_tradovate, ExecutionDispatchError, ExecutionDispatchReport, ExecutionRequest,
@@ -87,6 +88,8 @@ pub enum RuntimeKernelError {
 pub struct RuntimeExecutionRequest {
     pub mode: RuntimeMode,
     pub action_source: ActionSource,
+    #[serde(default)]
+    pub authenticated_operator: Option<AuthenticatedOperator>,
     pub execution: ExecutionRequest,
     pub risk_instrument: RiskInstrumentContext,
     pub risk_state: RiskStateContext,
@@ -597,16 +600,19 @@ fn journal_risk_decision<J: EventJournal>(
             }
         },
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-            "decision_status": outcome.decision.status,
-            "reason": outcome.decision.reason,
-            "warnings": outcome.decision.warnings,
-            "approved_quantity": outcome.approved_quantity,
-            "hard_override_reasons": outcome.hard_override_reasons,
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+                "decision_status": outcome.decision.status,
+                "reason": outcome.decision.reason,
+                "warnings": outcome.decision.warnings,
+                "approved_quantity": outcome.approved_quantity,
+                "hard_override_reasons": outcome.hard_override_reasons,
+            }),
+        ),
     })
 }
 
@@ -631,14 +637,34 @@ fn journal_hard_override<J: EventJournal>(
         source: request.action_source,
         severity: EventSeverity::Warning,
         occurred_at,
-        payload: json!({
-            "mode": request.mode,
-            "strategy_id": request.execution.strategy.metadata.strategy_id,
-            "intent": intent_name(&request.execution.intent),
-            "decision_status": outcome.decision.status,
-            "reasons": outcome.hard_override_reasons,
-        }),
+        payload: journal_payload(
+            request.authenticated_operator.as_ref(),
+            json!({
+                "mode": request.mode,
+                "strategy_id": request.execution.strategy.metadata.strategy_id,
+                "intent": intent_name(&request.execution.intent),
+                "decision_status": outcome.decision.status,
+                "reasons": outcome.hard_override_reasons,
+            }),
+        ),
     })
+}
+
+fn journal_payload(
+    authenticated_operator: Option<&AuthenticatedOperator>,
+    mut payload: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(authenticated_operator) = authenticated_operator {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "authenticated_operator".to_owned(),
+                serde_json::to_value(authenticated_operator)
+                    .expect("authenticated operator should serialize"),
+            );
+        }
+    }
+
+    payload
 }
 
 fn intent_name(intent: &tv_bot_core_types::ExecutionIntent) -> &'static str {
@@ -679,13 +705,14 @@ mod tests {
         TradovateSyncSnapshot, TradovateTimeInForce, TradovateUserSyncRequest,
     };
     use tv_bot_core_types::{
-        ActionSource, BreakEvenRule, BrokerEnvironment, BrokerOrderUpdate, BrokerPreference,
-        CompiledStrategy, ContractMode, DailyLossLimit, DashboardDisplay, DataFeedRequirement,
-        DataRequirements, EntryOrderType, EntryRules, ExecutionIntent, ExecutionSpec, ExitRules,
-        FailsafeRules, FeedType, MarketConfig, MarketSelection, PartialTakeProfitRule,
-        PositionSizing, PositionSizingMode, ReversalMode, RiskLimits, ScalingConfig, SessionMode,
-        SessionRules, SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata,
-        Timeframe, TradeManagement, TradeSide, TrailingRule,
+        ActionSource, AuthenticatedOperator, BreakEvenRule, BrokerEnvironment,
+        BrokerOrderUpdate, BrokerPreference, CompiledStrategy, ContractMode, DailyLossLimit,
+        DashboardDisplay, DataFeedRequirement, DataRequirements, EntryOrderType, EntryRules,
+        ExecutionIntent, ExecutionSpec, ExitRules, FailsafeRules, FeedType, MarketConfig,
+        MarketSelection, PartialTakeProfitRule, PositionSizing, PositionSizingMode,
+        ReversalMode, RiskLimits, ScalingConfig, SessionMode, SessionRules,
+        SignalCombinationMode, SignalConfirmation, StateBehavior, StrategyMetadata, Timeframe,
+        TradeManagement, TradeSide, TrailingRule,
     };
     use tv_bot_execution_engine::{ExecutionInstrumentContext, ExecutionStateContext};
     use tv_bot_journal::{EventJournal, InMemoryJournal};
@@ -1046,6 +1073,7 @@ mod tests {
         RuntimeExecutionRequest {
             mode: RuntimeMode::Paper,
             action_source: ActionSource::System,
+            authenticated_operator: None,
             execution: sample_execution_request(strategy),
             risk_instrument: RiskInstrumentContext {
                 tick_value_usd: Some(Decimal::new(10, 0)),
@@ -1580,6 +1608,44 @@ mod tests {
         );
         assert_eq!(records[0].category, "manual");
         assert_eq!(records[0].source, ActionSource::Dashboard);
+    }
+
+    #[tokio::test]
+    async fn authenticated_operator_is_included_in_execution_audit_payloads() {
+        let execution_api = FakeExecutionApi::default();
+        let journal = InMemoryJournal::new();
+        let mut manager = sample_session_manager().await;
+
+        let mut request = sample_runtime_execution_request(sample_strategy());
+        request.action_source = ActionSource::Dashboard;
+        request.authenticated_operator = Some(AuthenticatedOperator {
+            user_id: "operator@example.com".to_owned(),
+            display_name: Some("Primary Operator".to_owned()),
+            session_id: Some("session-123".to_owned()),
+            device_id: Some("desktop-01".to_owned()),
+            provider: Some("tailscale".to_owned()),
+        });
+
+        RuntimeControlLoop::handle_command(
+            RuntimeCommand::ManualIntent(request),
+            &mut manager,
+            &execution_api,
+            &journal,
+        )
+        .await
+        .expect("manual command should succeed");
+
+        let records = journal.list().expect("journal should list records");
+        for record in &records {
+            assert_eq!(
+                record.payload["authenticated_operator"]["user_id"],
+                "operator@example.com"
+            );
+            assert_eq!(
+                record.payload["authenticated_operator"]["provider"],
+                "tailscale"
+            );
+        }
     }
 
     #[tokio::test]

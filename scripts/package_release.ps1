@@ -56,6 +56,7 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "dashboard") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "config") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "docs/ops") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "deploy") | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $bundleDir "strategies/examples") | Out-Null
 
     Invoke-ExternalStep -Description "cargo build" -Command {
@@ -83,6 +84,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $bundleDir "LICENSE")
     Copy-Item -LiteralPath (Join-Path $repoRoot "STRATEGY_SPEC.md") -Destination (Join-Path $bundleDir "STRATEGY_SPEC.md")
     Copy-Item -Path (Join-Path $repoRoot "docs/ops/*") -Destination (Join-Path $bundleDir "docs/ops") -Recurse
+    Copy-Item -Path (Join-Path $repoRoot "deploy/*") -Destination (Join-Path $bundleDir "deploy") -Recurse
     Copy-Item -Path (Join-Path $repoRoot "strategies/examples/*") -Destination (Join-Path $bundleDir "strategies/examples") -Recurse
 
     $manifest = [ordered]@{
@@ -97,6 +99,7 @@ try {
             dashboard = "dashboard"
             runtime_config = "config/runtime.example.toml"
             ops_docs = "docs/ops"
+            deploy_examples = "deploy"
             strategy_examples = "strategies/examples"
         }
     } | ConvertTo-Json -Depth 4

@@ -724,6 +724,7 @@ mod tests {
         RuntimeExecutionRequest {
             mode: tv_bot_core_types::RuntimeMode::Paper,
             action_source: ActionSource::Cli,
+            authenticated_operator: None,
             execution: ExecutionRequest {
                 strategy: sample_strategy(),
                 instrument: ExecutionInstrumentContext {

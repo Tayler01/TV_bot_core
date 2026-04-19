@@ -1,0 +1,14 @@
+[Unit]
+Description=Caddy Reverse Proxy For TV Bot Core Dashboard
+After=network-online.target tv-bot-runtime.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

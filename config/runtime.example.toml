@@ -42,6 +42,17 @@ path = "data/tv_bot_core.sqlite"
 http_bind = "127.0.0.1:8080"
 websocket_bind = "127.0.0.1:8081"
 
+[remote_access]
+# Leave trusted header parsing off unless the runtime stays bound to localhost
+# and only a local reverse proxy injects identity headers.
+trust_local_identity_headers = false
+require_authenticated_identity_for_privileged_commands = false
+# authenticated_user_header = "x-authenticated-user"
+# authenticated_display_name_header = "x-authenticated-name"
+# authenticated_session_header = "x-authenticated-session"
+# authenticated_device_header = "x-authenticated-device"
+# authenticated_provider_header = "x-authenticated-provider"
+
 [logging]
 level = "info"
 json = false

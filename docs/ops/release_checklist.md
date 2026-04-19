@@ -32,6 +32,15 @@ Use this checklist before calling V1 release-ready.
 - Confirm mode visibility clearly separates paper from live.
 - Confirm dangerous actions still require confirmation.
 - Confirm status, readiness, events, journal, history, health, settings, and strategy workflows all load from the local control plane.
+- If validating the remote dashboard path, confirm the dashboard loads through the intended ingress layer and both `/events` and `/chart/stream` work end-to-end.
+
+## Remote Access Validation
+
+- Confirm the standard remote deployment keeps `control_api` binds on localhost only.
+- Confirm runtime ports `8080` and `8081` are not publicly reachable.
+- Confirm Postgres is not publicly reachable.
+- Confirm the remote dashboard loads through the intended private access path, currently Tailscale plus Caddy for the recommended V1 flow.
+- Confirm the break-glass SSH and CLI workflow is documented and works on the candidate build.
 
 ## Packaging And Delivery
 
@@ -40,6 +49,7 @@ Use this checklist before calling V1 release-ready.
   - Linux/macOS: `./scripts/package_release.sh`
 - On Windows, stop any running local runtime or dashboard dev server before packaging so locked binaries or native Node modules do not interfere with the build.
 - Verify the packaged config defaults do not imply live trading or silent fallback behavior.
+- Verify the packaged deployment examples and remote ops runbooks match the candidate build if you intend to support the Linux remote deployment path in that release.
 - Record the exact runtime config, strategy file, and candidate commit used for the validation session.
 
 ## Sign-Off Rule
