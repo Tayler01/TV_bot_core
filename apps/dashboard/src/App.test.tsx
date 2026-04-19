@@ -146,12 +146,15 @@ function installWebSocketMock() {
 function installFetchMock(snapshotOverrides?: {
   reconnectRequired?: boolean;
   shutdownBlocked?: boolean;
-  marketDataHealth?: "healthy" | "degraded" | "failed";
+  marketDataHealth?: "healthy" | "degraded" | "failed" | "initializing";
+  systemFeedDegraded?: boolean;
   sampleDataActive?: boolean;
 }) {
   const reconnectRequired = snapshotOverrides?.reconnectRequired ?? false;
   const shutdownBlocked = snapshotOverrides?.shutdownBlocked ?? false;
   const marketDataHealth = snapshotOverrides?.marketDataHealth ?? "healthy";
+  const systemFeedDegraded =
+    snapshotOverrides?.systemFeedDegraded ?? marketDataHealth !== "healthy";
   const sampleDataActive = snapshotOverrides?.sampleDataActive ?? false;
   const currentStrategy: LoadedStrategySummary = {
     path: "strategies/sample.md",
@@ -265,7 +268,7 @@ function installFetchMock(snapshotOverrides?: {
       db_write_latency_ms: 14,
       queue_lag_ms: 2,
       error_count: 0,
-      feed_degraded: marketDataHealth !== "healthy",
+      feed_degraded: systemFeedDegraded,
       updated_at: "2026-04-12T20:11:03Z",
     },
     latest_trade_latency: {
@@ -1413,6 +1416,22 @@ describe("App", () => {
     expect(
       await screen.findAllByText("Shutdown review"),
     ).not.toHaveLength(0);
+  });
+
+  it("does not flag feed degradation while market data is only initializing", async () => {
+    installWebSocketMock();
+    installFetchMock({
+      marketDataHealth: "initializing",
+      systemFeedDegraded: true,
+    });
+
+    render(<App />);
+
+    expect(await screen.findAllByText("Feed Initializing")).not.toHaveLength(0);
+
+    await waitFor(() => {
+      expect(screen.queryByText("Feed degraded")).not.toBeInTheDocument();
+    });
   });
 
   it("switches chart timeframes and loads older history through the chart control plane", async () => {

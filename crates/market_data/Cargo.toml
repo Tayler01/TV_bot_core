@@ -10,7 +10,7 @@ rust-version.workspace = true
 tv-bot-core-types = { path = "../core_types" }
 async-trait.workspace = true
 chrono.workspace = true
-databento.workspace = true
+databento = { version = "0.45.0", features = ["chrono"] }
 rust_decimal.workspace = true
 secrecy.workspace = true
 serde.workspace = true

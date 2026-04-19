@@ -78,6 +78,11 @@ Checks:
 - inspect `logs/runtime-host.err.log`
 - confirm `sample_data_active` in chart config if you are debugging the chart surface
 
+Windows-specific note:
+
+- If `DATABENTO_API_KEY` is visible in a fresh PowerShell window but the runtime still launches into sample candles, the launch process probably did not inherit the updated user env.
+- Restart from a fresh shell or use `scripts/dev/start_databento_observation.ps1`, which now falls back to Windows user-level `DATABENTO_API_KEY` and `TV_BOT__MARKET_DATA__API_KEY`.
+
 ### 3. Tradovate dispatch unavailable
 
 Symptoms:
@@ -109,6 +114,7 @@ Fix:
 
 - restart the runtime
 - if you used Windows `setx`, open a new terminal first
+- if the helper is being launched from an older parent process, restart that parent process too or rely on the helper's Windows user-env fallback
 
 ### 6. Postgres unavailable
 
@@ -140,6 +146,7 @@ See:
 - confirm the configured dataset is correct
 - confirm the strategy warmup window is reasonable
 - confirm live replay is catching up after a restart or disconnect
+- startup replay now backfills a wider intraday window so off-hours restarts can still seed chart buffers, but Databento live intraday replay must stay within the current UTC day; if `/status` shows an invalid start-time failure, inspect `warmup_mode` and confirm the replay start is not before `00:00:00Z` for the current day
 - if replay-backed warmup reconnects, expect `trade_ready` to stay false until a fresh `ReplayCompleted` is observed
 
 ### Tradovate

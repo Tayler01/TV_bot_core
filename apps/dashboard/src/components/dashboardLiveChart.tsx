@@ -822,6 +822,16 @@ function chartOperationalAlerts(
   const alerts: ChartOperationalAlert[] = [];
   const marketData = runtimeStatus?.market_data_status?.session.market_data ?? null;
   const chartConfig = chartViewModel.config;
+  const marketDataHealth = marketData?.health?.toLowerCase() ?? null;
+  const hasExplicitFeedIssue =
+    Boolean(runtimeStatus?.market_data_detail) || Boolean(marketData?.last_disconnect_reason);
+  const feedIsDegraded =
+    marketDataHealth === "failed" ||
+    marketDataHealth === "degraded" ||
+    (runtimeStatus?.system_health?.feed_degraded === true &&
+      hasExplicitFeedIssue &&
+      marketDataHealth !== "healthy" &&
+      marketDataHealth !== "initializing");
 
   if (runtimeStatus?.reconnect_review.required) {
     alerts.push({
@@ -847,14 +857,10 @@ function chartOperationalAlerts(
     });
   }
 
-  if (
-    marketData?.health === "failed" ||
-    marketData?.health === "degraded" ||
-    runtimeStatus?.system_health?.feed_degraded
-  ) {
+  if (feedIsDegraded) {
     alerts.push({
       id: "feed-degraded",
-      tone: marketData?.health === "failed" ? "danger" : "warning",
+      tone: marketDataHealth === "failed" ? "danger" : "warning",
       headline: "Feed degraded",
       detail: compactAlertDetail(
         runtimeStatus?.market_data_detail ?? marketData?.last_disconnect_reason,

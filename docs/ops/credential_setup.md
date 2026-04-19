@@ -20,6 +20,7 @@ Important:
 
 - If both are set, the config loader currently prefers `TV_BOT__MARKET_DATA__API_KEY`.
 - For clean operator setup, prefer setting only `DATABENTO_API_KEY` unless you explicitly need the legacy alias.
+- The Windows Databento observation helper now falls back to the persisted Windows user environment if the current process was started before the key was added.
 
 ### Tradovate
 
@@ -136,6 +137,20 @@ Then start the runtime:
 .\target\release\tv-bot-runtime.exe .\config\runtime.local.toml
 ```
 
+## Windows Persistent User Env
+
+If you want new terminals to inherit the Databento key automatically:
+
+```powershell
+[Environment]::SetEnvironmentVariable("DATABENTO_API_KEY", "db-...", "User")
+```
+
+Important:
+
+- Windows user env changes only affect new processes.
+- Already-running terminals, editors, and parent launcher apps will not see the new value until restarted.
+- If `echo $env:DATABENTO_API_KEY` works in a new PowerShell window but the bot still shows sample candles, restart the stack from that new shell or use `scripts/dev/start_databento_observation.ps1`, which now checks the Windows user env as a fallback.
+
 ## macOS Or Linux Example
 
 ```bash
@@ -165,7 +180,7 @@ What to confirm:
 ## Common Mistakes
 
 - Setting both Databento key variables and forgetting which one currently wins
-- Updating Windows user environment variables without restarting the runtime
+- Updating Windows user environment variables without restarting the runtime or the parent process that launches it
 - Using a demo Tradovate config with live routing expectations
 - Forgetting to set `paper_account_name` or `live_account_name`
 - Storing live secrets in Git-tracked TOML files

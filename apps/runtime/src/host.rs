@@ -67,7 +67,8 @@ use tv_bot_health::{
 };
 use tv_bot_journal::{EventJournal, JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
-    DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoWarmupMode,
+    fetch_recent_chart_backfill, DatabentoLiveTransport, DatabentoLiveTransportConfig,
+    DatabentoWarmupMode,
     MarketDataConnectionState, MarketDataService, MarketDataServiceSnapshot,
 };
 use tv_bot_metrics::{RuntimeLatencyCollector, RuntimeLatencyError};
@@ -94,10 +95,11 @@ const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SHUTDOWN_REVIEW_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const JOURNAL_ROUTE_LIMIT: usize = 50;
 const CHART_DEFAULT_LIMIT: usize = 300;
-const CHART_MAX_LIMIT: usize = 1_000;
+const CHART_MAX_LIMIT: usize = 10_000;
 const CHART_RECENT_FILL_LIMIT: usize = 20;
 const CHART_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 const SAMPLE_CHART_BAR_COUNT: usize = 480;
+const MIN_STARTUP_REPLAY_DURATION: ChronoDuration = ChronoDuration::hours(16);
 type LiveRuntimeDispatcher = RuntimeKernelCommandDispatcher<
     TradovateLiveClient,
     TradovateLiveClient,
@@ -136,6 +138,7 @@ enum RuntimeMarketDataState {
         last_snapshot: Option<MarketDataServiceSnapshot>,
         warmup_mode: DatabentoWarmupMode,
         sample_chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
+        historical_chart_bars: BTreeMap<Timeframe, Vec<RuntimeChartBar>>,
     },
     #[cfg(test)]
     SnapshotOverride {
@@ -164,16 +167,25 @@ fn strategy_warmup_replay_from(
     strategy: &tv_bot_core_types::CompiledStrategy,
     now: DateTime<Utc>,
 ) -> Option<DateTime<Utc>> {
+    let intraday_replay_floor = databento_intraday_replay_floor(now);
+
     strategy
         .warmup
         .bars_required
         .iter()
         .filter_map(|(timeframe, required_bars)| {
             let required_bars = i32::try_from(*required_bars).ok()?;
-            let replay_window = timeframe_duration(*timeframe).checked_mul(required_bars)?;
+            let minimum_replay_window =
+                timeframe_duration(*timeframe).checked_mul(required_bars)?;
+            let replay_window = if minimum_replay_window < MIN_STARTUP_REPLAY_DURATION {
+                MIN_STARTUP_REPLAY_DURATION
+            } else {
+                minimum_replay_window
+            };
             Some(align_timeframe_start(now, *timeframe) - replay_window)
         })
         .min()
+        .map(|replay_from| replay_from.max(intraday_replay_floor))
 }
 
 fn timeframe_duration(timeframe: tv_bot_core_types::Timeframe) -> ChronoDuration {
@@ -193,6 +205,13 @@ fn align_timeframe_start(
 
     DateTime::<Utc>::from_timestamp(aligned_seconds, 0)
         .expect("aligned warmup timestamp should be valid")
+}
+
+fn databento_intraday_replay_floor(now: DateTime<Utc>) -> DateTime<Utc> {
+    now.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight should always be valid")
+        .and_utc()
 }
 
 fn sample_chart_bars_for_strategy(
@@ -636,6 +655,7 @@ impl RuntimeMarketDataManager {
                     last_snapshot: Some(snapshot),
                     warmup_mode,
                     sample_chart_bars,
+                    historical_chart_bars: BTreeMap::new(),
                 };
             }
             Err(error) => {
@@ -650,20 +670,64 @@ impl RuntimeMarketDataManager {
         &mut self,
         now: chrono::DateTime<Utc>,
     ) -> Result<Option<MarketDataServiceSnapshot>, String> {
+        let api_key = self.config.as_ref().map(|config| config.api_key.clone());
+
         match &mut self.state {
             RuntimeMarketDataState::Active {
                 service,
                 last_snapshot,
                 warmup_mode,
+                historical_chart_bars,
                 ..
-            } => service
-                .start_warmup(warmup_mode.clone(), now)
-                .await
-                .map(|snapshot| {
-                    *last_snapshot = Some(snapshot.clone());
-                    Some(snapshot)
-                })
-                .map_err(|error| format!("market-data warmup start failed: {error}")),
+            } => {
+                let snapshot = service
+                    .start_warmup(warmup_mode.clone(), now)
+                    .await
+                    .map_err(|error| format!("market-data warmup start failed: {error}"))?;
+
+                *last_snapshot = Some(snapshot.clone());
+
+                if historical_chart_bars.is_empty() {
+                    if let Some(api_key) = api_key {
+                        let request = service.session().coordinator().subscription().clone();
+                        match fetch_recent_chart_backfill(
+                            &api_key,
+                            &request.dataset,
+                            request
+                                .instruments
+                                .first()
+                                .map(|instrument| instrument.symbol.as_str())
+                                .unwrap_or_default(),
+                            &request.timeframes,
+                            now,
+                        )
+                        .await
+                        {
+                            Ok(backfill) => {
+                                seed_historical_warmup_buffers(service, &backfill);
+                                let seeded_snapshot = service.snapshot(now);
+                                *last_snapshot = Some(seeded_snapshot);
+                                *historical_chart_bars = backfill
+                                    .into_iter()
+                                    .map(|(timeframe, events)| {
+                                        (
+                                            timeframe,
+                                            events
+                                                .iter()
+                                                .filter_map(runtime_chart_bar_from_market_event)
+                                                .collect::<Vec<_>>(),
+                                        )
+                                    })
+                                    .filter(|(_, bars)| !bars.is_empty())
+                                    .collect();
+                            }
+                            Err(error) => warn!(?error, "failed to seed closed-market chart backfill"),
+                        }
+                    }
+                }
+
+                Ok(Some(snapshot))
+            }
             RuntimeMarketDataState::Unconfigured { detail, .. }
             | RuntimeMarketDataState::PendingStrategy { detail }
             | RuntimeMarketDataState::StrategyBlocked { detail } => Err(detail.clone()),
@@ -754,6 +818,7 @@ impl RuntimeMarketDataManager {
                 service,
                 last_snapshot,
                 sample_chart_bars,
+                historical_chart_bars,
                 ..
             } => {
                 let live_bars = service
@@ -778,7 +843,11 @@ impl RuntimeMarketDataManager {
                 ) {
                     fallback_bars
                 } else {
-                    live_bars
+                    let historical_bars = historical_chart_bars
+                        .get(&timeframe)
+                        .cloned()
+                        .unwrap_or_default();
+                    merge_chart_bars(historical_bars, live_bars)
                 }
             }
             RuntimeMarketDataState::Unconfigured { chart_bars, .. } => {
@@ -979,6 +1048,16 @@ impl RuntimeMarketDataManager {
                 sample_chart_active: *sample_chart_active,
             },
         }
+    }
+}
+
+fn seed_historical_warmup_buffers<T: tv_bot_market_data::DatabentoTransport>(
+    service: &mut MarketDataService<T>,
+    backfill: &BTreeMap<Timeframe, Vec<MarketEvent>>,
+) {
+    let warmup = service.session_mut().coordinator_mut().warmup_mut();
+    for events in backfill.values() {
+        warmup.ingest_history(events.iter());
     }
 }
 
@@ -1567,6 +1646,28 @@ fn paginate_chart_bars(
 
     let start = total_available.saturating_sub(limit);
     (filtered[start..].to_vec(), true)
+}
+
+fn merge_chart_bars(
+    historical_bars: Vec<RuntimeChartBar>,
+    live_bars: Vec<RuntimeChartBar>,
+) -> Vec<RuntimeChartBar> {
+    if historical_bars.is_empty() {
+        return live_bars;
+    }
+    if live_bars.is_empty() {
+        return historical_bars;
+    }
+
+    let mut merged = BTreeMap::new();
+    for bar in historical_bars {
+        merged.insert(bar.closed_at, bar);
+    }
+    for bar in live_bars {
+        merged.insert(bar.closed_at, bar);
+    }
+
+    merged.into_values().collect()
 }
 
 fn parse_preferred_chart_timeframe(value: &str) -> Option<Timeframe> {
@@ -5839,7 +5940,7 @@ mod tests {
     #[test]
     fn strategy_warmup_mode_prefers_historical_replay_for_largest_requirement() {
         let now = chrono::Utc
-            .with_ymd_and_hms(2026, 4, 14, 13, 42, 15)
+            .with_ymd_and_hms(2026, 4, 14, 20, 42, 15)
             .single()
             .expect("timestamp should be valid");
         let mut strategy = sample_strategy();
@@ -5855,7 +5956,35 @@ mod tests {
         assert_eq!(
             replay_from,
             chrono::Utc
-                .with_ymd_and_hms(2026, 4, 14, 9, 30, 0)
+                .with_ymd_and_hms(2026, 4, 14, 4, 40, 0)
+                .single()
+                .expect("timestamp should be valid")
+        );
+        assert_eq!(
+            strategy_warmup_mode(&strategy, now),
+            DatabentoWarmupMode::ReplayFrom(replay_from)
+        );
+    }
+
+    #[test]
+    fn strategy_warmup_mode_clamps_replay_to_current_utc_day() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 4, 19, 1, 12, 15)
+            .single()
+            .expect("timestamp should be valid");
+        let mut strategy = sample_strategy();
+        strategy.warmup.bars_required = std::collections::BTreeMap::from([
+            (Timeframe::OneSecond, 900),
+            (Timeframe::OneMinute, 20),
+        ]);
+
+        let replay_from = strategy_warmup_replay_from(&strategy, now)
+            .expect("historical warmup should compute a replay start");
+
+        assert_eq!(
+            replay_from,
+            chrono::Utc
+                .with_ymd_and_hms(2026, 4, 19, 0, 0, 0)
                 .single()
                 .expect("timestamp should be valid")
         );
@@ -5877,7 +6006,7 @@ mod tests {
             (Timeframe::FiveMinute, 4),
         ]);
         let expected_replay_from = chrono::Utc
-            .with_ymd_and_hms(2026, 4, 14, 13, 20, 0)
+            .with_ymd_and_hms(2026, 4, 13, 21, 40, 0)
             .single()
             .expect("timestamp should be valid");
 

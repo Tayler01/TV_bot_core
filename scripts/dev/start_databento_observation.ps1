@@ -78,19 +78,54 @@ function Wait-ForUrl {
     throw "Timed out waiting for $Url"
 }
 
-if ($env:DATABENTO_API_KEY) {
-    $env:TV_BOT__MARKET_DATA__API_KEY = $env:DATABENTO_API_KEY
+function Get-EffectiveDatabentoApiKey {
+    $processDatabentoKey = $env:DATABENTO_API_KEY
+    $processLegacyKey = $env:TV_BOT__MARKET_DATA__API_KEY
+
+    if (-not $processDatabentoKey) {
+        $processDatabentoKey = [Environment]::GetEnvironmentVariable("DATABENTO_API_KEY", "User")
+    }
+
+    if (-not $processLegacyKey) {
+        $processLegacyKey = [Environment]::GetEnvironmentVariable("TV_BOT__MARKET_DATA__API_KEY", "User")
+    }
+
+    if ($processDatabentoKey) {
+        return @{
+            Key = $processDatabentoKey
+            Source = if ($env:DATABENTO_API_KEY) { "process:DATABENTO_API_KEY" } else { "user:DATABENTO_API_KEY" }
+        }
+    }
+
+    if ($processLegacyKey) {
+        return @{
+            Key = $processLegacyKey
+            Source = if ($env:TV_BOT__MARKET_DATA__API_KEY) { "process:TV_BOT__MARKET_DATA__API_KEY" } else { "user:TV_BOT__MARKET_DATA__API_KEY" }
+        }
+    }
+
+    return $null
+}
+
+$effectiveDatabento = Get-EffectiveDatabentoApiKey
+
+if ($effectiveDatabento) {
+    $env:DATABENTO_API_KEY = $effectiveDatabento.Key
+    $env:TV_BOT__MARKET_DATA__API_KEY = $effectiveDatabento.Key
 }
 
 if (-not $env:TV_BOT__MARKET_DATA__API_KEY) {
     throw @"
 No Databento API key is set.
 
-Set it in this PowerShell session first, for example:
+Set it in this PowerShell session first, or persist it at the Windows user level, for example:
   `$env:DATABENTO_API_KEY = "db-..."
 
 or:
   `$env:TV_BOT__MARKET_DATA__API_KEY = "db-..."
+
+Persistent Windows user env example:
+  [Environment]::SetEnvironmentVariable("DATABENTO_API_KEY", "db-...", "User")
 
 Then rerun:
   .\scripts\dev\start_databento_observation.ps1
@@ -145,6 +180,7 @@ if ($StartDashboard) {
 
 Write-Host ""
 Write-Host "Databento observation stack is ready."
+Write-Host "Databento key source: $($effectiveDatabento.Source)"
 Write-Host "Runtime root:     http://127.0.0.1:8080/"
 Write-Host "Runtime status:   $statusUrl"
 Write-Host "Runtime readiness:$readinessUrl"

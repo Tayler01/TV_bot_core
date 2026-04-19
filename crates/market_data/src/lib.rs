@@ -1,6 +1,7 @@
 //! Strategy-agnostic Databento market-data contracts, rolling buffers, and warmup tracking.
 
 mod databento_live;
+mod databento_chart_backfill;
 mod service;
 
 use std::collections::{HashMap, VecDeque};
@@ -18,6 +19,7 @@ use tv_bot_core_types::{
 pub use databento_live::{
     DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoSlowReaderPolicy,
 };
+pub use databento_chart_backfill::fetch_recent_chart_backfill;
 pub use service::{DatabentoWarmupMode, MarketDataService, MarketDataServiceSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,12 +198,20 @@ impl<T> RollingBuffer<T> {
     }
 }
 
+fn retained_buffer_capacity(timeframe: Timeframe, required: u32) -> usize {
+    let required = required as usize;
+    let chart_floor =
+        usize::try_from((Duration::hours(2).num_seconds() / timeframe_duration(timeframe).num_seconds()).max(1))
+            .unwrap_or(required);
+
+    required.max(chart_floor)
+}
+
 #[derive(Clone, Debug)]
 struct AggregationWindow {
     symbol: String,
     timeframe: Timeframe,
     window_start: DateTime<Utc>,
-    last_close_at: DateTime<Utc>,
     open: Decimal,
     high: Decimal,
     low: Decimal,
@@ -219,13 +229,11 @@ impl AggregationWindow {
         low: Decimal,
         close: Decimal,
         volume: u64,
-        last_close_at: DateTime<Utc>,
     ) -> Self {
         Self {
             symbol,
             timeframe,
             window_start,
-            last_close_at,
             open,
             high,
             low,
@@ -240,7 +248,6 @@ impl AggregationWindow {
         low: Decimal,
         close: Decimal,
         volume: u64,
-        last_close_at: DateTime<Utc>,
     ) {
         if high > self.high {
             self.high = high;
@@ -250,10 +257,10 @@ impl AggregationWindow {
         }
         self.close = close;
         self.volume = self.volume.saturating_add(volume);
-        self.last_close_at = last_close_at;
     }
 
     fn into_event(self) -> MarketEvent {
+        let closed_at = self.window_start + timeframe_duration(self.timeframe);
         MarketEvent::Bar {
             symbol: self.symbol,
             timeframe: self.timeframe,
@@ -262,7 +269,7 @@ impl AggregationWindow {
             low: self.low,
             close: self.close,
             volume: self.volume,
-            closed_at: self.last_close_at,
+            closed_at,
         }
     }
 }
@@ -340,7 +347,7 @@ impl MultiTimeframeAggregator {
 
             match self.windows.get_mut(&key) {
                 Some(window) if window.window_start == window_start => {
-                    window.update(*high, *low, *close, *volume, *closed_at);
+                    window.update(*high, *low, *close, *volume);
                 }
                 Some(_) => {
                     let finished = self.windows.remove(&key).expect("window exists");
@@ -356,7 +363,6 @@ impl MultiTimeframeAggregator {
                             *low,
                             *close,
                             *volume,
-                            *closed_at,
                         ),
                     );
                 }
@@ -372,7 +378,6 @@ impl MultiTimeframeAggregator {
                             *low,
                             *close,
                             *volume,
-                            *closed_at,
                         ),
                     );
                 }
@@ -436,7 +441,10 @@ impl WarmupTracker {
                 });
             }
 
-            buffers.insert(*timeframe, RollingBuffer::new(*required as usize)?);
+            buffers.insert(
+                *timeframe,
+                RollingBuffer::new(retained_buffer_capacity(*timeframe, *required))?,
+            );
             required_bars.insert(*timeframe, *required);
         }
 
@@ -461,7 +469,8 @@ impl WarmupTracker {
         for (timeframe, required) in &self.required_bars {
             self.buffers.insert(
                 *timeframe,
-                RollingBuffer::new(*required as usize).expect("validated"),
+                RollingBuffer::new(retained_buffer_capacity(*timeframe, *required))
+                    .expect("validated"),
             );
         }
 
@@ -486,6 +495,12 @@ impl WarmupTracker {
                 }
             }
             _ => {}
+        }
+    }
+
+    pub fn ingest_history<'a>(&mut self, events: impl IntoIterator<Item = &'a MarketEvent>) {
+        for event in events {
+            self.ingest(event);
         }
     }
 
@@ -1364,6 +1379,29 @@ mod tests {
         }
     }
 
+    fn second_bar(
+        minute: u32,
+        second: u32,
+        open: i64,
+        high: i64,
+        low: i64,
+        close: i64,
+        volume: u64,
+    ) -> MarketEvent {
+        MarketEvent::Bar {
+            symbol: "GCM2026".to_owned(),
+            timeframe: Timeframe::OneSecond,
+            open: open.into(),
+            high: high.into(),
+            low: low.into(),
+            close: close.into(),
+            volume,
+            closed_at: Utc
+                .with_ymd_and_hms(2026, 4, 10, 13, minute, second)
+                .unwrap(),
+        }
+    }
+
     fn multi_timeframe_strategy() -> CompiledStrategy {
         let mut strategy = sample_strategy();
         strategy.data_requirements.feeds = vec![
@@ -1514,6 +1552,19 @@ mod tests {
     }
 
     #[test]
+    fn warmup_tracker_retains_chart_sized_buffers_beyond_minimum_requirements() {
+        let strategy = sample_strategy();
+        let now = Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap();
+        let tracker =
+            WarmupTracker::from_strategy(&strategy, "GCM2026", now).expect("tracker should build");
+
+        let progress = tracker.progress(now);
+        assert_eq!(progress.buffers[0].timeframe, Timeframe::OneMinute);
+        assert_eq!(progress.buffers[0].required_bars, 3);
+        assert_eq!(progress.buffers[0].capacity, 120);
+    }
+
+    #[test]
     fn coordinator_reports_initializing_until_required_feeds_are_ready() {
         let strategy = sample_strategy();
         let mapping = sample_mapping();
@@ -1552,6 +1603,27 @@ mod tests {
         assert_eq!(snapshot.health, MarketDataHealth::Healthy);
         assert_eq!(snapshot.warmup.status, WarmupStatus::Ready);
         assert!(coordinator.can_open_new_positions(now));
+    }
+
+    #[test]
+    fn historical_warmup_seed_can_ready_buffers_without_marking_feed_healthy() {
+        let strategy = sample_strategy();
+        let mapping = sample_mapping();
+        let now = Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap();
+        let mut coordinator =
+            DatabentoMarketDataCoordinator::from_strategy(&strategy, &mapping, now)
+                .expect("coordinator should build");
+
+        coordinator.set_connection_state(MarketDataConnectionState::Subscribed, now);
+        coordinator.warmup_mut().start(now);
+        coordinator
+            .warmup_mut()
+            .ingest_history([bar(1), bar(2), bar(3)].iter());
+
+        let snapshot = coordinator.snapshot(now);
+        assert_eq!(snapshot.warmup.status, WarmupStatus::Ready);
+        assert_eq!(snapshot.health, MarketDataHealth::Initializing);
+        assert!(!coordinator.can_open_new_positions(now));
     }
 
     #[test]
@@ -1662,6 +1734,37 @@ mod tests {
                 closed_at: Utc.with_ymd_and_hms(2026, 4, 10, 13, 5, 0).unwrap(),
             }
         );
+    }
+
+    #[test]
+    fn aggregator_aligns_completed_bar_close_to_target_window_boundary() {
+        let mut aggregator =
+            MultiTimeframeAggregator::new(Timeframe::OneSecond, vec![Timeframe::OneMinute])
+                .expect("aggregator should build");
+
+        for event in [
+            second_bar(0, 57, 100, 101, 99, 100, 5),
+            second_bar(0, 58, 100, 102, 100, 101, 7),
+            second_bar(0, 59, 101, 103, 100, 102, 6),
+            second_bar(1, 0, 102, 104, 101, 103, 8),
+        ] {
+            let completed = aggregator.ingest(&event);
+            if !completed.is_empty() {
+                assert_eq!(
+                    completed,
+                    vec![MarketEvent::Bar {
+                        symbol: "GCM2026".to_owned(),
+                        timeframe: Timeframe::OneMinute,
+                        open: 100.into(),
+                        high: 104.into(),
+                        low: 99.into(),
+                        close: 103.into(),
+                        volume: 26,
+                        closed_at: Utc.with_ymd_and_hms(2026, 4, 10, 13, 1, 0).unwrap(),
+                    }]
+                );
+            }
+        }
     }
 
     #[test]

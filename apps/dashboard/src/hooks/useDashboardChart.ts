@@ -133,12 +133,27 @@ function chartVisibleBarsTarget(timeframe: Timeframe, viewportWidth = chartViewp
   return 64;
 }
 
+function chartBarsForTwoHours(timeframe: Timeframe): number {
+  switch (timeframe) {
+    case "1s":
+      return 7_200;
+    case "5m":
+      return 24;
+    case "1m":
+    default:
+      return 120;
+  }
+}
+
 function chartSnapshotLimit(timeframe: Timeframe, viewportWidth = chartViewportWidth()): number {
-  return Math.max(Math.round(chartVisibleBarsTarget(timeframe, viewportWidth) * 3), 180);
+  return Math.max(chartVisibleBarsTarget(timeframe, viewportWidth), chartBarsForTwoHours(timeframe));
 }
 
 function chartHistoryPageSize(timeframe: Timeframe, viewportWidth = chartViewportWidth()): number {
-  return Math.max(Math.round(chartVisibleBarsTarget(timeframe, viewportWidth) * 1.5), 120);
+  return Math.max(
+    Math.round(chartVisibleBarsTarget(timeframe, viewportWidth) * 1.25),
+    Math.round(chartBarsForTwoHours(timeframe) / 2),
+  );
 }
 
 export function useDashboardChart(
