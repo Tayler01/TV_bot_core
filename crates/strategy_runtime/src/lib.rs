@@ -517,18 +517,24 @@ fn warmup_buffers_ready(
     definition: &RuntimeStrategyDefinition,
     snapshot: &StrategyMarketSnapshot,
 ) -> bool {
-    definition
+    let mut readiness = definition
         .strategy
         .warmup
         .bars_required
         .iter()
-        .all(|(timeframe, required)| {
+        .map(|(timeframe, required)| {
             snapshot
                 .bars_by_timeframe
                 .get(timeframe)
                 .map(|bars| bars.len() >= *required as usize)
                 .unwrap_or(false)
-        })
+        });
+
+    if definition.strategy.warmup.ready_requires_all {
+        readiness.all(|ready| ready)
+    } else {
+        readiness.any(|ready| ready)
+    }
 }
 
 fn evaluate_side_signal(
@@ -696,7 +702,7 @@ fn session_state(
         SessionMode::FixedWindow => definition
             .trade_window
             .as_ref()
-            .map(|window| local_time >= window.start && local_time < window.end)
+            .map(|window| trade_window_contains(window, local_time))
             .unwrap_or(false),
     };
     let after_entry_cutoff = definition
@@ -733,7 +739,7 @@ fn session_state(
         SessionMode::FixedWindow => definition
             .trade_window
             .as_ref()
-            .map(|window| local_time >= window.end || !day_allowed)
+            .map(|window| trade_window_session_end_reached(window, local_time) || !day_allowed)
             .unwrap_or(false),
     };
     let flatten_due_to_rule =
@@ -750,6 +756,26 @@ fn session_state(
             || flatten_due_to_rule);
 
     (blockers.is_empty(), blockers, flatten_due)
+}
+
+fn trade_window_contains(window: &RuntimeTradeWindow, local_time: NaiveTime) -> bool {
+    if trade_window_wraps_midnight(window) {
+        local_time >= window.start || local_time < window.end
+    } else {
+        local_time >= window.start && local_time < window.end
+    }
+}
+
+fn trade_window_session_end_reached(window: &RuntimeTradeWindow, local_time: NaiveTime) -> bool {
+    if trade_window_wraps_midnight(window) {
+        local_time >= window.end && local_time < window.start
+    } else {
+        local_time >= window.end
+    }
+}
+
+fn trade_window_wraps_midnight(window: &RuntimeTradeWindow) -> bool {
+    window.start >= window.end
 }
 
 fn opposite_direction(direction: SignalDirection, side: EvaluationSide) -> bool {

@@ -790,8 +790,8 @@ impl RuntimeOperatorState {
             BrokerProtectionSupport {
                 stop_loss: true,
                 take_profit: true,
-                trailing_stop: true,
-                daily_loss_limit: true,
+                trailing_stop: false,
+                daily_loss_limit: false,
             }
         } else {
             BrokerProtectionSupport::default()
@@ -1590,6 +1590,23 @@ mod tests {
     }
 
     #[test]
+    fn broker_protection_support_matches_current_tradovate_execution_capabilities() {
+        let operator = RuntimeOperatorState::new(RuntimeStateMachine::new(RuntimeMode::Paper));
+
+        let support = operator.broker_protection_support(&sample_context());
+
+        assert_eq!(
+            support,
+            BrokerProtectionSupport {
+                stop_loss: true,
+                take_profit: true,
+                trailing_stop: false,
+                daily_loss_limit: false,
+            }
+        );
+    }
+
+    #[test]
     fn readiness_requires_override_after_load_and_ready_warmup() {
         let strategy_path = temp_strategy_path();
         write_strategy_file(&strategy_path);
@@ -2160,7 +2177,7 @@ mod tests {
         assert!(
             journal_actions.starts_with(&["intent_received".to_owned(), "decision".to_owned(),])
         );
-        assert!(!journal_actions
+        assert!(journal_actions
             .iter()
             .any(|action| action == "hard_override_used"));
         assert!(journal_actions

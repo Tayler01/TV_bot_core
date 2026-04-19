@@ -18,4 +18,5 @@ logs/
 *.db-shm
 *.db-wal
 .playwright-cli/
+output/
 strat_research/

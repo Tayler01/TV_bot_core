@@ -265,7 +265,11 @@ impl ExecutionPlanner {
                     return Err(ExecutionEngineError::ScaleInDisabled);
                 }
 
-                if request.strategy.execution.scaling.max_legs <= 1 {
+                // Execution planning only has the live broker position snapshot, so use the
+                // open same-side quantity as the conservative proxy for how many scaling units
+                // are already active until richer leg tracking is threaded into this path.
+                let active_scale_units = position.quantity.unsigned_abs();
+                if active_scale_units >= request.strategy.execution.scaling.max_legs {
                     return Err(ExecutionEngineError::ScaleInMaxLegsReached);
                 }
             } else {
@@ -1532,6 +1536,35 @@ mod tests {
             }
             other => panic!("unexpected action: {other:?}"),
         }
+    }
+
+    #[test]
+    fn same_side_scale_in_is_blocked_when_scale_units_reach_max_legs() {
+        let mut state = state_context();
+        state.current_position = Some(sample_position(3));
+
+        let error = ExecutionPlanner::plan_tradovate(&ExecutionRequest {
+            strategy: sample_strategy(
+                ReversalMode::FlattenFirst,
+                true,
+                3,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BrokerPreferred,
+                BrokerPreference::BotAllowed,
+            ),
+            instrument: instrument_context(),
+            state,
+            intent: ExecutionIntent::Enter {
+                side: TradeSide::Buy,
+                order_type: EntryOrderType::Market,
+                quantity: 1,
+                protective_brackets_expected: false,
+                reason: "scale in after max legs".to_owned(),
+            },
+        })
+        .expect_err("same-side scale-in should stop once the configured maximum is reached");
+
+        assert_eq!(error, ExecutionEngineError::ScaleInMaxLegsReached);
     }
 
     #[test]

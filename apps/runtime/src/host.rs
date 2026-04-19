@@ -6006,10 +6006,7 @@ mod tests {
             (Timeframe::OneMinute, 10),
             (Timeframe::FiveMinute, 4),
         ]);
-        let expected_replay_from = chrono::Utc
-            .with_ymd_and_hms(2026, 4, 13, 21, 40, 0)
-            .single()
-            .expect("timestamp should be valid");
+        let expected_replay_from = databento_intraday_replay_floor(now);
 
         let config = AppConfig {
             runtime: tv_bot_config::RuntimeConfig {
@@ -6306,9 +6303,11 @@ mod tests {
     }
 
     fn write_strategy_file(path: &PathBuf) {
+        let markdown = include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md")
+            .replace("broker_side_required: true", "broker_side_required: false");
         fs::write(
             path,
-            include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md"),
+            markdown,
         )
         .expect("strategy file should write");
     }

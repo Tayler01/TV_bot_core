@@ -268,6 +268,35 @@ fn emits_long_entry_when_flat_and_signal_edges_on() {
 }
 
 #[test]
+fn ready_requires_any_allows_runtime_evaluation_with_partial_buffers() {
+    let strategy = base_strategy_markdown()
+        .replace(
+            "timeframes:\n  - 1m\nmulti_timeframe: false",
+            "timeframes:\n  - 1m\n  - 5m\nmulti_timeframe: true",
+        )
+        .replace(
+            "bars_required:\n  \"1m\": 10\nready_requires_all: true",
+            "bars_required:\n  \"1m\": 10\n  \"5m\": 2\nready_requires_all: false",
+        );
+    let compiled = compile_strategy(&strategy);
+    let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
+    let now = Utc::now();
+    let mut state = StrategyRuntimeState::default();
+
+    let evaluation =
+        StrategyRuntimeEngine::evaluate(&runtime, &mut state, &snapshot(now, bullish_bars()))
+            .expect("partial warmup should still evaluate");
+
+    assert!(matches!(
+        evaluation.intent,
+        Some(ExecutionIntent::Enter {
+            side: TradeSide::Buy,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn exits_on_opposite_signal_when_position_is_open() {
     let compiled = compile_strategy(&base_strategy_markdown());
     let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
@@ -324,6 +353,34 @@ fn blocks_entries_outside_trade_window() {
 }
 
 #[test]
+fn allows_entries_during_overnight_trade_window() {
+    let strategy = base_strategy_markdown().replace(
+        "mode: always\ntimezone: America/New_York",
+        "mode: fixed_window\ntimezone: America/New_York\ntrade_window:\n  start: \"18:00:00\"\n  end: \"17:00:00\"",
+    );
+    let compiled = compile_strategy(&strategy);
+    let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
+    let mut state = StrategyRuntimeState::default();
+    let now = chrono_tz::America::New_York
+        .with_ymd_and_hms(2026, 4, 10, 20, 0, 0)
+        .single()
+        .expect("valid timestamp")
+        .with_timezone(&Utc);
+
+    let evaluation =
+        StrategyRuntimeEngine::evaluate(&runtime, &mut state, &snapshot(now, bullish_bars()))
+            .expect("session evaluation");
+
+    assert!(matches!(
+        evaluation.intent,
+        Some(ExecutionIntent::Enter {
+            side: TradeSide::Buy,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn pauses_when_reconnect_review_is_required() {
     let compiled = compile_strategy(&base_strategy_markdown());
     let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
@@ -343,6 +400,38 @@ fn pauses_when_reconnect_review_is_required() {
 }
 
 #[test]
+fn does_not_flatten_during_active_overnight_session() {
+    let strategy = base_strategy_markdown().replace(
+        "mode: always\ntimezone: America/New_York",
+        "mode: fixed_window\ntimezone: America/New_York\ntrade_window:\n  start: \"18:00:00\"\n  end: \"17:00:00\"",
+    );
+    let compiled = compile_strategy(&strategy);
+    let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
+    let mut state = StrategyRuntimeState::default();
+    let now = chrono_tz::America::New_York
+        .with_ymd_and_hms(2026, 4, 10, 20, 0, 0)
+        .single()
+        .expect("valid timestamp")
+        .with_timezone(&Utc);
+    let mut market_snapshot = snapshot(now, bullish_bars());
+    market_snapshot.position = Some(BrokerPositionSnapshot {
+        account_id: Some("acct-paper".to_owned()),
+        symbol: "GCM2026".to_owned(),
+        quantity: 1,
+        average_price: Some(Decimal::from(2100)),
+        realized_pnl: None,
+        unrealized_pnl: None,
+        protective_orders_present: true,
+        captured_at: now,
+    });
+
+    let evaluation =
+        StrategyRuntimeEngine::evaluate(&runtime, &mut state, &market_snapshot).expect("hold");
+
+    assert!(evaluation.intent.is_none());
+}
+
+#[test]
 fn flattens_after_session_end_when_position_is_open() {
     let strategy = base_strategy_markdown().replace(
         "mode: always\ntimezone: America/New_York",
@@ -353,6 +442,41 @@ fn flattens_after_session_end_when_position_is_open() {
     let mut state = StrategyRuntimeState::default();
     let now = chrono_tz::America::New_York
         .with_ymd_and_hms(2026, 4, 10, 13, 5, 0)
+        .single()
+        .expect("valid timestamp")
+        .with_timezone(&Utc);
+    let mut market_snapshot = snapshot(now, bullish_bars());
+    market_snapshot.position = Some(BrokerPositionSnapshot {
+        account_id: Some("acct-paper".to_owned()),
+        symbol: "GCM2026".to_owned(),
+        quantity: 1,
+        average_price: Some(Decimal::from(2100)),
+        realized_pnl: None,
+        unrealized_pnl: None,
+        protective_orders_present: true,
+        captured_at: now,
+    });
+
+    let evaluation =
+        StrategyRuntimeEngine::evaluate(&runtime, &mut state, &market_snapshot).expect("flatten");
+
+    assert!(matches!(
+        evaluation.intent,
+        Some(ExecutionIntent::Flatten { .. })
+    ));
+}
+
+#[test]
+fn flattens_after_overnight_session_end_when_position_is_open() {
+    let strategy = base_strategy_markdown().replace(
+        "mode: always\ntimezone: America/New_York",
+        "mode: fixed_window\ntimezone: America/New_York\ntrade_window:\n  start: \"18:00:00\"\n  end: \"17:00:00\"",
+    );
+    let compiled = compile_strategy(&strategy);
+    let runtime = StrategyRuntimeCompiler::compile(&compiled).expect("runtime compile");
+    let mut state = StrategyRuntimeState::default();
+    let now = chrono_tz::America::New_York
+        .with_ymd_and_hms(2026, 4, 11, 17, 30, 0)
         .single()
         .expect("valid timestamp")
         .with_timezone(&Utc);
