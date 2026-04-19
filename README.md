@@ -111,6 +111,22 @@ npm test -- --run
 npm run build
 ```
 
+## Dependencies
+
+Main dependency manifests:
+
+- Rust workspace: `Cargo.toml`
+- Locked Rust versions: `Cargo.lock`
+- Dashboard frontend: `apps/dashboard/package.json`
+
+Primary runtime and build dependencies:
+
+- Rust `1.76` toolchain with Cargo
+- `tokio`, `axum`, `reqwest`, and `tokio-tungstenite` for async runtime and HTTP/WebSocket control-plane work
+- `serde`, `toml`, `chrono`, `rust_decimal`, and `thiserror` for config, domain types, serialization, and structured errors
+- `databento` for market-data transport
+- React `19`, Vite, Vitest, and `lightweight-charts` for the dashboard
+
 ## API Key And Credential Setup
 
 The runtime is designed to read secrets from environment variables instead of storing them in Git-tracked config files.
