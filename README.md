@@ -4,10 +4,10 @@ Strategy-agnostic futures trading platform foundations for Databento market data
 
 ## Current Status
 
-- Phase 0 through Phase 4 foundations are in place across the Rust workspace.
-- Phase 5 is substantially in place: the runtime host serves the local control plane, status/readiness project live broker and market-data state plus shared storage/journal policy status, and the CLI plus dashboard now drive the main operator flows for strategy load/validation, warmup, mode, arm/disarm, manual entry, close/cancel, flatten, events, history, journal, settings, and health; the dashboard redesign is now dark-first with stronger control/monitoring hierarchy, extracted monitoring and operator-workflow components, a dedicated runtime-host/strategy/settings controller split, tighter operator-form layout rules, and a browser-verified responsive pass across `390px`, `768px`, `1024px`, and `1440px` with no page-level horizontal overflow, and the dashboard now includes a real live contract chart backed only by the runtime host chart control plane with timeframe switching, buffered history paging, fit/live-follow controls, active-position context, exact working-order price overlays, chart-side runtime alert banners, operator readout strips, viewport-aware chart-history bootstrapping, a tighter chart toolbar/readout/utility strip, and a chart-dominant workspace shell where the header now behaves like a compact utility strip, the chart stage holds more width, the left rail now carries the lower-frequency mode and entry-gate tools, the right rail stays focused on posture/ticket/exit actions, strategy/setup workflows move into a flatter lower detail dock, the latest polish pass trims alert copy, toolbar labels, utility-header wording, and pill spacing further so the workspace scans faster above the fold, and the newest refinement trims duplicated chart context out of the left rail and flattens the lower dock again so the chart reads more cleanly as the primary surface.
-- Phase 6 now has real Postgres/SQLite persistence adapters, durable journal wiring, event-sourced runtime projection, live runtime/broker trading-history ingestion, runtime-collected trade-latency metrics, host-level health supervision, sampled CPU/memory runtime-resource projection, queryable history surfaces through the host/CLI/dashboard, and broad host-level paper acceptance coverage for entry, scale-in, flatten, operator/degraded no-new-entry gating, and startup/reconnect review safety flows.
-- Phase 7 now has a checked-in GitHub Actions cross-platform CI matrix, operator runbooks for paper verification, storage fallback override handling, reconnect/shutdown safety review handling, and release verification, plus cross-platform packaging scripts, while final hands-on release validation is still incomplete.
+- The workspace has implemented the core trading path end to end: strict strategy compilation, Databento market data, Tradovate execution and sync, risk/execution planning, persistence/journaling, and the local control plane.
+- The runtime host, CLI, and dashboard cover the main operator workflows: strategy load/validation, warmup, readiness review, arm/disarm, manual actions, journal/history review, health/status monitoring, and chart-driven supervision through the local HTTP/WebSocket API.
+- Persistence and auditability are in place with Postgres as the primary store, SQLite fallback handling, event-sourced runtime projection, trade-history ingestion, latency metrics, and runtime-resource health snapshots.
+- Cross-platform CI, packaging scripts, and operator runbooks are checked in. The main remaining V1 work is final hands-on paper/demo verification and release sign-off.
 
 The current implementation status review lives in `docs/architecture/current_status.md`.
 
@@ -90,18 +90,25 @@ tests/
 
 ## Still Required For V1
 
-- Final chart-first dashboard/operator redesign and production sign-off around the now-real live chart module, now that the shell reset, utility-header pass, denser toolbar rails, fuller first-open chart, tighter chart toolbar/readout/utility strip, thinner rail chrome, flatter lower dock, and more minimal chart frame are in place and the remaining work is final product polish and sign-off
-- Final cross-platform paper/demo verification passes and remaining safety-critical integration hardening
+- Final paper/demo verification passes across the supported operator flows
 - Final release checklist walkthrough and sign-off
 
 ## Local Development
 
 1. Install the Rust toolchain with MSVC support.
 2. Copy `config/runtime.example.toml` into a local runtime config if needed.
-3. Run targeted serial tests from the workspace root:
+3. Run the full Rust workspace verification from the workspace root:
 
 ```powershell
-cargo test -j 1
+cargo test --workspace --target-dir target_verify_local
+```
+
+4. Verify the dashboard separately when working in `apps/dashboard`:
+
+```powershell
+cd apps/dashboard
+npm test -- --run
+npm run build
 ```
 
 ## API Key And Credential Setup
@@ -362,7 +369,8 @@ For the release-hardening path, the repository now includes:
 
 ## Key Docs
 
-- `AGENTS.md`
+- `AGENTS.md` - repository contract, architecture rules, and safety expectations
+- `CLAUDE.md` - Claude Code onboarding, repo map, and practical working notes
 - `codex_futures_bot_plan.md`
 - `STRATEGY_SPEC.md`
 - `V1_ACCEPTANCE_CRITERIA.md`
