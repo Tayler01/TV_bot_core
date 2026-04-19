@@ -68,8 +68,7 @@ use tv_bot_health::{
 use tv_bot_journal::{EventJournal, JournalError, PersistentJournal, ProjectingJournal};
 use tv_bot_market_data::{
     fetch_recent_chart_backfill, DatabentoLiveTransport, DatabentoLiveTransportConfig,
-    DatabentoWarmupMode,
-    MarketDataConnectionState, MarketDataService, MarketDataServiceSnapshot,
+    DatabentoWarmupMode, MarketDataConnectionState, MarketDataService, MarketDataServiceSnapshot,
 };
 use tv_bot_metrics::{RuntimeLatencyCollector, RuntimeLatencyError};
 use tv_bot_persistence::{
@@ -721,7 +720,9 @@ impl RuntimeMarketDataManager {
                                     .filter(|(_, bars)| !bars.is_empty())
                                     .collect();
                             }
-                            Err(error) => warn!(?error, "failed to seed closed-market chart backfill"),
+                            Err(error) => {
+                                warn!(?error, "failed to seed closed-market chart backfill")
+                            }
                         }
                     }
                 }

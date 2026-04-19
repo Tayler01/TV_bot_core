@@ -1,7 +1,7 @@
 //! Strategy-agnostic Databento market-data contracts, rolling buffers, and warmup tracking.
 
-mod databento_live;
 mod databento_chart_backfill;
+mod databento_live;
 mod service;
 
 use std::collections::{HashMap, VecDeque};
@@ -16,10 +16,10 @@ use tv_bot_core_types::{
     WarmupStatus,
 };
 
+pub use databento_chart_backfill::fetch_recent_chart_backfill;
 pub use databento_live::{
     DatabentoLiveTransport, DatabentoLiveTransportConfig, DatabentoSlowReaderPolicy,
 };
-pub use databento_chart_backfill::fetch_recent_chart_backfill;
 pub use service::{DatabentoWarmupMode, MarketDataService, MarketDataServiceSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,9 +200,10 @@ impl<T> RollingBuffer<T> {
 
 fn retained_buffer_capacity(timeframe: Timeframe, required: u32) -> usize {
     let required = required as usize;
-    let chart_floor =
-        usize::try_from((Duration::hours(2).num_seconds() / timeframe_duration(timeframe).num_seconds()).max(1))
-            .unwrap_or(required);
+    let chart_floor = usize::try_from(
+        (Duration::hours(2).num_seconds() / timeframe_duration(timeframe).num_seconds()).max(1),
+    )
+    .unwrap_or(required);
 
     required.max(chart_floor)
 }
@@ -242,13 +243,7 @@ impl AggregationWindow {
         }
     }
 
-    fn update(
-        &mut self,
-        high: Decimal,
-        low: Decimal,
-        close: Decimal,
-        volume: u64,
-    ) {
+    fn update(&mut self, high: Decimal, low: Decimal, close: Decimal, volume: u64) {
         if high > self.high {
             self.high = high;
         }

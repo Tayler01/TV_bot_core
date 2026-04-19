@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, num::NonZeroU64};
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use databento::{
-    dbn::{Record, RecordRefEnum, Schema, SType},
+    dbn::{Record, RecordRefEnum, SType, Schema},
     historical::{timeseries::GetRangeParams, Client as HistoricalClient, HistoricalGateway},
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -35,8 +35,10 @@ pub async fn fetch_recent_chart_backfill(
         return Ok(BTreeMap::new());
     }
 
-    let recent_one_minute =
-        take_last_events(one_minute_history, chart_backfill_bar_target(Timeframe::OneMinute));
+    let recent_one_minute = take_last_events(
+        one_minute_history,
+        chart_backfill_bar_target(Timeframe::OneMinute),
+    );
     let latest_close = recent_one_minute
         .last()
         .map(event_timestamp)
@@ -85,7 +87,10 @@ pub async fn fetch_recent_chart_backfill(
         if !five_minute.is_empty() {
             bars.insert(
                 Timeframe::FiveMinute,
-                take_last_events(five_minute, chart_backfill_bar_target(Timeframe::FiveMinute)),
+                take_last_events(
+                    five_minute,
+                    chart_backfill_bar_target(Timeframe::FiveMinute),
+                ),
             );
         }
     }
@@ -158,15 +163,14 @@ async fn fetch_historical_bars(
         .limit(limit.and_then(|value| NonZeroU64::new(value as u64)))
         .build();
 
-    let mut decoder =
-        client
-            .timeseries()
-            .get_range(&params)
-            .await
-            .map_err(|error| MarketDataError::TransportOperationFailed {
-                operation: "historical_get_range",
-                message: error.to_string(),
-            })?;
+    let mut decoder = client
+        .timeseries()
+        .get_range(&params)
+        .await
+        .map_err(|error| MarketDataError::TransportOperationFailed {
+            operation: "historical_get_range",
+            message: error.to_string(),
+        })?;
 
     let mut bars = Vec::new();
     while let Some(record) = decoder.decode_record_ref().await.map_err(|error| {
@@ -202,7 +206,8 @@ fn aggregate_one_minute_bars(
     one_minute_bars: &[MarketEvent],
     target_timeframe: Timeframe,
 ) -> Result<Vec<MarketEvent>, MarketDataError> {
-    let mut aggregator = MultiTimeframeAggregator::new(Timeframe::OneMinute, vec![target_timeframe])?;
+    let mut aggregator =
+        MultiTimeframeAggregator::new(Timeframe::OneMinute, vec![target_timeframe])?;
     let mut aggregated = Vec::new();
     for event in one_minute_bars {
         aggregated.extend(aggregator.ingest(event));
@@ -232,7 +237,9 @@ fn price_to_decimal(value: i64) -> rust_decimal::Decimal {
     rust_decimal::Decimal::from_i128_with_scale(i128::from(value), 9)
 }
 
-fn record_timestamp(record: databento::dbn::RecordRef<'_>) -> Result<DateTime<Utc>, MarketDataError> {
+fn record_timestamp(
+    record: databento::dbn::RecordRef<'_>,
+) -> Result<DateTime<Utc>, MarketDataError> {
     let timestamp = record
         .index_ts()
         .ok_or(MarketDataError::MissingRecordTimestamp)?;
