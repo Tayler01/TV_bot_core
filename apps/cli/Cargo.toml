@@ -8,9 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 clap.workspace = true
+crossterm = "0.28.1"
+futures-util.workspace = true
 reqwest.workspace = true
+ratatui = "0.29.0"
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
+tokio-tungstenite.workspace = true
 tv-bot-config = { path = "../../crates/config" }
 tv-bot-control-api = { path = "../../crates/control_api" }
 tv-bot-core-types = { path = "../../crates/core_types" }
