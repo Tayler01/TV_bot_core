@@ -163,7 +163,8 @@ fn update_timestamp(update: &DatabentoTransportUpdate) -> DateTime<Utc> {
             *occurred_at
         }
         DatabentoTransportUpdate::Event(MarketEvent::Bar { closed_at, .. }) => *closed_at,
-        DatabentoTransportUpdate::SubscriptionAck { occurred_at, .. }
+        DatabentoTransportUpdate::Disconnected { occurred_at, .. }
+        | DatabentoTransportUpdate::SubscriptionAck { occurred_at, .. }
         | DatabentoTransportUpdate::ReplayCompleted { occurred_at, .. }
         | DatabentoTransportUpdate::SlowReaderWarning { occurred_at, .. }
         | DatabentoTransportUpdate::EndOfInterval { occurred_at, .. } => *occurred_at,

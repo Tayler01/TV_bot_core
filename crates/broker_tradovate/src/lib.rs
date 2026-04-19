@@ -513,6 +513,8 @@ where
     }
 
     pub async fn refresh_accounts(&mut self) -> Result<Vec<TradovateAccount>, TradovateError> {
+        self.renew_access_token_if_needed().await?;
+
         let request = TradovateAccountListRequest {
             http_base_url: self.config.http_base_url.clone(),
             environment: self.config.environment,

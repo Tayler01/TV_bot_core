@@ -173,7 +173,14 @@ impl DatabentoTransport for DatabentoLiveTransport {
         };
 
         let Some(record) = record else {
-            return Ok(None);
+            self.client = None;
+            self.symbol_map = PitSymbolMap::default();
+            self.dataset = None;
+            self.started = false;
+            return Ok(Some(DatabentoTransportUpdate::Disconnected {
+                occurred_at: Utc::now(),
+                detail: "Databento live gateway closed connection".to_owned(),
+            }));
         };
 
         decode_record(record, &mut self.symbol_map, &dataset, slow_reader_policy)

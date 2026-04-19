@@ -581,6 +581,37 @@ async fn does_not_renew_access_token_outside_default_margin() {
 }
 
 #[tokio::test]
+async fn refresh_accounts_renews_near_expiry_token_before_requesting_accounts() {
+    let now = Utc::now();
+    let clock = MutableClock::new(now);
+    let auth_api = FakeAuthApi::with_request_token(sample_token(now, 10));
+    auth_api.push_renewed_token(sample_token(now + Duration::minutes(1), 90));
+    let account_api = FakeAccountApi::with_accounts(vec![sample_account(101, "paper-primary")]);
+    let sync_api = FakeSyncApi::default();
+
+    let mut manager = TradovateSessionManager::new(
+        sample_config(BrokerEnvironment::Demo),
+        sample_credentials(),
+        TradovateRoutingPreferences::default(),
+        auth_api.clone(),
+        account_api.clone(),
+        sync_api,
+        clock,
+    )
+    .expect("manager should build");
+
+    manager.authenticate().await.expect("auth should succeed");
+    let accounts = manager
+        .refresh_accounts()
+        .await
+        .expect("account refresh should succeed");
+
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(auth_api.renewal_count(), 1);
+    assert_eq!(account_api.request_count(), 1);
+}
+
+#[tokio::test]
 async fn multiple_accounts_require_explicit_selection_without_preference() {
     let now = Utc::now();
     let clock = MutableClock::new(now);

@@ -134,6 +134,10 @@ pub struct DatabentoSessionStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DatabentoTransportUpdate {
     Event(MarketEvent),
+    Disconnected {
+        occurred_at: DateTime<Utc>,
+        detail: String,
+    },
     SubscriptionAck {
         occurred_at: DateTime<Utc>,
         detail: String,
@@ -923,6 +927,13 @@ where
     fn apply_transport_update(&mut self, update: &DatabentoTransportUpdate) {
         match update {
             DatabentoTransportUpdate::Event(event) => self.coordinator.record_event(event.clone()),
+            DatabentoTransportUpdate::Disconnected {
+                occurred_at,
+                detail,
+            } => {
+                self.coordinator
+                    .note_disconnect(detail.clone(), *occurred_at);
+            }
             DatabentoTransportUpdate::SubscriptionAck { occurred_at, .. }
             | DatabentoTransportUpdate::ReplayCompleted { occurred_at, .. }
             | DatabentoTransportUpdate::EndOfInterval { occurred_at, .. } => {
@@ -1499,6 +1510,13 @@ mod tests {
         async fn next_update(
             &mut self,
         ) -> Result<Option<DatabentoTransportUpdate>, MarketDataError> {
+            if self.fail_operation == Some("next_update") {
+                return Err(MarketDataError::TransportOperationFailed {
+                    operation: "next_update",
+                    message: "simulated failure".to_owned(),
+                });
+            }
+
             Ok(self.queued_updates.pop_front())
         }
 
@@ -1900,7 +1918,10 @@ mod tests {
         assert!(!snapshot.warmup_requested);
         assert_eq!(snapshot.warmup_mode, DatabentoWarmupMode::LiveOnly);
         assert!(!snapshot.replay_caught_up);
-        assert_ne!(snapshot.session.market_data.warmup.status, WarmupStatus::Warming);
+        assert_ne!(
+            snapshot.session.market_data.warmup.status,
+            WarmupStatus::Warming
+        );
         assert_eq!(
             snapshot.session.market_data.connection_state,
             MarketDataConnectionState::Failed
@@ -1958,5 +1979,46 @@ mod tests {
         let snapshot = manager.snapshot(now + Duration::seconds(2)).market_data;
         assert_eq!(snapshot.last_heartbeat_at, Some(now + Duration::seconds(1)));
         assert_eq!(snapshot.health, MarketDataHealth::Degraded);
+    }
+
+    #[tokio::test]
+    async fn session_manager_marks_disconnect_when_transport_reports_closed_stream() {
+        let strategy = multi_timeframe_strategy();
+        let mapping = sample_mapping();
+        let now = Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap();
+        let disconnect_at = now + Duration::seconds(3);
+        let mut manager = DatabentoSessionManager::new(
+            FakeDatabentoTransport::with_updates(vec![DatabentoTransportUpdate::Disconnected {
+                occurred_at: disconnect_at,
+                detail: "Databento live gateway closed connection".to_owned(),
+            }]),
+            &strategy,
+            &mapping,
+            now,
+        )
+        .expect("manager should build");
+
+        manager.connect(now).await.expect("connect should succeed");
+
+        let update = manager
+            .poll_next_update()
+            .await
+            .expect("poll should succeed")
+            .expect("disconnect update should be present");
+        assert!(matches!(
+            update,
+            DatabentoTransportUpdate::Disconnected { .. }
+        ));
+
+        let snapshot = manager.snapshot(disconnect_at).market_data;
+        assert_eq!(
+            snapshot.connection_state,
+            MarketDataConnectionState::Disconnected
+        );
+        assert_eq!(snapshot.health, MarketDataHealth::Disconnected);
+        assert_eq!(
+            snapshot.last_disconnect_reason.as_deref(),
+            Some("Databento live gateway closed connection")
+        );
     }
 }

@@ -7,7 +7,11 @@ use reqwest::Client;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::{net::TcpStream, sync::Mutex, time::timeout};
+use tokio::{
+    net::TcpStream,
+    sync::Mutex,
+    time::{sleep, timeout},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tv_bot_core_types::{
     BrokerAccountSnapshot, BrokerFillUpdate, BrokerOrderStatus, BrokerOrderUpdate,
@@ -245,36 +249,53 @@ impl TradovateSyncApi for TradovateLiveClient {
         request: TradovateUserSyncRequest,
     ) -> Result<TradovateSyncSnapshot, TradovateError> {
         let mut state = self.socket_state.lock().await;
-        let request_id = state.next_request_id;
-        state.next_request_id = state.next_request_id.saturating_add(1);
-
-        let stream = state
-            .stream
-            .as_mut()
-            .ok_or_else(|| TradovateError::SyncTransport {
-                message: "Tradovate websocket is not connected".to_owned(),
-            })?;
-
         let body = json!({
             "splitResponses": self.config.split_responses,
             "accounts": [request.account_id],
             "entityTypes": self.config.user_sync_entity_types,
         });
 
-        send_text_message(
-            stream,
-            format!("user/syncrequest\n{request_id}\n\n{}", body),
-        )
-        .await?;
+        let mut request_body = body;
 
-        let response = wait_for_response(stream, request_id, self.config.request_timeout).await?;
-        ensure_success_response(&response, "user/syncrequest")?;
+        loop {
+            let request_id = state.next_request_id;
+            state.next_request_id = state.next_request_id.saturating_add(1);
 
-        let snapshot = state.cache.replace_from_sync_payload(
-            response.payload.unwrap_or(Value::Null),
-            request.account_id,
-        )?;
-        Ok(snapshot)
+            let response = {
+                let stream =
+                    state
+                        .stream
+                        .as_mut()
+                        .ok_or_else(|| TradovateError::SyncTransport {
+                            message: "Tradovate websocket is not connected".to_owned(),
+                        })?;
+
+                send_text_message(
+                    stream,
+                    format!("user/syncrequest\n{request_id}\n\n{}", request_body),
+                )
+                .await?;
+
+                wait_for_response(stream, request_id, self.config.request_timeout).await?
+            };
+            ensure_success_response(&response, "user/syncrequest")?;
+
+            if let Some((next_body, wait_time)) =
+                continuation_request_body(&request_body, response.payload.as_ref())
+            {
+                if !wait_time.is_zero() {
+                    sleep(wait_time).await;
+                }
+                request_body = next_body;
+                continue;
+            }
+
+            let snapshot = state.cache.replace_from_sync_payload(
+                response.payload.unwrap_or(Value::Null),
+                request.account_id,
+            )?;
+            return Ok(snapshot);
+        }
     }
 
     async fn next_event(&self) -> Result<Option<TradovateSyncEvent>, TradovateError> {
@@ -739,6 +760,33 @@ fn response_error_message(response: &SocketResponseEnvelope, operation: &str) ->
                 response.status
             )
         })
+}
+
+fn continuation_request_body(
+    request_body: &Value,
+    payload: Option<&Value>,
+) -> Option<(Value, StdDuration)> {
+    let payload = payload?.as_object()?;
+    let ticket = payload.get("p-ticket")?.as_str()?;
+    let mut next_body = request_body.as_object()?.clone();
+    next_body.insert("p-ticket".to_owned(), Value::String(ticket.to_owned()));
+    Some((
+        Value::Object(next_body),
+        continuation_wait_time(payload.get("p-time")),
+    ))
+}
+
+fn continuation_wait_time(value: Option<&Value>) -> StdDuration {
+    let seconds = value.and_then(|value| match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    });
+
+    match seconds {
+        Some(seconds) if seconds > 0.0 => StdDuration::from_secs_f64(seconds),
+        _ => StdDuration::ZERO,
+    }
 }
 
 pub(crate) fn build_http_url(base_url: &str, path: &str) -> String {

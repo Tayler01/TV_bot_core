@@ -467,6 +467,171 @@ async fn live_client_authorizes_syncs_and_processes_props_and_heartbeats() {
 }
 
 #[tokio::test]
+async fn live_client_retries_user_sync_when_tradovate_returns_continuation_ticket() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let address = listener.local_addr().expect("listener addr should exist");
+
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("socket accept should succeed");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("websocket handshake should succeed");
+
+        websocket
+            .send(Message::Text("o".to_owned().into()))
+            .await
+            .expect("open frame should send");
+
+        let authorize = websocket
+            .next()
+            .await
+            .expect("authorize frame should arrive")
+            .expect("authorize frame should be valid")
+            .into_text()
+            .expect("authorize frame should be text");
+        assert_eq!(authorize.as_str(), "authorize\n0\n\naccess-token");
+
+        websocket
+            .send(Message::Text(r#"a[{"i":0,"s":200}]"#.to_owned().into()))
+            .await
+            .expect("auth ack should send");
+
+        let first_sync_request = websocket
+            .next()
+            .await
+            .expect("first sync frame should arrive")
+            .expect("first sync frame should be valid")
+            .into_text()
+            .expect("first sync frame should be text");
+        assert!(first_sync_request.starts_with("user/syncrequest\n1\n\n"));
+
+        let first_body = first_sync_request
+            .splitn(4, '\n')
+            .nth(3)
+            .expect("first sync body should exist");
+        let first_body_json: Value =
+            serde_json::from_str(first_body).expect("first sync body should be JSON");
+        assert_eq!(first_body_json["accounts"], json!([101]));
+        assert_eq!(first_body_json.get("p-ticket"), None);
+
+        websocket
+            .send(Message::Text(
+                json!([{
+                    "i": 1,
+                    "s": 200,
+                    "d": {
+                        "p-ticket": "continue-sync",
+                        "p-time": 0
+                    }
+                }])
+                .to_string()
+                .replacen('[', "a[", 1)
+                .into(),
+            ))
+            .await
+            .expect("continuation response should send");
+
+        let second_sync_request = websocket
+            .next()
+            .await
+            .expect("second sync frame should arrive")
+            .expect("second sync frame should be valid")
+            .into_text()
+            .expect("second sync frame should be text");
+        assert!(second_sync_request.starts_with("user/syncrequest\n2\n\n"));
+
+        let second_body = second_sync_request
+            .splitn(4, '\n')
+            .nth(3)
+            .expect("second sync body should exist");
+        let second_body_json: Value =
+            serde_json::from_str(second_body).expect("second sync body should be JSON");
+        assert_eq!(second_body_json["accounts"], json!([101]));
+        assert_eq!(
+            second_body_json["p-ticket"],
+            Value::String("continue-sync".to_owned())
+        );
+
+        websocket
+            .send(Message::Text(
+                json!([{
+                    "i": 2,
+                    "s": 200,
+                    "d": {
+                        "positions": [{
+                            "symbol": "GCM6",
+                            "netPos": 2,
+                            "averagePrice": "2385.1",
+                            "timestamp": "2026-04-10T13:30:00Z"
+                        }],
+                        "orders": [],
+                        "fills": [],
+                        "accounts": [{
+                            "id": 101,
+                            "name": "paper-primary",
+                            "netLiq": "100000.0",
+                            "timestamp": "2026-04-10T13:30:00Z"
+                        }]
+                    }
+                }])
+                .to_string()
+                .replacen('[', "a[", 1)
+                .into(),
+            ))
+            .await
+            .expect("final sync snapshot should send");
+
+        let close_frame = websocket
+            .next()
+            .await
+            .expect("close frame should arrive")
+            .expect("close frame should be valid");
+        assert!(matches!(close_frame, Message::Close(_)));
+    });
+
+    let client = TradovateLiveClient::new(TradovateLiveClientConfig::default());
+    let token = tv_bot_broker_tradovate::TradovateAccessToken {
+        access_token: SecretString::new("access-token".to_owned().into()),
+        expiration_time: Utc::now() + Duration::minutes(30),
+        issued_at: Utc::now(),
+        user_id: Some(77),
+        person_id: None,
+        market_data_access: None,
+    };
+
+    client
+        .connect(TradovateSyncConnectRequest {
+            websocket_url: format!("ws://{address}"),
+            environment: BrokerEnvironment::Demo,
+            access_token: token.clone(),
+        })
+        .await
+        .expect("websocket connect should succeed");
+
+    let snapshot = client
+        .request_user_sync(TradovateUserSyncRequest {
+            account_id: 101,
+            access_token: token,
+        })
+        .await
+        .expect("user sync should succeed");
+
+    assert_eq!(snapshot.positions.len(), 1);
+    assert_eq!(snapshot.positions[0].quantity, 2);
+
+    client
+        .disconnect()
+        .await
+        .expect("disconnect should succeed");
+    server_task.await.expect("server task should complete");
+}
+
+#[tokio::test]
 async fn live_client_submits_place_order_place_oso_and_liquidation_requests() {
     let mut server = Server::new_async().await;
     let client = TradovateLiveClient::new(TradovateLiveClientConfig::default());
