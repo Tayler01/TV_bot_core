@@ -27,6 +27,7 @@ use super::app::{ConsoleMessage, StreamStatus};
 
 const MAX_ACTIVITY_ITEMS: usize = 14;
 const DEFAULT_CHART_VIEWPORT_WIDTH: usize = 1_440;
+const ESTIMATED_TERMINAL_CELL_WIDTH: usize = 12;
 
 pub struct ConsoleState {
     status: Option<RuntimeStatusSnapshot>,
@@ -52,6 +53,7 @@ pub struct ConsoleState {
     last_order_id: Option<String>,
     show_help_overlay: bool,
     pending_confirmation: Option<PendingConfirmation>,
+    chart_viewport_width: usize,
 }
 
 impl ConsoleState {
@@ -81,11 +83,19 @@ impl ConsoleState {
             last_order_id: None,
             show_help_overlay: false,
             pending_confirmation: None,
+            chart_viewport_width: DEFAULT_CHART_VIEWPORT_WIDTH,
         }
     }
 
     pub async fn refresh(&mut self, client: &Client, base_url: &str) {
-        match refresh_snapshot(client, base_url, self.selected_timeframe).await {
+        match refresh_snapshot(
+            client,
+            base_url,
+            self.selected_timeframe,
+            self.chart_viewport_width,
+        )
+        .await
+        {
             Ok(refresh) => {
                 self.status = Some(refresh.status);
                 self.readiness = Some(refresh.readiness);
@@ -144,7 +154,7 @@ impl ConsoleState {
                                 client,
                                 base_url,
                                 timeframe,
-                                chart_snapshot_limit(timeframe, DEFAULT_CHART_VIEWPORT_WIDTH),
+                                self.chart_limit_for(timeframe),
                             )
                             .await
                             {
@@ -658,7 +668,7 @@ impl ConsoleState {
 
     pub fn chart_limit(&self) -> usize {
         self.selected_timeframe
-            .map(|timeframe| chart_snapshot_limit(timeframe, DEFAULT_CHART_VIEWPORT_WIDTH))
+            .map(|timeframe| self.chart_limit_for(timeframe))
             .unwrap_or(96)
     }
 
@@ -713,6 +723,22 @@ impl ConsoleState {
 
     pub fn selected_timeframe(&self) -> Option<Timeframe> {
         self.selected_timeframe
+    }
+
+    pub fn update_chart_viewport_from_terminal_width(&mut self, columns: u16) -> bool {
+        let next_width = usize::from(columns)
+            .saturating_mul(ESTIMATED_TERMINAL_CELL_WIDTH)
+            .max(360);
+        if next_width == self.chart_viewport_width {
+            return false;
+        }
+
+        self.chart_viewport_width = next_width;
+        self.chart_stream_fingerprint = self
+            .chart_stream_url()
+            .as_ref()
+            .map(|value| stream_fingerprint(value));
+        true
     }
 
     pub fn request_set_mode(&self, mode: RuntimeMode) -> Option<ActionRequest> {
@@ -1140,6 +1166,10 @@ impl ConsoleState {
             self.activity_feed.pop_back();
         }
     }
+
+    fn chart_limit_for(&self, timeframe: Timeframe) -> usize {
+        chart_snapshot_limit(timeframe, self.chart_viewport_width)
+    }
 }
 
 fn labeled(label: &str, value: &str) -> Line<'static> {
@@ -1321,6 +1351,7 @@ async fn refresh_snapshot(
     client: &Client,
     base_url: &str,
     preferred_timeframe: Option<Timeframe>,
+    chart_viewport_width: usize,
 ) -> Result<RefreshData, Box<dyn std::error::Error>> {
     let status = fetch_status(client, base_url).await?;
     let readiness = fetch_readiness(client, base_url).await?;
@@ -1335,7 +1366,7 @@ async fn refresh_snapshot(
                     client,
                     base_url,
                     timeframe,
-                    chart_snapshot_limit(timeframe, DEFAULT_CHART_VIEWPORT_WIDTH),
+                    chart_snapshot_limit(timeframe, chart_viewport_width),
                 )
                 .await?,
             )
@@ -1571,6 +1602,29 @@ mod tests {
         assert!(state.select_timeframe(Timeframe::FiveMinute));
         assert_ne!(state.chart_stream_fingerprint(), previous_fingerprint);
         assert_eq!(state.selected_timeframe(), Some(Timeframe::FiveMinute));
+    }
+
+    #[test]
+    fn chart_limit_tracks_terminal_width() {
+        let mut state = ConsoleState::new(Duration::from_secs(5));
+        state.chart_config = Some(RuntimeChartConfigResponse {
+            available: true,
+            detail: "ready".to_owned(),
+            sample_data_active: false,
+            instrument: None,
+            supported_timeframes: vec![Timeframe::FiveMinute],
+            default_timeframe: Some(Timeframe::FiveMinute),
+            market_data_connection_state: None,
+            market_data_health: None,
+            replay_caught_up: true,
+            trade_ready: true,
+        });
+        state.selected_timeframe = Some(Timeframe::FiveMinute);
+
+        assert_eq!(state.chart_limit(), 112);
+        assert!(state.update_chart_viewport_from_terminal_width(60));
+        assert_eq!(state.chart_limit(), 56);
+        assert!(!state.update_chart_viewport_from_terminal_width(60));
     }
 
     #[test]

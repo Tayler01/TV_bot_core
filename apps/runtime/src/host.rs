@@ -2882,8 +2882,13 @@ async fn chart_websocket_handler(
     State(state): State<RuntimeHostState>,
     Query(query): Query<RuntimeChartQuery>,
     upgrade: WebSocketUpgrade,
-) -> impl IntoResponse {
-    upgrade.on_upgrade(move |socket| chart_websocket_loop(socket, state, query))
+) -> Response {
+    match validate_chart_stream_query(&state, &query).await {
+        Ok(()) => upgrade
+            .on_upgrade(move |socket| chart_websocket_loop(socket, state, query))
+            .into_response(),
+        Err(message) => json_message_response(StatusCode::BAD_REQUEST, message),
+    }
 }
 
 async fn websocket_event_loop(
@@ -3129,6 +3134,11 @@ fn build_journal_status(selection: &PersistenceRuntimeSelection) -> RuntimeJourn
             PersistenceBackendKind::Postgres => {
                 "event journal records are durably persisted to Postgres".to_owned()
             }
+            PersistenceBackendKind::Sqlite
+                if matches!(selection.plan.mode, PersistenceStorageMode::SqliteFallbackOnly) =>
+            {
+                "event journal records are durably persisted to SQLite fallback-only storage because no primary Postgres backend is configured".to_owned()
+            }
             PersistenceBackendKind::Sqlite if selection.fallback_activated => {
                 "event journal records are durably persisted to SQLite fallback because primary Postgres is unavailable".to_owned()
             }
@@ -3328,6 +3338,15 @@ fn resolved_chart_timeframe(
     }
 
     Ok(timeframe)
+}
+
+async fn validate_chart_stream_query(
+    state: &RuntimeHostState,
+    query: &RuntimeChartQuery,
+) -> Result<(), String> {
+    let config = build_chart_config(state).await;
+    let _ = resolved_chart_timeframe(&config, query.timeframe)?;
+    Ok(())
 }
 
 async fn build_chart_snapshot(
@@ -6305,11 +6324,7 @@ mod tests {
     fn write_strategy_file(path: &PathBuf) {
         let markdown = include_str!("../../../tests/fixtures/strategies/gc_momentum_fade_v1.md")
             .replace("broker_side_required: true", "broker_side_required: false");
-        fs::write(
-            path,
-            markdown,
-        )
-        .expect("strategy file should write");
+        fs::write(path, markdown).expect("strategy file should write");
     }
 
     fn write_invalid_strategy_file(path: &PathBuf) {
@@ -11003,6 +11018,31 @@ selection:
         assert!(snapshot.can_load_older_history);
     }
 
+    #[test]
+    fn resolved_chart_timeframe_rejects_unsupported_loaded_timeframes() {
+        let error = resolved_chart_timeframe(
+            &RuntimeChartConfigResponse {
+                available: true,
+                detail: "charting GCM2026 from the loaded strategy contract".to_owned(),
+                sample_data_active: false,
+                instrument: None,
+                supported_timeframes: vec![Timeframe::OneMinute],
+                default_timeframe: Some(Timeframe::OneMinute),
+                market_data_connection_state: Some(MarketDataConnectionState::Subscribed),
+                market_data_health: Some(tv_bot_market_data::MarketDataHealth::Healthy),
+                replay_caught_up: true,
+                trade_ready: true,
+            },
+            Some(Timeframe::FiveMinute),
+        )
+        .expect_err("unsupported timeframe should be rejected");
+
+        assert_eq!(
+            error,
+            "timeframe `5m` is not supported for the loaded strategy contract"
+        );
+    }
+
     #[tokio::test]
     async fn chart_history_route_pages_older_buffered_bars() {
         let history = test_history();
@@ -13646,8 +13686,16 @@ selection:
 
         assert_eq!(state.storage_status.active_backend, "sqlite");
         assert!(state.storage_status.durable);
+        assert_eq!(
+            state.storage_status.mode,
+            RuntimeStorageMode::SqliteFallbackOnly
+        );
         assert_eq!(state.journal_status.backend, "sqlite");
         assert!(state.journal_status.durable);
+        assert_eq!(
+            state.journal_status.detail,
+            "event journal records are durably persisted to SQLite fallback-only storage because no primary Postgres backend is configured"
+        );
 
         let _ = fs::remove_file(sqlite_path);
     }

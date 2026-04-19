@@ -30,7 +30,7 @@ const INITIAL_CHART_VIEW_MODEL: ChartViewModel = {
   selectedTimeframe: null,
   loadState: "idle",
   historyState: "idle",
-  streamState: "connecting",
+  streamState: "closed",
   error: null,
   historyError: null,
   lastStreamedAt: null,

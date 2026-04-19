@@ -25,6 +25,7 @@ import {
   formatMode,
 } from "../lib/format";
 import type {
+  RuntimeChartConfigResponse,
   RuntimeChartSnapshot,
   RuntimeStatusSnapshot,
   Timeframe,
@@ -76,15 +77,15 @@ function compactAlertDetail(detail: string | null | undefined, fallback: string)
 function chartStreamLabel(streamState: ChartViewModel["streamState"]) {
   switch (streamState) {
     case "open":
-      return "Live";
+      return "Streaming";
     case "connecting":
       return "Syncing";
     case "unsupported":
       return "Unsupported";
     case "closed":
-      return "Offline";
+      return "Idle";
     case "error":
-      return "Error";
+      return "Stream error";
     default:
       return "Waiting";
   }
@@ -116,6 +117,49 @@ function healthTone(health: string | null) {
       return "warning";
     default:
       return "info";
+  }
+}
+
+function chartTransportStatus(
+  config: RuntimeChartConfigResponse | null | undefined,
+  streamState: ChartViewModel["streamState"],
+): { label: string; tone: "healthy" | "warning" | "danger" | "info" } {
+  if (!config?.available) {
+    return {
+      label: "Idle",
+      tone: "info",
+    };
+  }
+
+  return {
+    label: chartStreamLabel(streamState),
+    tone: chartStreamTone(streamState),
+  };
+}
+
+function chartDataSourceLabel(
+  config: RuntimeChartConfigResponse | null | undefined,
+  streamState: ChartViewModel["streamState"],
+) {
+  if (!config?.available) {
+    return "Chart unavailable";
+  }
+
+  if (config.sample_data_active) {
+    return "Sample data";
+  }
+
+  switch (config.market_data_health) {
+    case "healthy":
+      return "Live data";
+    case "degraded":
+      return "Feed degraded";
+    case "failed":
+      return "Feed failed";
+    case "initializing":
+      return "Feed initializing";
+    default:
+      return streamState === "open" ? "Buffered" : chartStreamLabel(streamState);
   }
 }
 
@@ -822,6 +866,7 @@ function chartOperationalAlerts(
   const alerts: ChartOperationalAlert[] = [];
   const marketData = runtimeStatus?.market_data_status?.session.market_data ?? null;
   const chartConfig = chartViewModel.config;
+  const chartAvailable = chartConfig?.available ?? false;
   const marketDataHealth = marketData?.health?.toLowerCase() ?? null;
   const hasExplicitFeedIssue =
     Boolean(runtimeStatus?.market_data_detail) || Boolean(marketData?.last_disconnect_reason);
@@ -878,7 +923,7 @@ function chartOperationalAlerts(
     });
   }
 
-  if (chartViewModel.streamState === "error" || chartViewModel.streamState === "closed") {
+  if (chartAvailable && (chartViewModel.streamState === "error" || chartViewModel.streamState === "closed")) {
     alerts.push({
       id: "chart-stream",
       tone: chartViewModel.streamState === "error" ? "danger" : "warning",
@@ -888,7 +933,7 @@ function chartOperationalAlerts(
         "Buffered history stays visible while live updates reconnect.",
       ),
     });
-  } else if (chartViewModel.streamState === "connecting") {
+  } else if (chartAvailable && chartViewModel.streamState === "connecting") {
     alerts.push({
       id: "chart-stream-connecting",
       tone: "info",
@@ -954,6 +999,7 @@ export function LiveChartPanel({
   const contractSubline = instrument?.strategy_name
     ? `${instrument.strategy_name}${instrument.canonical_symbol ? ` | ${instrument.canonical_symbol}` : ""}`
     : config?.detail ?? "Waiting for chart config";
+  const chartTransport = chartTransportStatus(config, chartViewModel.streamState);
 
   return (
     <Panel
@@ -979,8 +1025,8 @@ export function LiveChartPanel({
             tone={config?.available ? healthTone(config?.market_data_health ?? null) : "warning"}
           />
           <Pill
-            label={chartStreamLabel(chartViewModel.streamState)}
-            tone={chartStreamTone(chartViewModel.streamState)}
+            label={chartTransport.label}
+            tone={chartTransport.tone}
           />
           {config?.sample_data_active ? (
             <Pill label="Sample" tone="info" />
@@ -1145,7 +1191,7 @@ export function LiveChartPanel({
                   <span>Orders</span>
                   <strong>{workingOrderSummary(workingOrders)}</strong>
                   <p>
-                    {`${formatInteger(recentFills.length)} fills | ${chartStreamLabel(chartViewModel.streamState)}`}
+                    {`${formatInteger(recentFills.length)} fills | ${chartDataSourceLabel(config, chartViewModel.streamState)}`}
                   </p>
                 </div>
               </div>

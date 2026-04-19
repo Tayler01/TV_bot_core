@@ -517,18 +517,19 @@ fn warmup_buffers_ready(
     definition: &RuntimeStrategyDefinition,
     snapshot: &StrategyMarketSnapshot,
 ) -> bool {
-    let mut readiness = definition
-        .strategy
-        .warmup
-        .bars_required
-        .iter()
-        .map(|(timeframe, required)| {
-            snapshot
-                .bars_by_timeframe
-                .get(timeframe)
-                .map(|bars| bars.len() >= *required as usize)
-                .unwrap_or(false)
-        });
+    let mut readiness =
+        definition
+            .strategy
+            .warmup
+            .bars_required
+            .iter()
+            .map(|(timeframe, required)| {
+                snapshot
+                    .bars_by_timeframe
+                    .get(timeframe)
+                    .map(|bars| bars.len() >= *required as usize)
+                    .unwrap_or(false)
+            });
 
     if definition.strategy.warmup.ready_requires_all {
         readiness.all(|ready| ready)

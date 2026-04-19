@@ -92,19 +92,30 @@ where
         warmup_mode: DatabentoWarmupMode,
         now: DateTime<Utc>,
     ) -> Result<MarketDataServiceSnapshot, MarketDataError> {
+        let previous_warmup_requested = self.warmup_requested;
+        let previous_warmup_mode = self.warmup_mode.clone();
+        let previous_replay_caught_up = self.replay_caught_up;
         let current_state = self.session.snapshot(now).market_data.connection_state;
         if current_state != MarketDataConnectionState::Disconnected {
             self.session.disconnect("warmup restart", now).await?;
         }
 
+        self.session
+            .configure_replay_from(warmup_mode.replay_from());
+        if let Err(error) = self.session.connect(now).await {
+            self.warmup_requested = previous_warmup_requested;
+            self.warmup_mode = previous_warmup_mode.clone();
+            self.replay_caught_up = previous_replay_caught_up;
+            self.session
+                .configure_replay_from(previous_warmup_mode.replay_from());
+            return Err(error);
+        }
+
         self.warmup_requested = true;
         self.warmup_mode = warmup_mode.clone();
         self.replay_caught_up = matches!(warmup_mode, DatabentoWarmupMode::LiveOnly);
-        self.session
-            .configure_replay_from(warmup_mode.replay_from());
         self.session.coordinator_mut().warmup_mut().reset(now);
         self.session.coordinator_mut().warmup_mut().start(now);
-        self.session.connect(now).await?;
         self.updated_at = now;
 
         Ok(self.snapshot(now))

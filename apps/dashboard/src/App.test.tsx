@@ -1501,6 +1501,9 @@ describe("App", () => {
     expect(
       await screen.findAllByText("Sample candles"),
     ).not.toHaveLength(0);
+    expect(await screen.findByText("Streaming")).toBeInTheDocument();
+    expect(await screen.findByText("1 fills | Sample data")).toBeInTheDocument();
+    expect(screen.queryByText("1 fills | Live")).not.toBeInTheDocument();
   });
 
   it("updates the contract chart summary when the dedicated chart stream publishes a new snapshot", async () => {

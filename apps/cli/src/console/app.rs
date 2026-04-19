@@ -41,6 +41,8 @@ pub async fn run_console(
     let mut event_stream_task: Option<StreamTask> = None;
     let mut chart_stream_task: Option<StreamTask> = None;
 
+    let initial_size = terminal.terminal.size()?;
+    state.update_chart_viewport_from_terminal_width(initial_size.width);
     state.refresh(client, base_url).await;
     ensure_event_stream(&state, &message_tx, &mut event_stream_task);
     ensure_chart_stream(&state, &message_tx, &mut chart_stream_task);
@@ -48,6 +50,12 @@ pub async fn run_console(
     loop {
         while let Ok(message) = message_rx.try_recv() {
             state.apply_message(message);
+        }
+
+        let terminal_size = terminal.terminal.size()?;
+        if state.update_chart_viewport_from_terminal_width(terminal_size.width) {
+            state.refresh_chart(client, base_url).await;
+            ensure_chart_stream(&state, &message_tx, &mut chart_stream_task);
         }
 
         terminal

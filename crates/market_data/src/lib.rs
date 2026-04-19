@@ -1869,6 +1869,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn service_start_warmup_failure_does_not_leave_warmup_marked_active() {
+        let strategy = sample_strategy();
+        let mapping = sample_mapping();
+        let now = Utc.with_ymd_and_hms(2026, 4, 10, 13, 0, 0).unwrap();
+        let mut service = MarketDataService::from_strategy(
+            FakeDatabentoTransport::failing("connect"),
+            &strategy,
+            &mapping,
+            now,
+        )
+        .expect("service should build");
+
+        let error = service
+            .start_warmup(
+                DatabentoWarmupMode::ReplayFrom(now - Duration::minutes(20)),
+                now,
+            )
+            .await
+            .expect_err("connect failure should bubble up");
+        assert_eq!(
+            error,
+            MarketDataError::TransportOperationFailed {
+                operation: "connect",
+                message: "simulated failure".to_owned(),
+            }
+        );
+
+        let snapshot = service.snapshot(now);
+        assert!(!snapshot.warmup_requested);
+        assert_eq!(snapshot.warmup_mode, DatabentoWarmupMode::LiveOnly);
+        assert!(!snapshot.replay_caught_up);
+        assert_ne!(snapshot.session.market_data.warmup.status, WarmupStatus::Warming);
+        assert_eq!(
+            snapshot.session.market_data.connection_state,
+            MarketDataConnectionState::Failed
+        );
+        assert_eq!(
+            service.session().transport().operations,
+            vec!["connect:GLBX.MDP3".to_owned()]
+        );
+    }
+
+    #[tokio::test]
     async fn session_manager_applies_transport_updates_to_runtime_state() {
         let strategy = sample_strategy();
         let mapping = sample_mapping();

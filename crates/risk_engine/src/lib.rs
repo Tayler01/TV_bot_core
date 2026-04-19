@@ -87,6 +87,24 @@ impl RiskEvaluator {
         warnings: Vec<String>,
         hard_override_reasons: Vec<String>,
     ) -> RiskEvaluationOutcome {
+        if let Some(reason) =
+            unsupported_broker_required_trailing_stop_reason(&request.strategy, &request.state)
+        {
+            let mut warnings = warnings;
+            warnings.extend(hard_override_reasons.iter().cloned());
+            return RiskEvaluationOutcome {
+                decision: RiskDecision {
+                    status: RiskDecisionStatus::Rejected,
+                    reason,
+                    warnings,
+                },
+                adjusted_intent: request.intent.clone(),
+                approved_quantity: None,
+                // This path is not recoverable via override, so do not advertise one.
+                hard_override_reasons: Vec::new(),
+            };
+        }
+
         if request.state.trades_today >= request.strategy.risk.max_trades_per_day {
             return rejected_outcome(
                 request.intent.clone(),
@@ -271,6 +289,27 @@ fn evaluate_broker_protection_support(
     }
 
     hard_override_reasons
+}
+
+fn unsupported_broker_required_trailing_stop_reason(
+    strategy: &CompiledStrategy,
+    state: &RiskStateContext,
+) -> Option<String> {
+    if strategy
+        .trade_management
+        .trailing
+        .as_ref()
+        .is_some_and(|rule| rule.enabled)
+        && strategy.execution.broker_preferences.trailing_stop == BrokerPreference::BrokerRequired
+        && !state.broker_support.trailing_stop
+    {
+        Some(
+            "broker-required trailing-stop protection is unavailable and cannot be satisfied by the current execution path"
+                .to_owned(),
+        )
+    } else {
+        None
+    }
 }
 
 fn evaluate_feature_support(
@@ -774,6 +813,34 @@ mod tests {
         assert_eq!(
             outcome.hard_override_reasons,
             vec!["broker-side take-profit protection is unavailable".to_owned()]
+        );
+    }
+
+    #[test]
+    fn broker_required_trailing_gap_is_rejected_without_override_path() {
+        let mut strategy = sample_strategy();
+        strategy.execution.broker_preferences.trailing_stop = BrokerPreference::BrokerRequired;
+
+        let mut state = sample_state();
+        state.broker_support.trailing_stop = false;
+        state.hard_override_active = true;
+
+        let outcome = RiskEvaluator::evaluate(&RiskEvaluationRequest {
+            strategy,
+            instrument: sample_instrument(),
+            state,
+            intent: sample_enter_intent(1),
+        });
+
+        assert_eq!(outcome.decision.status, RiskDecisionStatus::Rejected);
+        assert_eq!(
+            outcome.decision.reason,
+            "broker-required trailing-stop protection is unavailable and cannot be satisfied by the current execution path"
+        );
+        assert!(outcome.hard_override_reasons.is_empty());
+        assert_eq!(
+            outcome.decision.warnings,
+            vec!["broker-side trailing-stop protection is unavailable".to_owned()]
         );
     }
 
