@@ -8,6 +8,8 @@ This directory now holds the operator runbooks and release-check materials for V
   Standard credential and runtime-config setup for Databento, Tradovate, and storage.
 - `cli_standalone.md`
   Standalone operator usage for `tv-bot-cli`.
+- `cli_console.md`
+  Full-screen terminal console guide for `tv-bot-cli console`.
 - `debugging_guide.md`
   Runtime, dashboard, provider, and chart debug workflow.
 - `paper_demo_verification.md`

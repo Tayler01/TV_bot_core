@@ -6,6 +6,7 @@
 
 - launch the runtime
 - inspect status, readiness, and history
+- open the full-screen terminal console
 - load a strategy
 - start or mark warmup
 - switch mode
@@ -34,6 +35,7 @@ If `--base-url` is omitted, the CLI uses the runtime host bind from config.
 - `status`
 - `readiness`
 - `history`
+- `console`
 - `load <path>`
 - `warmup start|ready|fail`
 - `start <paper|live|observation>`
@@ -65,6 +67,27 @@ Optional:
 .\target\release\tv-bot-cli.exe --config .\config\runtime.local.toml readiness
 .\target\release\tv-bot-cli.exe --config .\config\runtime.local.toml history
 ```
+
+### Open The Terminal Console
+
+```powershell
+.\target\release\tv-bot-cli.exe --config .\config\runtime.local.toml console
+```
+
+For a faster local-dev refresh loop:
+
+```powershell
+.\target\debug\tv-bot-cli.exe --config .\config\runtime.local.toml console --refresh-seconds 1
+```
+
+The console adds:
+
+- a live chart pane for the active contract
+- a live activity feed
+- keyboard-driven mode, arm/disarm, and pause/resume controls
+- timeframe switching, help overlay, and confirmation dialogs
+
+See [CLI Console](C:\repos\TV_bot_core\docs\ops\cli_console.md) for the full operator guide.
 
 ### Load A Strategy
 
@@ -173,3 +196,4 @@ For deeper debugging, pair the CLI with:
 
 - `docs/ops/debugging_guide.md`
 - `docs/ops/credential_setup.md`
+- `docs/ops/cli_console.md`
